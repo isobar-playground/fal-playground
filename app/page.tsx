@@ -12,12 +12,15 @@ import {
   effectiveResolution,
   effectiveSize,
   estimateCost,
+  liveBaseFromPrice,
   unitCost,
   type GptQuality,
+  type LivePrice,
   type ModelDef,
   type ModelSettings,
 } from "@/lib/models";
 import { configureFal, runModel, uploadReference } from "@/lib/fal";
+import { fetchLivePrices } from "@/lib/pricing";
 import { useLocalStorage, useSessionStorage } from "@/lib/hooks";
 import type { GenerationRun, Reference } from "@/lib/types";
 
@@ -103,9 +106,44 @@ export default function Page() {
     () => selectedKeys.map((k) => MODEL_BY_KEY[k]).filter((m) => m && (!m.needsReferences || hasReferences)),
     [selectedKeys, hasReferences],
   );
+  // Live Fal pricing for the currently selected endpoints.
+  const [livePrices, setLivePrices] = useState<Record<string, LivePrice>>({});
+  const [pricing, setPricing] = useState<{ status: "idle" | "loading" | "live" | "error"; at?: number; error?: string }>({
+    status: "idle",
+  });
+  const liveBaseFor = useCallback((m: ModelDef) => liveBaseFromPrice(livePrices[m.id]), [livePrices]);
+
+  const activeIds = useMemo(() => [...new Set(activeModels.map((m) => m.id))], [activeModels]);
+  const activeIdsKey = activeIds.join(",");
+
+  const refreshPrices = useCallback(
+    async (ids: string[]): Promise<Record<string, LivePrice> | null> => {
+      if (!apiKey || ids.length === 0) return null;
+      setPricing({ status: "loading" });
+      try {
+        const map = await fetchLivePrices(apiKey, ids);
+        setLivePrices((prev) => ({ ...prev, ...map }));
+        setPricing({ status: "live", at: Date.now() });
+        return map;
+      } catch (e) {
+        setPricing({ status: "error", error: errMsg(e) });
+        return null;
+      }
+    },
+    [apiKey],
+  );
+
+  // Refresh whenever the set of selected endpoints (or the key) changes.
+  useEffect(() => {
+    if (!apiKey || activeIds.length === 0) return;
+    const t = setTimeout(() => void refreshPrices(activeIds), 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiKey, activeIdsKey, refreshPrices]);
+
   const costRows = useMemo(
-    () => activeModels.map((m) => ({ model: m, cost: estimateCost(m, settingsFor(m.key)) })),
-    [activeModels, settingsFor],
+    () => activeModels.map((m) => ({ model: m, cost: estimateCost(m, settingsFor(m.key), liveBaseFor(m)) })),
+    [activeModels, settingsFor, liveBaseFor],
   );
   const totalEstimate = costRows.reduce((sum, r) => sum + r.cost, 0);
 
@@ -185,6 +223,12 @@ export default function Page() {
     }
 
     const models = activeModels;
+
+    // Always price against fresh Fal numbers right before generating.
+    const fresh = await refreshPrices(models.map((m) => m.id));
+    const priceMap = fresh ? { ...livePrices, ...fresh } : livePrices;
+    const baseFor = (m: ModelDef) => liveBaseFromPrice(priceMap[m.id]);
+
     const runId = uid();
     const promptText = prompt.trim();
     const run: GenerationRun = {
@@ -199,8 +243,8 @@ export default function Page() {
           modelLabel: m.label,
           status: "running" as const,
           images: [],
-          unitCost: unitCost(m, s),
-          estimatedCost: estimateCost(m, s),
+          unitCost: unitCost(m, s, baseFor(m)),
+          estimatedCost: estimateCost(m, s, baseFor(m)),
           settings: s,
         };
       }),
@@ -215,7 +259,7 @@ export default function Page() {
           const images = await runModel(m, promptText, imageUrls, s, (line) =>
             setLogLines((prev) => ({ ...prev, [m.key]: line })),
           );
-          updateItem(runId, m.key, { status: "done", images, actualCost: unitCost(m, s) * images.length });
+          updateItem(runId, m.key, { status: "done", images, actualCost: unitCost(m, s, baseFor(m)) * images.length });
         } catch (e) {
           updateItem(runId, m.key, { status: "error", error: errMsg(e) });
         }
@@ -223,7 +267,7 @@ export default function Page() {
     );
 
     setGenerating(false);
-  }, [canGenerate, apiKey, references, activeModels, prompt, settingsFor, setRuns, updateItem]);
+  }, [canGenerate, apiKey, references, activeModels, prompt, settingsFor, setRuns, updateItem, refreshPrices, livePrices]);
 
   const resetAll = useCallback(() => {
     if (!confirm("Reset everything? This clears your key, prompt history, results and references.")) return;
@@ -393,6 +437,7 @@ export default function Page() {
                     selected={selectedKeys.includes(m.key)}
                     blocked={m.needsReferences && !hasReferences}
                     settings={settingsFor(m.key)}
+                    liveBase={liveBaseFor(m)}
                     onToggle={() => toggleModel(m.key)}
                     onPatch={(patch) => patchSettings(m.key, patch)}
                   />
@@ -451,7 +496,18 @@ export default function Page() {
               {activeModels.length > 0
                 ? costRows.map((r) => `${r.model.label} ${usd(r.cost)}`).join(" · ")
                 : "Add a key, a prompt and pick at least one model."}
-              {" · "}estimate, Fal bills the real amount.
+            </div>
+            <div className="text-[11px] text-neutral-400">
+              {pricing.status === "loading" && "Fetching live Fal pricing…"}
+              {pricing.status === "live" && pricing.at && (
+                <span className="text-green-600">● Live Fal pricing · {new Date(pricing.at).toLocaleTimeString()}</span>
+              )}
+              {pricing.status === "error" && (
+                <span className="text-amber-600" title={pricing.error}>
+                  ● Couldn’t reach Fal pricing — using local estimate
+                </span>
+              )}
+              {pricing.status === "idle" && "Pricing refreshes from Fal when you pick models."}
             </div>
           </div>
           <button
@@ -547,6 +603,7 @@ function ModelRow({
   selected,
   blocked,
   settings,
+  liveBase,
   onToggle,
   onPatch,
 }: {
@@ -554,6 +611,7 @@ function ModelRow({
   selected: boolean;
   blocked: boolean;
   settings: ModelSettings;
+  liveBase?: number;
   onToggle: () => void;
   onPatch: (patch: Partial<ModelSettings>) => void;
 }) {
@@ -576,7 +634,9 @@ function ModelRow({
             <p className="mt-1 text-xs font-medium text-red-500">Add at least one reference image to use this model.</p>
           )}
         </div>
-        {active && <span className="shrink-0 text-sm font-semibold text-amber-700">{usd(estimateCost(model, settings))}</span>}
+        {active && (
+          <span className="shrink-0 text-sm font-semibold text-amber-700">{usd(estimateCost(model, settings, liveBase))}</span>
+        )}
       </label>
 
       {active && (

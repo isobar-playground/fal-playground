@@ -237,24 +237,62 @@ export function effectiveResolution(model: ModelDef, s: ModelSettings): string {
 
 export const QUALITY_OPTIONS = QUALITIES;
 
-/** USD cost of a single image for this model + settings. */
-export function unitCost(model: ModelDef, s: ModelSettings): number {
+/** A live price record from Fal's GET /v1/models/pricing endpoint. */
+export interface LivePrice {
+  unit_price: number;
+  unit: string;
+  currency: string;
+}
+
+// Reference (standard) base price per family — the cell that Fal's single live
+// unit_price maps onto. Quality/size/resolution variation is applied on top as a
+// multiplier, so live base price tracks Fal while we keep tier granularity.
+const LOCAL_BASE: Record<ModelFamily, number> = {
+  "nano-banana": 0.0398,
+  "nano-banana-2": 0.08, // 1K standard rate
+  "nano-banana-pro": 0.15, // 1K/2K standard rate
+  "gpt-image-1": 0.042, // medium · 1024²
+  "gpt-image-2": 0.053, // medium · 1024²
+};
+
+/** Price relative to the family's reference base (1.0 at the reference cell). */
+function priceMultiplier(model: ModelDef, s: ModelSettings): number {
   switch (model.family) {
     case "nano-banana":
-      return 0.039;
+      return 1;
     case "nano-banana-2":
-      return NB2_PRICE[effectiveResolution(model, s)] ?? 0.08;
+      return (NB2_PRICE[effectiveResolution(model, s)] ?? LOCAL_BASE["nano-banana-2"]) / LOCAL_BASE["nano-banana-2"];
     case "nano-banana-pro":
-      return NBP_PRICE[effectiveResolution(model, s)] ?? 0.15;
+      return (NBP_PRICE[effectiveResolution(model, s)] ?? LOCAL_BASE["nano-banana-pro"]) / LOCAL_BASE["nano-banana-pro"];
     case "gpt-image-1":
-      return GPT1_PRICE[effectiveSize(model, s)]?.[s.quality] ?? 0.042;
+      return (GPT1_PRICE[effectiveSize(model, s)]?.[s.quality] ?? LOCAL_BASE["gpt-image-1"]) / LOCAL_BASE["gpt-image-1"];
     case "gpt-image-2":
-      return GPT2_PRICE[effectiveSize(model, s)]?.[s.quality] ?? 0.053;
+      return (GPT2_PRICE[effectiveSize(model, s)]?.[s.quality] ?? LOCAL_BASE["gpt-image-2"]) / LOCAL_BASE["gpt-image-2"];
   }
 }
 
-export const estimateCost = (model: ModelDef, s: ModelSettings): number =>
-  unitCost(model, s) * Math.max(1, s.numImages);
+/**
+ * USD per image. Uses the live Fal base price when provided (price tracks Fal),
+ * otherwise falls back to the local reference base. Tier multiplier always applies.
+ */
+export function unitCost(model: ModelDef, s: ModelSettings, liveBase?: number): number {
+  const base = liveBase != null && liveBase > 0 ? liveBase : LOCAL_BASE[model.family];
+  return base * priceMultiplier(model, s);
+}
+
+export const estimateCost = (model: ModelDef, s: ModelSettings, liveBase?: number): number =>
+  unitCost(model, s, liveBase) * Math.max(1, s.numImages);
+
+/**
+ * Per-image base from a live record, only when the model is billed per image.
+ * Fal returns "images"/"image" for the Nano Banana family. GPT Image endpoints return
+ * placeholder units ("credits", "units", "compute seconds") with no usable per-image
+ * price — those return undefined so we fall back to the local quality×size matrix.
+ */
+export function liveBaseFromPrice(p?: LivePrice): number | undefined {
+  if (!p) return undefined;
+  return p.unit?.toLowerCase().startsWith("image") ? p.unit_price : undefined;
+}
 
 export function buildInput(
   model: ModelDef,

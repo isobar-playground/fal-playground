@@ -1,8 +1,9 @@
 # 🍌 Fal Prompt Playground
 
-Browser-only tool for testing prompts on Fal.ai image models (Nano Banana family +
-OpenAI GPT Image). No backend — your Fal key lives in `localStorage` and calls fal.ai
-directly from the browser.
+Browser tool for testing prompts on Fal.ai image models (Nano Banana family + OpenAI
+GPT Image). Your Fal key lives in `localStorage` and calls fal.ai directly from the
+browser. The only server code is a thin pricing proxy (`/api/pricing`) — no env vars,
+no stored secrets.
 
 ## Run
 
@@ -17,7 +18,8 @@ pnpm dev      # http://localhost:3000
 2. **References** — drop any number of images (used by *edit* models).
 3. **Prompt** — type it; optionally "Save to history" (session, click to reload).
 4. **Models** — pick one or more; set images / resolution / quality / size per model.
-5. **Cost** — bottom bar shows the estimate before you generate.
+5. **Cost** — bottom bar shows the estimate, priced against **live Fal pricing** fetched
+   for the selected models (refreshed on selection change and again right before generating).
 6. **Generate** — runs each model in parallel with live logs.
 7. **Results** — image URLs persist in the browser. Each image shows its real cost; the
    header shows total spend. "↑ as reference" reuses an output in the next round. Click an
@@ -35,17 +37,35 @@ pnpm dev      # http://localhost:3000
 | `fal-ai/gpt-image-1/text-to-image` (+`/edit-image`) | generate / edit | $0.011–$0.25 (quality × size) |
 | `openai/gpt-image-2` (+ `fal-ai/gpt-image-2/image-to-image`) | generate / edit | $0.006–$0.401 (quality × size) |
 
-Add a model = one entry in [lib/models.ts](lib/models.ts). Prices are hardcoded estimates
-(June 2026); per-image "real cost" is computed from the unit price × images actually returned.
+Add a model = one entry in [lib/models.ts](lib/models.ts).
+
+### Pricing
+
+Cost is computed as **live base price × tier multiplier × images**:
+
+- The **base price** per endpoint is fetched live from Fal's
+  `GET /v1/models/pricing` (via the [`/api/pricing`](app/api/pricing/route.ts) proxy, using
+  your key). This tracks Fal automatically.
+- Fal returns a single base `unit_price` per endpoint — it does **not** break out
+  quality/size/resolution. So the **tier multiplier** is applied on top from the published
+  matrices in [lib/models.ts](lib/models.ts): for nano-banana-2/pro these are Fal's own
+  documented `0.75× / 1.5× / 2×` resolution rates; for GPT Image they are the ratios of the
+  published quality×size grid relative to the `medium · 1024²` cell.
+- If the pricing fetch fails (offline, bad key, blocked), it **falls back to the local base**
+  (June 2026) and the bar says so.
+- Per-image "real cost" on each result = the unit price used at generation time × images
+  actually returned. Fal exposes no per-request billed amount, so this is the most precise
+  figure obtainable (see [NOTES.md](NOTES.md)).
 
 ## Deploy (Vercel)
 
-No env vars (the user supplies the key in the UI).
+No env vars (the user supplies the key in the UI). `/api/pricing` runs as a serverless
+function; everything else is static — still zero-config on Vercel.
 
 ```bash
 npx vercel --prod
 ```
 
-Direct browser → fal.ai calls are a deliberate prototype trade-off (bring-your-own key).
-If fal.ai blocks browser CORS, the next step is a thin Next.js proxy route — intentionally
-not built. See [NOTES.md](NOTES.md).
+Image **generation** still goes browser → fal.ai directly (bring-your-own key). If fal.ai
+blocks browser CORS for those calls, the `/api/pricing` proxy is the pattern to extend.
+See [NOTES.md](NOTES.md).
