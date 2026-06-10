@@ -1,58 +1,51 @@
-# 🍌 Fal Prompt Playground — PROTOTYP
+# 🍌 Fal Prompt Playground
 
-Throwaway narzędzie, które pozwala **nietechnicznym osobom testować prompty na Fal.ai**
-(rodzina nano-banana + GPT Image od OpenAI) — w całości w przeglądarce, bez backendu.
+Browser-only tool for testing prompts on Fal.ai image models (Nano Banana family +
+OpenAI GPT Image). No backend — your Fal key lives in `localStorage` and calls fal.ai
+directly from the browser.
 
-> ⚠️ To prototyp. Klucz Fal trzymany jest w `localStorage` przeglądarki i leci
-> bezpośrednio do fal.ai z przeglądarki użytkownika. Brak obsługi błędów klasy
-> produkcyjnej, brak testów. Patrz [NOTES.md](NOTES.md).
-
-## Uruchomienie lokalne
+## Run
 
 ```bash
-pnpm install   # już zrobione w tym repo
-pnpm dev       # http://localhost:3000
+pnpm install
+pnpm dev      # http://localhost:3000
 ```
 
-To wszystko — jedna komenda. Cały przepływ działa po stronie klienta.
+## Flow
 
-## Przepływ (zgodny ze specyfikacją)
+1. **Key** — paste your Fal key (saved in the browser).
+2. **References** — drop any number of images (used by *edit* models).
+3. **Prompt** — type it; optionally "Save to history" (session, click to reload).
+4. **Models** — pick one or more; set images / resolution / quality / size per model.
+5. **Cost** — bottom bar shows the estimate before you generate.
+6. **Generate** — runs each model in parallel with live logs.
+7. **Results** — image URLs persist in the browser. Each image shows its real cost; the
+   header shows total spend. "↑ as reference" reuses an output in the next round. Click an
+   image for a fullscreen lightbox with arrows + thumbnails across **all** generations.
 
-1. **Klucz Fal** — wpisz raz, zapisuje się w przeglądarce (`localStorage`).
-2. **Referencje** — wgraj dowolną liczbę grafik (opcjonalnie; używają ich modele „edycja”).
-3. **Prompt** — wpisz i opcjonalnie „Zapisz do historii” (`sessionStorage`, klik = wczytaj).
-4. **Modele** — zaznacz modele (multi-select). Dla GPT Image: jakość + rozmiar. Liczba obrazów per model.
-5. **Koszt** — pasek na dole pokazuje szacunkowy koszt (cennik z czerwca 2026, na obraz).
-6. **Generuj** — request leci do Fal równolegle dla każdego modelu; widać logi/postęp.
-7. **Wyniki** — URL-e obrazów zapisują się w `localStorage`. Możesz „↑ jako referencja”,
-   żeby użyć wygenerowanego obrazu jako referencji do kolejnej generacji.
+"Reset all" clears key, history, results and references.
 
-## Modele w zestawie
+## Models
 
-| Endpoint Fal | Tryb | Szac. koszt / obraz |
+| Endpoint | Mode | Est. / image |
 | --- | --- | --- |
-| `fal-ai/nano-banana` | generowanie | $0.039 |
-| `fal-ai/nano-banana/edit` | edycja (referencje) | $0.039 |
-| `fal-ai/gpt-image-1/text-to-image` | generowanie | $0.011–$0.25 (jakość×rozmiar) |
-| `fal-ai/gpt-image-1/edit-image` | edycja (referencje) | $0.011–$0.25 (jakość×rozmiar) |
+| `fal-ai/nano-banana` (+`/edit`) | generate / edit | $0.039 |
+| `fal-ai/nano-banana-2` (+`/edit`) | generate / edit | $0.06–$0.16 (by resolution) |
+| `fal-ai/nano-banana-pro` (+`/edit`) | generate / edit | $0.15 / $0.30 at 4K |
+| `fal-ai/gpt-image-1/text-to-image` (+`/edit-image`) | generate / edit | $0.011–$0.25 (quality × size) |
+| `openai/gpt-image-2` (+ `fal-ai/gpt-image-2/image-to-image`) | generate / edit | $0.006–$0.401 (quality × size) |
 
-Dodanie kolejnego modelu = jeden wpis w [lib/models.ts](lib/models.ts).
+Add a model = one entry in [lib/models.ts](lib/models.ts). Prices are hardcoded estimates
+(June 2026); per-image "real cost" is computed from the unit price × images actually returned.
 
-## Deploy na Vercel
+## Deploy (Vercel)
 
-Brak zmiennych środowiskowych (klucz podaje użytkownik w UI).
+No env vars (the user supplies the key in the UI).
 
 ```bash
-# wariant CLI
-npx vercel        # preview
-npx vercel --prod # produkcja
+npx vercel --prod
 ```
 
-Albo: wrzuć repo na GitHub i zaimportuj w panelu Vercel — framework wykryje się jako Next.js.
-
-## Uwaga o bezpieczeństwie / CORS
-
-Klucz Fal jest „bring-your-own” i woła fal.ai bezpośrednio z przeglądarki. To świadomy
-kompromis prototypu (narzędzie wewnętrzne, każdy używa własnego klucza). Gdyby fal.ai
-zablokował CORS w przeglądarce, kolejnym krokiem jest cienki proxy Next.js (route handler)
-przekazujący klucz z nagłówka — celowo **nie** zbudowane, żeby nie komplikować prototypu.
+Direct browser → fal.ai calls are a deliberate prototype trade-off (bring-your-own key).
+If fal.ai blocks browser CORS, the next step is a thin Next.js proxy route — intentionally
+not built. See [NOTES.md](NOTES.md).

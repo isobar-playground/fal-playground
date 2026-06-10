@@ -1,29 +1,24 @@
-# Prototype notes
+# Notes
 
-## Pytanie, na które odpowiada ten prototyp
+## Question
 
-> Czy nietechniczna osoba — mając **tylko własny klucz Fal** — może w całości w przeglądarce
-> przejść pętlę: referencje → prompt → wybór modeli → podgląd kosztu → generacja → wyniki,
-> i użyć wygenerowanego obrazu jako referencji w następnej rundzie?
+Can a non-technical person — with only their own Fal key — run the whole loop in the
+browser: references → prompt → model pick → cost preview → generate → results, and reuse an
+output as a reference in the next round? Design constraint: **no backend**.
 
-Założenie projektowe: **brak backendu**. Klucz i historia żyją w `localStorage` /
-`sessionStorage`; requesty lecą bezpośrednio do fal.ai z przeglądarki.
+## Deliberately skipped
 
-## Co celowo pominięto (bo to prototyp)
+- No tests, minimal error handling (per-model errors land on the result card).
+- Prices are hardcoded (June 2026). Fal has no simple cost-estimate API, so "real cost" is
+  computed locally as unit price × images returned (ignores GPT's tiny text-token charge).
+- No server proxy — see the CORS note in the README. First thing to add if browser calls
+  to fal.ai get blocked.
+- Reference files aren't persisted (only their uploaded URLs, within a run).
 
-- Brak testów, brak twardej obsługi błędów (błędy per-model lądują w karcie wyniku).
-- Cennik jest **zaszyty na sztywno** (czerwiec 2026) — to szacunek, nie źródło prawdy.
-  Fal nie udostępnia prostego „cost estimate API”, więc liczymy lokalnie cena×liczba_obrazów.
-- Brak proxy serwerowego — patrz uwaga o CORS w README. Jeśli przeglądarka zostanie
-  zablokowana przez CORS przy bezpośrednim wywołaniu fal.ai, to pierwszy element do dobudowania.
-- Referencje (pliki) nie są persystowane — tylko ich URL-e po uploadzie w obrębie runu.
+## Verdict — fill in after running with a real key
 
-## Werdykt (do uzupełnienia po przeklikaniu z realnym kluczem)
-
-- [ ] Czy bezpośrednie wywołania fal.ai z przeglądarki przechodzą (CORS, upload, subscribe)?
-- [ ] Czy `fal-ai/gpt-image-1/edit-image` działa na samym kluczu Fal (bez BYOK OpenAI)?
-- [ ] Czy szacunek kosztu zgadza się z faktycznym naliczeniem Fal?
-- [ ] Czy przepływ jest zrozumiały dla osoby nietechnicznej bez instrukcji?
-
-> Po odpowiedzeniu na powyższe: albo przepisać walidowane decyzje do „prawdziwej” wersji
-> (z proxy + obsługą błędów), albo usunąć prototyp.
+- [ ] Do direct browser → fal.ai calls work (CORS, upload, subscribe)?
+- [ ] Do the edit endpoints work on the Fal key alone (no OpenAI BYOK)?
+- [ ] Do the `resolution` params for nano-banana-2 / pro match the real schema?
+- [ ] Does the computed cost match Fal's actual billing?
+- [ ] Is the flow understandable to a non-technical user without instructions?

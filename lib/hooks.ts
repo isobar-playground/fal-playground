@@ -14,13 +14,10 @@ function read<T>(storage: Storage, key: string, fallback: T): T {
   }
 }
 
-/**
- * Tiny persisted-state hook. Prototype-grade: no cross-tab sync, swallows errors.
- */
 function usePersistentState<T>(storage: Storage, key: string, initial: T) {
   const [value, setValue] = useState<T>(initial);
 
-  // Hydrate from storage after mount (avoids SSR/client mismatch).
+  // Hydrate after mount to avoid SSR/client mismatch.
   useEffect(() => {
     setValue(read(storage, key, initial));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -34,7 +31,7 @@ function usePersistentState<T>(storage: Storage, key: string, initial: T) {
           const store = storage === "local" ? window.localStorage : window.sessionStorage;
           store.setItem(key, JSON.stringify(resolved));
         } catch {
-          /* ignore quota / private-mode errors in the prototype */
+          /* ignore quota / private-mode errors */
         }
         return resolved;
       });

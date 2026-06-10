@@ -1,21 +1,20 @@
 "use client";
 
-// PROTOTYPE — Fal Prompt Playground (throwaway).
-// Question this answers: "Can a non-technical person, with only their own Fal key,
-// run a reference-image + prompt + model-pick + cost-preview + generate loop entirely
-// in the browser?" Everything lives in browser storage; the key never hits a server.
-// One screen, top-to-bottom flow. See NOTES.md for the verdict.
-
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_SETTINGS,
   MODELS,
   MODEL_BY_KEY,
+  MODEL_GROUPS,
   QUALITY_LABELS,
-  SIZE_LABELS,
-  estimateModelCost,
+  QUALITY_OPTIONS,
+  RESOLUTION_LABELS,
+  effectiveResolution,
+  effectiveSize,
+  estimateCost,
+  unitCost,
   type GptQuality,
-  type GptSize,
+  type ModelDef,
   type ModelSettings,
 } from "@/lib/models";
 import { configureFal, runModel, uploadReference } from "@/lib/fal";
@@ -24,7 +23,7 @@ import type { GenerationRun, Reference } from "@/lib/types";
 
 const usd = (n: number) => `$${n.toFixed(n < 0.1 ? 3 : 2)}`;
 const errMsg = (e: unknown) =>
-  e instanceof Error ? e.message : typeof e === "string" ? e : "Nieznany błąd";
+  e instanceof Error ? e.message : typeof e === "string" ? e : "Unknown error";
 const uid = () =>
   typeof crypto !== "undefined" && crypto.randomUUID
     ? crypto.randomUUID()
@@ -35,41 +34,40 @@ interface SavedPrompt {
   ts: number;
 }
 
+interface GalleryImage {
+  url: string;
+  modelLabel: string;
+  prompt: string;
+  key: string;
+}
+
 export default function Page() {
-  // Client-only app: skip SSR of the UI entirely. This makes hydration
-  // immune to browser extensions (password managers etc.) that inject
-  // attributes into form fields before React hydrates.
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  // --- Step 1: API key (persisted, browser-only) -------------------------
+  // Step 1 — API key
   const [apiKey, setApiKey] = useLocalStorage<string>("fal:key", "");
   const [showKey, setShowKey] = useState(false);
-
   useEffect(() => {
     if (apiKey) configureFal(apiKey);
   }, [apiKey]);
 
-  // --- Step 2: reference images (in-memory) ------------------------------
+  // Step 2 — references
   const [references, setReferences] = useState<Reference[]>([]);
+  const hasReferences = references.length > 0;
 
   const addFiles = useCallback((files: FileList | File[]) => {
     const next: Reference[] = Array.from(files)
       .filter((f) => f.type.startsWith("image/"))
-      .map((file) => ({
-        kind: "file" as const,
-        id: uid(),
-        file,
-        previewUrl: URL.createObjectURL(file),
-      }));
+      .map((file) => ({ kind: "file" as const, id: uid(), file, previewUrl: URL.createObjectURL(file) }));
     if (next.length) setReferences((prev) => [...prev, ...next]);
   }, []);
 
-  const addUrlReference = useCallback((url: string, origin: "generated" | "manual") => {
+  const addUrlReference = useCallback((url: string) => {
     setReferences((prev) =>
       prev.some((r) => r.kind === "url" && r.url === url)
         ? prev
-        : [...prev, { kind: "url", id: uid(), url, origin }],
+        : [...prev, { kind: "url", id: uid(), url, origin: "generated" }],
     );
   }, []);
 
@@ -81,25 +79,19 @@ export default function Page() {
     });
   }, []);
 
-  const hasReferences = references.length > 0;
-
-  // --- Step 3: prompt + session history ----------------------------------
+  // Step 3 — prompt + history
   const [prompt, setPrompt] = useState("");
   const [history, setHistory] = useSessionStorage<SavedPrompt[]>("fal:prompts", []);
-
   const savePrompt = useCallback(() => {
     const text = prompt.trim();
     if (!text) return;
     setHistory((prev) => [{ text, ts: Date.now() }, ...prev.filter((p) => p.text !== text)].slice(0, 30));
   }, [prompt, setHistory]);
 
-  // --- Step 4: model selection + per-model settings ----------------------
+  // Step 4 — models + settings
   const [selectedKeys, setSelectedKeys] = useState<string[]>(["nano-banana"]);
   const [settings, setSettings] = useState<Record<string, ModelSettings>>({});
-  const settingsFor = useCallback(
-    (key: string) => settings[key] ?? DEFAULT_SETTINGS,
-    [settings],
-  );
+  const settingsFor = useCallback((key: string) => settings[key] ?? DEFAULT_SETTINGS, [settings]);
   const patchSettings = useCallback((key: string, patch: Partial<ModelSettings>) => {
     setSettings((prev) => ({ ...prev, [key]: { ...(prev[key] ?? DEFAULT_SETTINGS), ...patch } }));
   }, []);
@@ -107,22 +99,17 @@ export default function Page() {
     setSelectedKeys((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
   }, []);
 
-  // Models that are selected AND actually runnable (edit models need references).
   const activeModels = useMemo(
-    () =>
-      selectedKeys
-        .map((k) => MODEL_BY_KEY[k])
-        .filter((m) => m && (!m.needsReferences || hasReferences)),
+    () => selectedKeys.map((k) => MODEL_BY_KEY[k]).filter((m) => m && (!m.needsReferences || hasReferences)),
     [selectedKeys, hasReferences],
   );
-
   const costRows = useMemo(
-    () => activeModels.map((m) => ({ model: m, cost: estimateModelCost(m, settingsFor(m.key)) })),
+    () => activeModels.map((m) => ({ model: m, cost: estimateCost(m, settingsFor(m.key)) })),
     [activeModels, settingsFor],
   );
-  const totalCost = costRows.reduce((sum, r) => sum + r.cost, 0);
+  const totalEstimate = costRows.reduce((sum, r) => sum + r.cost, 0);
 
-  // --- Generation --------------------------------------------------------
+  // Generation + results
   const [runs, setRuns] = useLocalStorage<GenerationRun[]>("fal:runs", []);
   const [generating, setGenerating] = useState(false);
   const [logLines, setLogLines] = useState<Record<string, string>>({});
@@ -141,6 +128,43 @@ export default function Page() {
     [setRuns],
   );
 
+  // Spend across every stored run.
+  const spend = useMemo(() => {
+    let total = 0;
+    let images = 0;
+    for (const run of runs)
+      for (const item of run.items) {
+        total += item.actualCost ?? 0;
+        images += item.actualCost != null ? item.images.length : 0;
+      }
+    return { total, images };
+  }, [runs]);
+
+  // Flat gallery of every generated image, for the lightbox.
+  const gallery = useMemo<GalleryImage[]>(() => {
+    const arr: GalleryImage[] = [];
+    for (const run of runs)
+      for (const item of run.items)
+        item.images.forEach((img, i) =>
+          arr.push({ url: img.url, modelLabel: item.modelLabel, prompt: run.prompt, key: `${run.id}:${item.modelKey}:${i}` }),
+        );
+    return arr;
+  }, [runs]);
+  const indexByKey = useMemo(() => {
+    const m = new Map<string, number>();
+    gallery.forEach((g, i) => m.set(g.key, i));
+    return m;
+  }, [gallery]);
+
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const openImage = useCallback(
+    (runId: string, modelKey: string, imgIdx: number) => {
+      const idx = indexByKey.get(`${runId}:${modelKey}:${imgIdx}`);
+      if (idx != null) setLightboxIndex(idx);
+    },
+    [indexByKey],
+  );
+
   const canGenerate = Boolean(apiKey) && prompt.trim().length > 0 && activeModels.length > 0 && !generating;
 
   const handleGenerate = useCallback(async () => {
@@ -155,7 +179,7 @@ export default function Page() {
         references.map((ref) => (ref.kind === "file" ? uploadReference(ref.file) : Promise.resolve(ref.url))),
       );
     } catch (e) {
-      alert("Nie udało się wgrać obrazów referencyjnych:\n" + errMsg(e));
+      alert("Failed to upload reference images:\n" + errMsg(e));
       setGenerating(false);
       return;
     }
@@ -168,25 +192,30 @@ export default function Page() {
       createdAt: Date.now(),
       prompt: promptText,
       referenceUrls: imageUrls,
-      items: models.map((m) => ({
-        modelKey: m.key,
-        modelLabel: m.label,
-        status: "running",
-        images: [],
-        estimatedCost: estimateModelCost(m, settingsFor(m.key)),
-        settings: settingsFor(m.key),
-      })),
+      items: models.map((m) => {
+        const s = settingsFor(m.key);
+        return {
+          modelKey: m.key,
+          modelLabel: m.label,
+          status: "running" as const,
+          images: [],
+          unitCost: unitCost(m, s),
+          estimatedCost: estimateCost(m, s),
+          settings: s,
+        };
+      }),
     };
     setRuns((prev) => [run, ...prev]);
     requestAnimationFrame(() => resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
 
     await Promise.all(
       models.map(async (m) => {
+        const s = settingsFor(m.key);
         try {
-          const images = await runModel(m, promptText, imageUrls, settingsFor(m.key), (line) =>
+          const images = await runModel(m, promptText, imageUrls, s, (line) =>
             setLogLines((prev) => ({ ...prev, [m.key]: line })),
           );
-          updateItem(runId, m.key, { status: "done", images });
+          updateItem(runId, m.key, { status: "done", images, actualCost: unitCost(m, s) * images.length });
         } catch (e) {
           updateItem(runId, m.key, { status: "error", error: errMsg(e) });
         }
@@ -196,34 +225,51 @@ export default function Page() {
     setGenerating(false);
   }, [canGenerate, apiKey, references, activeModels, prompt, settingsFor, setRuns, updateItem]);
 
-  // -----------------------------------------------------------------------
+  const resetAll = useCallback(() => {
+    if (!confirm("Reset everything? This clears your key, prompt history, results and references.")) return;
+    references.forEach((r) => r.kind === "file" && URL.revokeObjectURL(r.previewUrl));
+    setApiKey("");
+    setHistory([]);
+    setRuns([]);
+    setReferences([]);
+    setPrompt("");
+    setSelectedKeys(["nano-banana"]);
+    setSettings({});
+    setLightboxIndex(null);
+  }, [references, setApiKey, setHistory, setRuns]);
+
   if (!mounted) {
     return (
-      <div className="flex min-h-screen items-center justify-center text-sm text-neutral-400">
-        Ładowanie…
-      </div>
+      <div className="flex min-h-screen items-center justify-center text-sm text-neutral-400">Loading…</div>
     );
   }
 
   return (
     <div className="mx-auto max-w-3xl px-4 pb-44 pt-8">
-      <header className="mb-8">
-        <h1 className="text-3xl font-bold tracking-tight">
-          <span className="mr-1">🍌</span> Fal Prompt Playground
-        </h1>
-        <p className="mt-1 text-sm text-neutral-500">
-          Testuj prompty na modelach Fal.ai (nano-banana, GPT Image) — bez kodu. Wszystko zostaje
-          w Twojej przeglądarce.
-        </p>
+      <header className="mb-8 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">
+            <span className="mr-1">🍌</span> Fal Prompt Playground
+          </h1>
+          <p className="mt-1 text-sm text-neutral-500">
+            Test prompts on Fal.ai image models — no code. Everything stays in your browser.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={resetAll}
+          className="shrink-0 rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-600 hover:border-red-300 hover:text-red-600"
+        >
+          Reset all
+        </button>
       </header>
 
       {/* STEP 1 — API KEY */}
-      <Section step={1} title="Klucz Fal.ai" done={Boolean(apiKey)}>
+      <Section step={1} title="Fal.ai key" done={Boolean(apiKey)}>
         <p className="mb-3 text-sm text-neutral-500">
-          Twój klucz zapisuje się w przeglądarce i nie jest nigdzie wysyłany poza fal.ai. Znajdziesz
-          go w{" "}
+          Stored in your browser, sent only to fal.ai. Get it from the{" "}
           <a className="text-amber-600 underline" href="https://fal.ai/dashboard/keys" target="_blank" rel="noreferrer">
-            panelu fal.ai → Keys
+            fal.ai dashboard → Keys
           </a>
           .
         </p>
@@ -232,7 +278,7 @@ export default function Page() {
             type={showKey ? "text" : "password"}
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
-            placeholder="np. 4a1b2c3d-...:e5f6..."
+            placeholder="e.g. 4a1b2c3d-...:e5f6..."
             className="flex-1 rounded-lg border border-neutral-300 bg-white px-3 py-2 font-mono text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
           />
           <button
@@ -240,16 +286,15 @@ export default function Page() {
             onClick={() => setShowKey((s) => !s)}
             className="rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm hover:bg-neutral-50"
           >
-            {showKey ? "Ukryj" : "Pokaż"}
+            {showKey ? "Hide" : "Show"}
           </button>
         </div>
       </Section>
 
       {/* STEP 2 — REFERENCES */}
-      <Section step={2} title="Obrazy referencyjne (opcjonalnie)" done={hasReferences}>
+      <Section step={2} title="Reference images (optional)" done={hasReferences}>
         <p className="mb-3 text-sm text-neutral-500">
-          Wgraj dowolną liczbę grafik. Są używane przez modele w trybie <b>edycji</b>. Modele
-          „generowanie” je ignorują.
+          Upload any number of images. Used by <b>edit</b> models; <b>generate</b> models ignore them.
         </p>
         <Dropzone onFiles={addFiles} />
         {hasReferences && (
@@ -259,12 +304,12 @@ export default function Page() {
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={ref.kind === "file" ? ref.previewUrl : ref.url}
-                  alt="referencja"
+                  alt="reference"
                   className="aspect-square w-full object-cover"
                 />
                 {ref.kind === "url" && ref.origin === "generated" && (
                   <span className="absolute left-1 top-1 rounded bg-amber-400 px-1.5 py-0.5 text-[10px] font-medium text-amber-950">
-                    z wyniku
+                    result
                   </span>
                 )}
                 <button
@@ -272,7 +317,7 @@ export default function Page() {
                   onClick={() => removeReference(ref.id)}
                   className="absolute right-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[11px] text-white opacity-0 transition group-hover:opacity-100"
                 >
-                  Usuń
+                  Remove
                 </button>
               </figure>
             ))}
@@ -286,7 +331,7 @@ export default function Page() {
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           rows={4}
-          placeholder="Opisz, co model ma wygenerować lub jak zmienić referencje…"
+          placeholder="Describe what to generate, or how to change the references…"
           className="w-full resize-y rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
         />
         <div className="mt-2 flex items-center gap-2">
@@ -296,20 +341,18 @@ export default function Page() {
             disabled={!prompt.trim()}
             className="rounded-lg bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-700 disabled:opacity-40"
           >
-            Zapisz do historii
+            Save to history
           </button>
           {prompt && (
             <button type="button" onClick={() => setPrompt("")} className="text-sm text-neutral-500 hover:text-neutral-800">
-              Wyczyść
+              Clear
             </button>
           )}
         </div>
 
         {history.length > 0 && (
           <div className="mt-4">
-            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-neutral-400">
-              Historia (sesja)
-            </p>
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-neutral-400">History (session)</p>
             <ul className="max-h-44 space-y-1 overflow-auto pr-1">
               {history.map((h) => (
                 <li key={h.ts} className="flex items-start gap-2">
@@ -317,7 +360,7 @@ export default function Page() {
                     type="button"
                     onClick={() => setPrompt(h.text)}
                     className="flex-1 rounded-md border border-neutral-200 bg-white px-2.5 py-1.5 text-left text-sm hover:border-amber-300 hover:bg-amber-50"
-                    title="Wczytaj prompt"
+                    title="Load prompt"
                   >
                     {h.text}
                   </button>
@@ -325,7 +368,7 @@ export default function Page() {
                     type="button"
                     onClick={() => setHistory((prev) => prev.filter((p) => p.ts !== h.ts))}
                     className="mt-1 text-neutral-400 hover:text-red-500"
-                    aria-label="Usuń z historii"
+                    aria-label="Remove from history"
                   >
                     ✕
                   </button>
@@ -337,100 +380,26 @@ export default function Page() {
       </Section>
 
       {/* STEP 4 — MODELS */}
-      <Section step={4} title="Modele" done={activeModels.length > 0}>
-        <div className="space-y-2">
-          {MODELS.map((m) => {
-            const selected = selectedKeys.includes(m.key);
-            const blocked = m.needsReferences && !hasReferences;
-            const s = settingsFor(m.key);
-            return (
-              <div
-                key={m.key}
-                className={`rounded-xl border p-3 transition ${
-                  selected && !blocked
-                    ? "border-amber-300 bg-amber-50"
-                    : "border-neutral-200 bg-white"
-                } ${blocked ? "opacity-60" : ""}`}
-              >
-                <label className="flex cursor-pointer items-start gap-3">
-                  <input
-                    type="checkbox"
-                    checked={selected}
-                    onChange={() => toggleModel(m.key)}
-                    className="mt-1 size-4 accent-amber-500"
+      <Section step={4} title="Models" done={activeModels.length > 0}>
+        <div className="space-y-5">
+          {MODEL_GROUPS.map((group) => (
+            <div key={group}>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">{group}</p>
+              <div className="space-y-2">
+                {MODELS.filter((m) => m.group === group).map((m) => (
+                  <ModelRow
+                    key={m.key}
+                    model={m}
+                    selected={selectedKeys.includes(m.key)}
+                    blocked={m.needsReferences && !hasReferences}
+                    settings={settingsFor(m.key)}
+                    onToggle={() => toggleModel(m.key)}
+                    onPatch={(patch) => patchSettings(m.key, patch)}
                   />
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">{m.label}</span>
-                      <Badge>{m.mode === "edit" ? "edycja" : "generowanie"}</Badge>
-                    </div>
-                    <p className="text-sm text-neutral-500">{m.blurb}</p>
-                    {blocked && selected && (
-                      <p className="mt-1 text-xs font-medium text-red-500">
-                        Wgraj choć jedną referencję, aby użyć tego modelu.
-                      </p>
-                    )}
-                  </div>
-                  {selected && !blocked && (
-                    <span className="shrink-0 text-sm font-semibold text-amber-700">
-                      {usd(estimateModelCost(m, s))}
-                    </span>
-                  )}
-                </label>
-
-                {selected && !blocked && (
-                  <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-amber-200/70 pt-3 pl-7 text-sm">
-                    <label className="flex items-center gap-1.5">
-                      <span className="text-neutral-500">Liczba obrazów</span>
-                      <select
-                        value={s.numImages}
-                        onChange={(e) => patchSettings(m.key, { numImages: Number(e.target.value) })}
-                        className="rounded-md border border-neutral-300 bg-white px-2 py-1"
-                      >
-                        {[1, 2, 3, 4].map((n) => (
-                          <option key={n} value={n}>
-                            {n}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    {m.family === "gpt-image" && (
-                      <>
-                        <label className="flex items-center gap-1.5">
-                          <span className="text-neutral-500">Jakość</span>
-                          <select
-                            value={s.gptQuality}
-                            onChange={(e) => patchSettings(m.key, { gptQuality: e.target.value as GptQuality })}
-                            className="rounded-md border border-neutral-300 bg-white px-2 py-1"
-                          >
-                            {(Object.keys(QUALITY_LABELS) as GptQuality[]).map((q) => (
-                              <option key={q} value={q}>
-                                {QUALITY_LABELS[q]}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="flex items-center gap-1.5">
-                          <span className="text-neutral-500">Rozmiar</span>
-                          <select
-                            value={s.gptSize}
-                            onChange={(e) => patchSettings(m.key, { gptSize: e.target.value as GptSize })}
-                            className="rounded-md border border-neutral-300 bg-white px-2 py-1"
-                          >
-                            {(Object.keys(SIZE_LABELS) as GptSize[]).map((sz) => (
-                              <option key={sz} value={sz}>
-                                {SIZE_LABELS[sz]}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      </>
-                    )}
-                  </div>
-                )}
+                ))}
               </div>
-            );
-          })}
+            </div>
+          ))}
         </div>
       </Section>
 
@@ -439,15 +408,20 @@ export default function Page() {
         {runs.length > 0 && (
           <div className="mt-10">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Wyniki</h2>
+              <h2 className="text-lg font-semibold">
+                Results{" "}
+                <span className="ml-1 text-sm font-normal text-neutral-500">
+                  · spent {usd(spend.total)} on {spend.images} image{spend.images === 1 ? "" : "s"}
+                </span>
+              </h2>
               <button
                 type="button"
                 onClick={() => {
-                  if (confirm("Usunąć całą historię wyników z przeglądarki?")) setRuns([]);
+                  if (confirm("Delete all results from your browser?")) setRuns([]);
                 }}
                 className="text-sm text-neutral-500 hover:text-red-500"
               >
-                Wyczyść wszystkie
+                Clear results
               </button>
             </div>
             <div className="space-y-6">
@@ -456,7 +430,8 @@ export default function Page() {
                   key={run.id}
                   run={run}
                   logLines={logLines}
-                  onUseAsReference={(url) => addUrlReference(url, "generated")}
+                  onUseAsReference={addUrlReference}
+                  onOpenImage={(modelKey, imgIdx) => openImage(run.id, modelKey, imgIdx)}
                   onDelete={() => setRuns((prev) => prev.filter((r) => r.id !== run.id))}
                 />
               ))}
@@ -470,13 +445,13 @@ export default function Page() {
         <div className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-sm">
             <div className="font-semibold">
-              Szacowany koszt: <span className="text-amber-700">{usd(totalCost)}</span>
+              Estimated cost: <span className="text-amber-700">{usd(totalEstimate)}</span>
             </div>
             <div className="text-xs text-neutral-500">
               {activeModels.length > 0
-                ? costRows.map((r) => `${r.model.label.split(" — ")[0]} ${r.model.mode === "edit" ? "(edycja)" : ""} ${usd(r.cost)}`).join(" · ")
-                : "Wybierz model, podaj prompt i klucz."}
-              {" · "}szacunek, faktyczny koszt nalicza Fal.
+                ? costRows.map((r) => `${r.model.label} ${usd(r.cost)}`).join(" · ")
+                : "Add a key, a prompt and pick at least one model."}
+              {" · "}estimate, Fal bills the real amount.
             </div>
           </div>
           <button
@@ -485,10 +460,19 @@ export default function Page() {
             disabled={!canGenerate}
             className="rounded-xl bg-amber-400 px-6 py-2.5 font-semibold text-amber-950 shadow-sm transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:bg-neutral-200 disabled:text-neutral-400"
           >
-            {generating ? "Generowanie…" : `Generuj (≈ ${usd(totalCost)})`}
+            {generating ? "Generating…" : `Generate (≈ ${usd(totalEstimate)})`}
           </button>
         </div>
       </div>
+
+      {lightboxIndex != null && gallery[lightboxIndex] && (
+        <Lightbox
+          images={gallery}
+          index={lightboxIndex}
+          onIndex={setLightboxIndex}
+          onClose={() => setLightboxIndex(null)}
+        />
+      )}
     </div>
   );
 }
@@ -525,9 +509,111 @@ function Section({
 
 function Badge({ children }: { children: React.ReactNode }) {
   return (
-    <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-600">
-      {children}
-    </span>
+    <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-600">{children}</span>
+  );
+}
+
+function Select<T extends string | number>({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: T;
+  onChange: (v: string) => void;
+  options: { value: T; label: string }[];
+}) {
+  return (
+    <label className="flex items-center gap-1.5">
+      <span className="text-neutral-500">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="rounded-md border border-neutral-300 bg-white px-2 py-1"
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function ModelRow({
+  model,
+  selected,
+  blocked,
+  settings,
+  onToggle,
+  onPatch,
+}: {
+  model: ModelDef;
+  selected: boolean;
+  blocked: boolean;
+  settings: ModelSettings;
+  onToggle: () => void;
+  onPatch: (patch: Partial<ModelSettings>) => void;
+}) {
+  const active = selected && !blocked;
+  return (
+    <div
+      className={`rounded-xl border p-3 transition ${
+        active ? "border-amber-300 bg-amber-50" : "border-neutral-200 bg-white"
+      } ${blocked ? "opacity-60" : ""}`}
+    >
+      <label className="flex cursor-pointer items-start gap-3">
+        <input type="checkbox" checked={selected} onChange={onToggle} className="mt-1 size-4 accent-amber-500" />
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <span className="font-medium">{model.label}</span>
+            <Badge>{model.mode}</Badge>
+          </div>
+          <p className="text-sm text-neutral-500">{model.blurb}</p>
+          {blocked && selected && (
+            <p className="mt-1 text-xs font-medium text-red-500">Add at least one reference image to use this model.</p>
+          )}
+        </div>
+        {active && <span className="shrink-0 text-sm font-semibold text-amber-700">{usd(estimateCost(model, settings))}</span>}
+      </label>
+
+      {active && (
+        <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-amber-200/70 pt-3 pl-7 text-sm">
+          <Select
+            label="Images"
+            value={settings.numImages}
+            onChange={(v) => onPatch({ numImages: Number(v) })}
+            options={[1, 2, 3, 4].map((n) => ({ value: n, label: String(n) }))}
+          />
+          {model.controls.resolutions && (
+            <Select
+              label="Resolution"
+              value={effectiveResolution(model, settings)}
+              onChange={(v) => onPatch({ resolution: v })}
+              options={model.controls.resolutions.map((r) => ({ value: r, label: RESOLUTION_LABELS[r] ?? r }))}
+            />
+          )}
+          {model.controls.quality && (
+            <Select
+              label="Quality"
+              value={settings.quality}
+              onChange={(v) => onPatch({ quality: v as GptQuality })}
+              options={QUALITY_OPTIONS.map((q) => ({ value: q, label: QUALITY_LABELS[q] }))}
+            />
+          )}
+          {model.controls.sizes && (
+            <Select
+              label="Size"
+              value={effectiveSize(model, settings)}
+              onChange={(v) => onPatch({ size: v })}
+              options={model.controls.sizes}
+            />
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -551,8 +637,8 @@ function Dropzone({ onFiles }: { onFiles: (files: FileList | File[]) => void }) 
         over ? "border-amber-400 bg-amber-50" : "border-neutral-300 hover:border-amber-300"
       }`}
     >
-      <span className="text-neutral-600">Przeciągnij grafiki tutaj lub kliknij, aby wybrać</span>
-      <span className="mt-0.5 text-xs text-neutral-400">PNG, JPG, WebP — dowolna liczba</span>
+      <span className="text-neutral-600">Drop images here or click to choose</span>
+      <span className="mt-0.5 text-xs text-neutral-400">PNG, JPG, WebP — any number</span>
       <input
         ref={inputRef}
         type="file"
@@ -572,11 +658,13 @@ function RunCard({
   run,
   logLines,
   onUseAsReference,
+  onOpenImage,
   onDelete,
 }: {
   run: GenerationRun;
   logLines: Record<string, string>;
   onUseAsReference: (url: string) => void;
+  onOpenImage: (modelKey: string, imgIdx: number) => void;
   onDelete: () => void;
 }) {
   return (
@@ -587,25 +675,29 @@ function RunCard({
             “{run.prompt}”
           </p>
           <p className="text-xs text-neutral-400">
-            {new Date(run.createdAt).toLocaleString("pl-PL")}
-            {run.referenceUrls.length > 0 && ` · ${run.referenceUrls.length} referencji`}
+            {new Date(run.createdAt).toLocaleString()}
+            {run.referenceUrls.length > 0 && ` · ${run.referenceUrls.length} reference(s)`}
           </p>
         </div>
         <button type="button" onClick={onDelete} className="text-sm text-neutral-400 hover:text-red-500">
-          Usuń
+          Delete
         </button>
       </div>
 
       <div className="space-y-4">
         {run.items.map((item) => (
           <div key={item.modelKey}>
-            <div className="mb-2 flex items-center gap-2 text-sm">
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
               <span className="font-medium">{item.modelLabel}</span>
               {item.status === "running" && (
-                <span className="text-amber-600">⏳ {logLines[item.modelKey] ?? "w toku…"}</span>
+                <span className="text-amber-600">⏳ {logLines[item.modelKey] ?? "working…"}</span>
               )}
-              {item.status === "done" && <span className="text-green-600">✓ gotowe</span>}
-              {item.status === "error" && <span className="text-red-500">błąd</span>}
+              {item.status === "done" && (
+                <span className="text-green-600">
+                  ✓ {item.images.length} image{item.images.length === 1 ? "" : "s"} · {usd(item.actualCost ?? 0)}
+                </span>
+              )}
+              {item.status === "error" && <span className="text-red-500">error</span>}
             </div>
 
             {item.status === "error" && (
@@ -616,21 +708,29 @@ function RunCard({
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                 {item.images.map((img, i) => (
                   <figure key={i} className="overflow-hidden rounded-lg border border-neutral-200">
-                    <a href={img.url} target="_blank" rel="noreferrer">
+                    <button
+                      type="button"
+                      onClick={() => onOpenImage(item.modelKey, i)}
+                      className="relative block w-full"
+                      title="Open in lightbox"
+                    >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={img.url} alt="wynik" className="aspect-square w-full object-cover" />
-                    </a>
+                      <img src={img.url} alt="result" className="aspect-square w-full object-cover" />
+                      <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                        {usd(item.unitCost)}
+                      </span>
+                    </button>
                     <div className="flex divide-x divide-neutral-200 border-t border-neutral-200 text-xs">
                       <button
                         type="button"
                         onClick={() => onUseAsReference(img.url)}
                         className="flex-1 py-1.5 text-center hover:bg-amber-50"
-                        title="Dodaj do referencji następnej generacji"
+                        title="Use as reference for the next generation"
                       >
-                        ↑ jako referencja
+                        ↑ as reference
                       </button>
                       <a href={img.url} target="_blank" rel="noreferrer" className="flex-1 py-1.5 text-center hover:bg-neutral-50">
-                        otwórz
+                        open
                       </a>
                     </div>
                   </figure>
@@ -640,7 +740,7 @@ function RunCard({
 
             {item.status === "running" && item.images.length === 0 && (
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                {Array.from({ length: item.settings.numImages }).map((_, i) => (
+                {Array.from({ length: Math.max(1, item.settings.numImages) }).map((_, i) => (
                   <div key={i} className="aspect-square animate-pulse rounded-lg bg-neutral-100" />
                 ))}
               </div>
@@ -649,5 +749,108 @@ function RunCard({
         ))}
       </div>
     </article>
+  );
+}
+
+function Lightbox({
+  images,
+  index,
+  onIndex,
+  onClose,
+}: {
+  images: GalleryImage[];
+  index: number;
+  onIndex: (i: number) => void;
+  onClose: () => void;
+}) {
+  const len = images.length;
+  const go = useCallback((i: number) => onIndex(((i % len) + len) % len), [len, onIndex]);
+  const thumbsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowRight") go(index + 1);
+      else if (e.key === "ArrowLeft") go(index - 1);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [index, go, onClose]);
+
+  useEffect(() => {
+    thumbsRef.current?.querySelector<HTMLElement>(`[data-active="true"]`)?.scrollIntoView({
+      behavior: "smooth",
+      inline: "center",
+      block: "nearest",
+    });
+  }, [index]);
+
+  const cur = images[index];
+  const stop = (e: React.MouseEvent) => e.stopPropagation();
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col bg-black/90 backdrop-blur-sm" onClick={onClose}>
+      <div className="flex items-center justify-between gap-4 p-3 text-white" onClick={stop}>
+        <div className="min-w-0">
+          <div className="text-sm font-medium">{cur.modelLabel}</div>
+          <div className="max-w-[60vw] truncate text-xs text-white/60">{cur.prompt}</div>
+        </div>
+        <div className="flex items-center gap-3 text-sm">
+          <span className="text-white/70">
+            {index + 1} / {len}
+          </span>
+          <a href={cur.url} target="_blank" rel="noreferrer" className="rounded-md bg-white/10 px-2 py-1 hover:bg-white/20">
+            open
+          </a>
+          <button type="button" onClick={onClose} className="rounded-md bg-white/10 px-2 py-1 hover:bg-white/20" aria-label="Close">
+            ✕
+          </button>
+        </div>
+      </div>
+
+      <div className="relative flex flex-1 items-center justify-center overflow-hidden px-12" onClick={stop}>
+        {len > 1 && (
+          <button
+            type="button"
+            onClick={() => go(index - 1)}
+            className="absolute left-2 flex size-11 items-center justify-center rounded-full bg-white/10 text-2xl text-white hover:bg-white/20"
+            aria-label="Previous"
+          >
+            ‹
+          </button>
+        )}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={cur.url} alt="result" className="max-h-full max-w-full object-contain" />
+        {len > 1 && (
+          <button
+            type="button"
+            onClick={() => go(index + 1)}
+            className="absolute right-2 flex size-11 items-center justify-center rounded-full bg-white/10 text-2xl text-white hover:bg-white/20"
+            aria-label="Next"
+          >
+            ›
+          </button>
+        )}
+      </div>
+
+      {len > 1 && (
+        <div ref={thumbsRef} className="flex gap-2 overflow-x-auto p-3" onClick={stop}>
+          {images.map((img, i) => (
+            <button
+              key={img.key}
+              data-active={i === index}
+              type="button"
+              onClick={() => onIndex(i)}
+              className={`shrink-0 overflow-hidden rounded-md border-2 transition ${
+                i === index ? "border-amber-400" : "border-transparent opacity-50 hover:opacity-100"
+              }`}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={img.url} alt="thumbnail" className="size-16 object-cover" />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

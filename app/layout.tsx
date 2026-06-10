@@ -3,12 +3,12 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Fal Prompt Playground 🍌",
-  description: "Testuj prompty na modelach Fal.ai (nano-banana, GPT Image) bez kodu.",
+  description: "Test prompts on Fal.ai image models (Nano Banana, GPT Image) — no code.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="pl">
+    <html lang="en">
       <body className="antialiased">{children}</body>
     </html>
   );

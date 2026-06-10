@@ -1,63 +1,217 @@
-// Model catalog + price estimation for the Fal prompt playground.
-//
-// PROTOTYPE NOTE: prices are hardcoded from the Fal model pages (June 2026) and
-// are only *estimates*. Fal is the source of truth for what you actually pay.
-//   - nano-banana:  flat $0.039 / image
-//   - gpt-image-1:  varies by quality x size (+ a small text-token charge we ignore)
+// Model catalog + price estimation. Prices are hardcoded from the Fal model
+// pages (June 2026), USD per output image. They are estimates — Fal is the
+// source of truth for actual billing.
 
 export type ModelMode = "generate" | "edit";
-export type ModelFamily = "nano-banana" | "gpt-image";
-
 export type GptQuality = "low" | "medium" | "high";
-export type GptSize = "1024x1024" | "1536x1024" | "1024x1536";
+export type ModelFamily =
+  | "nano-banana"
+  | "nano-banana-2"
+  | "nano-banana-pro"
+  | "gpt-image-1"
+  | "gpt-image-2";
+
+export interface SizeOption {
+  value: string;
+  label: string;
+}
+
+export interface ModelControls {
+  resolutions?: string[]; // nano-banana-2 / pro
+  quality?: boolean; // gpt-image
+  sizes?: SizeOption[]; // gpt-image
+}
 
 export interface ModelDef {
-  key: string; // internal id used in app state
+  key: string;
   id: string; // Fal endpoint id
   label: string;
+  group: string;
   family: ModelFamily;
   mode: ModelMode;
-  /** edit models require at least one reference image */
   needsReferences: boolean;
   blurb: string;
+  controls: ModelControls;
 }
+
+export interface ModelSettings {
+  numImages: number;
+  quality: GptQuality;
+  size: string; // gpt-image size key
+  resolution: string; // nano-banana-2 / pro
+}
+
+export const DEFAULT_SETTINGS: ModelSettings = {
+  numImages: 1,
+  quality: "medium",
+  size: "",
+  resolution: "",
+};
+
+const NB2_RES = ["512px", "1K", "2K", "4K"];
+const NBP_RES = ["1K", "2K", "4K"];
+
+const GPT1_SIZES: SizeOption[] = [
+  { value: "1024x1024", label: "Square 1024²" },
+  { value: "1536x1024", label: "Landscape 1536×1024" },
+  { value: "1024x1536", label: "Portrait 1024×1536" },
+];
+
+const GPT2_SIZES: SizeOption[] = [
+  { value: "1024x1024", label: "Square 1024²" },
+  { value: "1024x768", label: "Landscape 1024×768" },
+  { value: "1024x1536", label: "Portrait 1024×1536" },
+  { value: "3840x2160", label: "4K 3840×2160" },
+];
+
+const QUALITIES: GptQuality[] = ["low", "medium", "high"];
+
+export const QUALITY_LABELS: Record<GptQuality, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+};
+
+export const RESOLUTION_LABELS: Record<string, string> = {
+  "512px": "0.5K",
+  "1K": "1K",
+  "2K": "2K",
+  "4K": "4K",
+};
+
+// --- price tables (USD / image) -----------------------------------------
+
+const GPT1_PRICE: Record<string, Record<GptQuality, number>> = {
+  "1024x1024": { low: 0.011, medium: 0.042, high: 0.167 },
+  "1536x1024": { low: 0.016, medium: 0.063, high: 0.25 },
+  "1024x1536": { low: 0.016, medium: 0.063, high: 0.25 },
+};
+
+const GPT2_PRICE: Record<string, Record<GptQuality, number>> = {
+  "1024x1024": { low: 0.006, medium: 0.053, high: 0.211 },
+  "1024x768": { low: 0.005, medium: 0.037, high: 0.145 },
+  "1024x1536": { low: 0.005, medium: 0.042, high: 0.165 },
+  "3840x2160": { low: 0.012, medium: 0.101, high: 0.401 },
+};
+
+const NB2_PRICE: Record<string, number> = { "512px": 0.06, "1K": 0.08, "2K": 0.12, "4K": 0.16 };
+const NBP_PRICE: Record<string, number> = { "1K": 0.15, "2K": 0.15, "4K": 0.3 };
+
+// --- catalog ------------------------------------------------------------
+
+const GOOGLE = "Google · Nano Banana";
+const OPENAI = "OpenAI · GPT Image";
 
 export const MODELS: ModelDef[] = [
   {
     key: "nano-banana",
     id: "fal-ai/nano-banana",
-    label: "Nano Banana — generowanie",
+    label: "Nano Banana",
+    group: GOOGLE,
     family: "nano-banana",
     mode: "generate",
     needsReferences: false,
-    blurb: "Google Gemini Flash Image. Tworzy obraz wyłącznie z promptu tekstowego.",
+    blurb: "Original Gemini Flash image model. Cheap and fast.",
+    controls: {},
   },
   {
     key: "nano-banana-edit",
     id: "fal-ai/nano-banana/edit",
-    label: "Nano Banana — edycja",
+    label: "Nano Banana — edit",
+    group: GOOGLE,
     family: "nano-banana",
     mode: "edit",
     needsReferences: true,
-    blurb: "Edytuje / łączy obrazy referencyjne według promptu. Wymaga referencji.",
+    blurb: "Edit or combine reference images.",
+    controls: {},
+  },
+  {
+    key: "nano-banana-2",
+    id: "fal-ai/nano-banana-2",
+    label: "Nano Banana 2",
+    group: GOOGLE,
+    family: "nano-banana-2",
+    mode: "generate",
+    needsReferences: false,
+    blurb: "New fast model. Resolution up to 4K.",
+    controls: { resolutions: NB2_RES },
+  },
+  {
+    key: "nano-banana-2-edit",
+    id: "fal-ai/nano-banana-2/edit",
+    label: "Nano Banana 2 — edit",
+    group: GOOGLE,
+    family: "nano-banana-2",
+    mode: "edit",
+    needsReferences: true,
+    blurb: "Edit with up to 14 reference images.",
+    controls: { resolutions: NB2_RES },
+  },
+  {
+    key: "nano-banana-pro",
+    id: "fal-ai/nano-banana-pro",
+    label: "Nano Banana Pro",
+    group: GOOGLE,
+    family: "nano-banana-pro",
+    mode: "generate",
+    needsReferences: false,
+    blurb: "State-of-the-art realism & typography (Gemini 3 Pro Image).",
+    controls: { resolutions: NBP_RES },
+  },
+  {
+    key: "nano-banana-pro-edit",
+    id: "fal-ai/nano-banana-pro/edit",
+    label: "Nano Banana Pro — edit",
+    group: GOOGLE,
+    family: "nano-banana-pro",
+    mode: "edit",
+    needsReferences: true,
+    blurb: "Pro editing with reference images.",
+    controls: { resolutions: NBP_RES },
   },
   {
     key: "gpt-image-1",
     id: "fal-ai/gpt-image-1/text-to-image",
-    label: "GPT Image 1 — generowanie",
-    family: "gpt-image",
+    label: "GPT Image 1",
+    group: OPENAI,
+    family: "gpt-image-1",
     mode: "generate",
     needsReferences: false,
-    blurb: "OpenAI GPT Image 1. Tworzy obraz z promptu. Wybierasz jakość i rozmiar.",
+    blurb: "OpenAI GPT Image 1.",
+    controls: { quality: true, sizes: GPT1_SIZES },
   },
   {
     key: "gpt-image-1-edit",
     id: "fal-ai/gpt-image-1/edit-image",
-    label: "GPT Image 1 — edycja",
-    family: "gpt-image",
+    label: "GPT Image 1 — edit",
+    group: OPENAI,
+    family: "gpt-image-1",
     mode: "edit",
     needsReferences: true,
-    blurb: "OpenAI GPT Image 1 z obrazami referencyjnymi. Wymaga referencji.",
+    blurb: "GPT Image 1 with reference images.",
+    controls: { quality: true, sizes: GPT1_SIZES },
+  },
+  {
+    key: "gpt-image-2",
+    id: "openai/gpt-image-2",
+    label: "GPT Image 2",
+    group: OPENAI,
+    family: "gpt-image-2",
+    mode: "generate",
+    needsReferences: false,
+    blurb: "OpenAI's latest. Fine detail & typography, up to 4K.",
+    controls: { quality: true, sizes: GPT2_SIZES },
+  },
+  {
+    key: "gpt-image-2-edit",
+    id: "fal-ai/gpt-image-2/image-to-image",
+    label: "GPT Image 2 — edit",
+    group: OPENAI,
+    family: "gpt-image-2",
+    mode: "edit",
+    needsReferences: true,
+    blurb: "GPT Image 2 with reference images.",
+    controls: { quality: true, sizes: GPT2_SIZES },
   },
 ];
 
@@ -65,41 +219,70 @@ export const MODEL_BY_KEY: Record<string, ModelDef> = Object.fromEntries(
   MODELS.map((m) => [m.key, m]),
 );
 
-/** Per-model knobs the user can tweak. */
-export interface ModelSettings {
-  numImages: number;
-  gptQuality: GptQuality;
-  gptSize: GptSize;
+export const MODEL_GROUPS: string[] = [...new Set(MODELS.map((m) => m.group))];
+
+// --- pricing + request building -----------------------------------------
+
+export function effectiveSize(model: ModelDef, s: ModelSettings): string {
+  const opts = model.controls.sizes;
+  if (!opts?.length) return s.size;
+  return opts.some((o) => o.value === s.size) ? s.size : opts[0].value;
 }
 
-export const DEFAULT_SETTINGS: ModelSettings = {
-  numImages: 1,
-  gptQuality: "medium",
-  gptSize: "1024x1024",
-};
-
-// gpt-image-1 price per output image, by quality and size (USD).
-const GPT_PRICE: Record<GptSize, Record<GptQuality, number>> = {
-  "1024x1024": { low: 0.011, medium: 0.042, high: 0.167 },
-  "1536x1024": { low: 0.016, medium: 0.063, high: 0.25 },
-  "1024x1536": { low: 0.016, medium: 0.063, high: 0.25 },
-};
-
-/** Estimated USD cost for one model given its settings. */
-export function estimateModelCost(model: ModelDef, s: ModelSettings): number {
-  const n = Math.max(1, s.numImages);
-  if (model.family === "nano-banana") return 0.039 * n;
-  return GPT_PRICE[s.gptSize][s.gptQuality] * n;
+export function effectiveResolution(model: ModelDef, s: ModelSettings): string {
+  const opts = model.controls.resolutions;
+  if (!opts?.length) return s.resolution;
+  return opts.includes(s.resolution) ? s.resolution : opts[0];
 }
 
-export const SIZE_LABELS: Record<GptSize, string> = {
-  "1024x1024": "Kwadrat 1024×1024",
-  "1536x1024": "Poziom 1536×1024",
-  "1024x1536": "Pion 1024×1536",
-};
+export const QUALITY_OPTIONS = QUALITIES;
 
-export const QUALITY_LABELS: Record<GptQuality, string> = {
-  low: "Niska",
-  medium: "Średnia",
-  high: "Wysoka",
-};
+/** USD cost of a single image for this model + settings. */
+export function unitCost(model: ModelDef, s: ModelSettings): number {
+  switch (model.family) {
+    case "nano-banana":
+      return 0.039;
+    case "nano-banana-2":
+      return NB2_PRICE[effectiveResolution(model, s)] ?? 0.08;
+    case "nano-banana-pro":
+      return NBP_PRICE[effectiveResolution(model, s)] ?? 0.15;
+    case "gpt-image-1":
+      return GPT1_PRICE[effectiveSize(model, s)]?.[s.quality] ?? 0.042;
+    case "gpt-image-2":
+      return GPT2_PRICE[effectiveSize(model, s)]?.[s.quality] ?? 0.053;
+  }
+}
+
+export const estimateCost = (model: ModelDef, s: ModelSettings): number =>
+  unitCost(model, s) * Math.max(1, s.numImages);
+
+export function buildInput(
+  model: ModelDef,
+  prompt: string,
+  imageUrls: string[],
+  s: ModelSettings,
+): Record<string, unknown> {
+  const input: Record<string, unknown> = { prompt, num_images: Math.max(1, s.numImages) };
+
+  switch (model.family) {
+    case "nano-banana":
+      break;
+    case "nano-banana-2":
+    case "nano-banana-pro":
+      input.resolution = effectiveResolution(model, s);
+      break;
+    case "gpt-image-1":
+      input.image_size = effectiveSize(model, s);
+      input.quality = s.quality;
+      break;
+    case "gpt-image-2": {
+      const [w, h] = effectiveSize(model, s).split("x").map(Number);
+      input.image_size = { width: w, height: h };
+      input.quality = s.quality;
+      break;
+    }
+  }
+
+  if (model.mode === "edit") input.image_urls = imageUrls;
+  return input;
+}

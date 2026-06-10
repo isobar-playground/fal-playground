@@ -1,6 +1,5 @@
 import type { ModelSettings } from "./models";
 
-/** A reference image, either a freshly-picked local file or an existing URL. */
 export type Reference =
   | { kind: "file"; id: string; file: File; previewUrl: string }
   | { kind: "url"; id: string; url: string; origin: "generated" | "manual" };
@@ -13,18 +12,18 @@ export interface ResultImage {
 
 export type RunItemStatus = "pending" | "running" | "done" | "error";
 
-/** Per-model slice of one generation run. */
 export interface RunItem {
   modelKey: string;
   modelLabel: string;
   status: RunItemStatus;
   images: ResultImage[];
   error?: string;
-  estimatedCost: number;
+  unitCost: number; // USD per image
+  estimatedCost: number; // unitCost * requested images
+  actualCost?: number; // unitCost * returned images (set when done)
   settings: ModelSettings;
 }
 
-/** One "Generuj" press = one run, fanned out across the selected models. */
 export interface GenerationRun {
   id: string;
   createdAt: number;
