@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  background: #f7f7f5;
+  color: #1a1a17;
+}
+
+/* Thin custom scrollbar for the prompt history / results panes. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #d4d4d0 transparent;
+}

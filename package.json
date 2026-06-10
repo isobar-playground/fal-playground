@@ -1,0 +1,25 @@
+{
+  "name": "fal-prompt-playground",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PROTOTYPE — throwaway playground for non-technical users to test Fal.ai prompts (nano-banana + GPT Image).",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@fal-ai/client": "^1.10.1",
+    "next": "^15.5.19",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.0",
+    "@types/node": "^22.19.20",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "tailwindcss": "^4.3.0",
+    "typescript": "^5.9.3"
+  }
+}
