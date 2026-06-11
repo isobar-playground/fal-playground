@@ -45,7 +45,9 @@ secret. "Reset all" clears key, history, results and references.
 | `fal-ai/nano-banana-2` (+`/edit`) | generate / edit | $0.06–$0.16 (by resolution) |
 | `fal-ai/nano-banana-pro` (+`/edit`) | generate / edit | $0.15 / $0.30 at 4K |
 | `fal-ai/gpt-image-1/text-to-image` (+`/edit-image`) | generate / edit | $0.011–$0.25 (quality × size) |
-| `openai/gpt-image-2` (+ `fal-ai/gpt-image-2/image-to-image`) | generate / edit | $0.006–$0.401 (quality × size) |
+| `openai/gpt-image-2` (+ `fal-ai/gpt-image-2/edit`) | generate / edit | $0.006–$0.401 (quality × size) |
+
+Each model row links to its fal.ai API docs (`…/api`).
 
 Add a model = one entry in [lib/models.ts](lib/models.ts).
 

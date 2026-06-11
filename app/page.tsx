@@ -740,22 +740,35 @@ function ModelRow({
         active ? "border-amber-300 bg-amber-50" : "border-neutral-200 bg-white"
       } ${blocked ? "opacity-60" : ""}`}
     >
-      <label className="flex cursor-pointer items-start gap-3">
-        <input type="checkbox" checked={selected} onChange={onToggle} className="mt-1 size-4 accent-amber-500" />
-        <div className="flex-1">
-          <div className="flex items-center gap-2">
-            <span className="font-medium">{model.label}</span>
-            <Badge>{model.mode}</Badge>
+      <div className="flex items-start gap-3">
+        <label className="flex flex-1 cursor-pointer items-start gap-3">
+          <input type="checkbox" checked={selected} onChange={onToggle} className="mt-1 size-4 accent-amber-500" />
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <span className="font-medium">{model.label}</span>
+              <Badge>{model.mode}</Badge>
+            </div>
+            <p className="text-sm text-neutral-500">{model.blurb}</p>
+            {blocked && selected && (
+              <p className="mt-1 text-xs font-medium text-red-500">Add at least one reference image to use this model.</p>
+            )}
           </div>
-          <p className="text-sm text-neutral-500">{model.blurb}</p>
-          {blocked && selected && (
-            <p className="mt-1 text-xs font-medium text-red-500">Add at least one reference image to use this model.</p>
+        </label>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          {active && (
+            <span className="text-sm font-semibold text-amber-700">{usd(estimateCost(model, settings, liveBase))}</span>
           )}
+          <a
+            href={`https://fal.ai/models/${model.id}/api`}
+            target="_blank"
+            rel="noreferrer"
+            className="whitespace-nowrap text-xs text-neutral-400 hover:text-amber-600"
+            title={`Open ${model.id} API docs on fal.ai`}
+          >
+            API ↗
+          </a>
         </div>
-        {active && (
-          <span className="shrink-0 text-sm font-semibold text-amber-700">{usd(estimateCost(model, settings, liveBase))}</span>
-        )}
-      </label>
+      </div>
 
       {active && (
         <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-amber-200/70 pt-3 pl-7 text-sm">

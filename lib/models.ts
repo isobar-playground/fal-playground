@@ -204,7 +204,7 @@ export const MODELS: ModelDef[] = [
   },
   {
     key: "gpt-image-2-edit",
-    id: "fal-ai/gpt-image-2/image-to-image",
+    id: "fal-ai/gpt-image-2/edit",
     label: "GPT Image 2 — edit",
     group: OPENAI,
     family: "gpt-image-2",
