@@ -137,11 +137,38 @@ export default function Page() {
   // Step 3 — prompt + history
   const [prompt, setPrompt] = useState("");
   const [history, setHistory] = useSessionStorage<SavedPrompt[]>("fal:prompts", []);
+  // Holds an unsaved draft that got overwritten (by loading history / clearing), so it can be restored.
+  const [stashedPrompt, setStashedPrompt] = useState<string | null>(null);
+
   const savePrompt = useCallback(() => {
     const text = prompt.trim();
     if (!text) return;
     setHistory((prev) => [{ text, ts: Date.now() }, ...prev.filter((p) => p.text !== text)].slice(0, 30));
   }, [prompt, setHistory]);
+
+  // Stash the current text first if it's a non-empty draft that isn't already saved in history.
+  const stashIfDraft = useCallback(() => {
+    const trimmed = prompt.trim();
+    if (trimmed && !history.some((h) => h.text === trimmed)) setStashedPrompt(prompt);
+  }, [prompt, history]);
+
+  const loadFromHistory = useCallback(
+    (text: string) => {
+      if (prompt.trim() !== text.trim()) stashIfDraft();
+      setPrompt(text);
+    },
+    [prompt, stashIfDraft],
+  );
+
+  const clearPrompt = useCallback(() => {
+    stashIfDraft();
+    setPrompt("");
+  }, [stashIfDraft]);
+
+  const restoreStash = useCallback(() => {
+    if (stashedPrompt != null) setPrompt(stashedPrompt);
+    setStashedPrompt(null);
+  }, [stashedPrompt]);
 
   // Step 4 — models + settings
   const [selectedKeys, setSelectedKeys] = useState<string[]>(["nano-banana"]);
@@ -361,6 +388,7 @@ export default function Page() {
     setRuns([]);
     setReferences([]);
     setPrompt("");
+    setStashedPrompt(null);
     setSelectedKeys(["nano-banana"]);
     setSettings({});
     setLightbox(null);
@@ -422,6 +450,7 @@ export default function Page() {
               .map((r) => ({ kind: "url" as const, id: uid(), url: r.url, origin: r.origin === "manual" ? "manual" : "generated" }))
           : [],
       );
+      setStashedPrompt(null);
       setLightbox(null);
     },
     [references, setApiKey, setHistory, setRuns],
@@ -552,7 +581,7 @@ export default function Page() {
           placeholder="Describe what to generate, or how to change the references…"
           className="w-full resize-y rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
         />
-        <div className="mt-2 flex items-center gap-2">
+        <div className="mt-2 flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={savePrompt}
@@ -562,9 +591,30 @@ export default function Page() {
             Save to history
           </button>
           {prompt && (
-            <button type="button" onClick={() => setPrompt("")} className="text-sm text-neutral-500 hover:text-neutral-800">
+            <button type="button" onClick={clearPrompt} className="text-sm text-neutral-500 hover:text-neutral-800">
               Clear
             </button>
+          )}
+          {stashedPrompt != null && stashedPrompt !== prompt && (
+            <span className="ml-auto flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1">
+              <button
+                type="button"
+                onClick={restoreStash}
+                title={stashedPrompt}
+                className="text-sm font-medium text-amber-700 hover:text-amber-800"
+              >
+                ↩ Restore unsaved prompt
+              </button>
+              <button
+                type="button"
+                onClick={() => setStashedPrompt(null)}
+                title="Dismiss"
+                aria-label="Dismiss"
+                className="text-amber-500 hover:text-red-500"
+              >
+                ✕
+              </button>
+            </span>
           )}
         </div>
 
@@ -576,7 +626,7 @@ export default function Page() {
                 <li key={h.ts} className="flex items-start gap-2">
                   <button
                     type="button"
-                    onClick={() => setPrompt(h.text)}
+                    onClick={() => loadFromHistory(h.text)}
                     className="flex-1 rounded-md border border-neutral-200 bg-white px-2.5 py-1.5 text-left text-sm hover:border-amber-300 hover:bg-amber-50"
                     title="Load prompt"
                   >
