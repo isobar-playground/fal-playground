@@ -30,7 +30,12 @@ key? Hit "Reset all" to pick it up.
    header shows total spend. "↑ as reference" reuses an output in the next round. Click an
    image for a fullscreen lightbox with arrows + thumbnails across **all** generations.
 
-"Reset all" clears key, history, results and references.
+**Export / Import session** (header) — download the whole session (key, prompt history,
+all generated URLs, model selection) as a base64-encoded `.falsession` file to share with
+others, or load one back (legacy plain-JSON files still import). Import **overwrites** the
+current session (confirmed first); export warns that the file contains your API key.
+Base64 is obfuscation, not encryption — anyone can decode it, so treat the file as a
+secret. "Reset all" clears key, history, results and references.
 
 ## Models
 

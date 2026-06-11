@@ -31,3 +31,16 @@ export interface GenerationRun {
   referenceUrls: string[];
   items: RunItem[];
 }
+
+/** Full session snapshot for export/import (share progress with others). */
+export interface SessionExport {
+  app: "fal-prompt-playground";
+  version: number;
+  exportedAt: string;
+  key: string;
+  promptHistory: { text: string; ts: number }[];
+  runs: GenerationRun[];
+  selectedKeys: string[];
+  settings: Record<string, ModelSettings>;
+  references: { url: string; origin: "generated" | "manual" }[];
+}

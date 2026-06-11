@@ -21,8 +21,9 @@ import {
 } from "@/lib/models";
 import { configureFal, runModel, uploadReference } from "@/lib/fal";
 import { fetchLivePrices } from "@/lib/pricing";
+import { decodeSession, encodeSession } from "@/lib/session";
 import { useLocalStorage, useSessionStorage } from "@/lib/hooks";
-import type { GenerationRun, Reference } from "@/lib/types";
+import type { GenerationRun, Reference, SessionExport } from "@/lib/types";
 
 // Sub-dollar amounts keep up to 4 decimals (so $0.0398 isn't rounded to $0.04),
 // trailing zeros trimmed but at least 2 shown; $1+ uses plain 2-decimal currency.
@@ -310,6 +311,66 @@ export default function Page() {
     loadEnvKey(); // restore the dev env key if present
   }, [references, setApiKey, setHistory, setRuns, loadEnvKey]);
 
+  // Export / import the whole session (share progress with others).
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const exportSession = useCallback(() => {
+    if (apiKey && !confirm("⚠️ The exported file includes your Fal API key. Only share it with people you trust. Continue?")) {
+      return;
+    }
+    const data: SessionExport = {
+      app: "fal-prompt-playground",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      key: apiKey,
+      promptHistory: history,
+      runs,
+      selectedKeys,
+      settings,
+      references: references.flatMap((r) => (r.kind === "url" ? [{ url: r.url, origin: r.origin }] : [])),
+    };
+    const blob = new Blob([encodeSession(data)], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `fal-session-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.falsession`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [apiKey, history, runs, selectedKeys, settings, references]);
+
+  const importSession = useCallback(
+    async (file: File) => {
+      let data: Partial<SessionExport>;
+      try {
+        data = decodeSession(await file.text());
+      } catch {
+        alert("Couldn't read that file — it isn't a valid session export.");
+        return;
+      }
+      if (data?.app !== "fal-prompt-playground" && !confirm("This doesn't look like a Fal Playground session file. Import anyway?")) {
+        return;
+      }
+      if (!confirm("⚠️ Import OVERWRITES your current session — key, prompts, results and selection will be replaced. Continue?")) {
+        return;
+      }
+      references.forEach((r) => r.kind === "file" && URL.revokeObjectURL(r.previewUrl));
+      setApiKey(typeof data.key === "string" ? data.key : "");
+      setHistory(Array.isArray(data.promptHistory) ? data.promptHistory : []);
+      setRuns(Array.isArray(data.runs) ? data.runs : []);
+      setSelectedKeys(Array.isArray(data.selectedKeys) && data.selectedKeys.length ? data.selectedKeys : ["nano-banana"]);
+      setSettings(data.settings && typeof data.settings === "object" ? data.settings : {});
+      setReferences(
+        Array.isArray(data.references)
+          ? data.references
+              .filter((r) => r?.url)
+              .map((r) => ({ kind: "url" as const, id: uid(), url: r.url, origin: r.origin === "manual" ? "manual" : "generated" }))
+          : [],
+      );
+      setLightboxIndex(null);
+    },
+    [references, setApiKey, setHistory, setRuns],
+  );
+
   if (!mounted) {
     return (
       <div className="flex min-h-screen items-center justify-center text-sm text-neutral-400">Loading…</div>
@@ -327,13 +388,42 @@ export default function Page() {
             Test prompts on Fal.ai image models — no code. Everything stays in your browser.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={resetAll}
-          className="shrink-0 rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-600 hover:border-red-300 hover:text-red-600"
-        >
-          Reset all
-        </button>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={exportSession}
+            title="Download your whole session (key, prompts, results) as a file"
+            className="rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-600 hover:border-amber-300 hover:text-amber-700"
+          >
+            Export session
+          </button>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            title="Load a session file — this overwrites your current work"
+            className="rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-600 hover:border-amber-300 hover:text-amber-700"
+          >
+            Import session
+          </button>
+          <button
+            type="button"
+            onClick={resetAll}
+            className="rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-600 hover:border-red-300 hover:text-red-600"
+          >
+            Reset all
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".falsession,.json,.txt,application/json,text/plain"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void importSession(f);
+              e.target.value = "";
+            }}
+          />
+        </div>
       </header>
 
       {/* STEP 1 — API KEY */}
