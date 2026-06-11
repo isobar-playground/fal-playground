@@ -24,7 +24,15 @@ import { fetchLivePrices } from "@/lib/pricing";
 import { useLocalStorage, useSessionStorage } from "@/lib/hooks";
 import type { GenerationRun, Reference } from "@/lib/types";
 
-const usd = (n: number) => `$${n.toFixed(n < 0.1 ? 3 : 2)}`;
+// Sub-dollar amounts keep up to 4 decimals (so $0.0398 isn't rounded to $0.04),
+// trailing zeros trimmed but at least 2 shown; $1+ uses plain 2-decimal currency.
+function usd(n: number): string {
+  if (!n) return "$0";
+  if (n >= 1) return `$${n.toFixed(2)}`;
+  let s = n.toFixed(4).replace(/0+$/, "");
+  if (s.length - s.indexOf(".") - 1 < 2) s = n.toFixed(2);
+  return `$${s}`;
+}
 const errMsg = (e: unknown) =>
   e instanceof Error ? e.message : typeof e === "string" ? e : "Unknown error";
 const uid = () =>
@@ -54,6 +62,25 @@ export default function Page() {
   useEffect(() => {
     if (apiKey) configureFal(apiKey);
   }, [apiKey]);
+
+  // Local-dev convenience: pre-fill the key from FAL_KEY (dev only), unless one is stored.
+  const envTried = useRef(false);
+  const loadEnvKey = useCallback(() => {
+    fetch("/api/dev-key")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d?.key) setApiKey(d.key);
+      })
+      .catch(() => {});
+  }, [setApiKey]);
+  useEffect(() => {
+    if (!mounted || envTried.current) return;
+    envTried.current = true;
+    try {
+      if (window.localStorage.getItem("fal:key")) return;
+    } catch {}
+    loadEnvKey();
+  }, [mounted, loadEnvKey]);
 
   // Step 2 — references
   const [references, setReferences] = useState<Reference[]>([]);
@@ -280,7 +307,8 @@ export default function Page() {
     setSelectedKeys(["nano-banana"]);
     setSettings({});
     setLightboxIndex(null);
-  }, [references, setApiKey, setHistory, setRuns]);
+    loadEnvKey(); // restore the dev env key if present
+  }, [references, setApiKey, setHistory, setRuns, loadEnvKey]);
 
   if (!mounted) {
     return (

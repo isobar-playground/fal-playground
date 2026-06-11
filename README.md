@@ -12,6 +12,11 @@ pnpm install
 pnpm dev      # http://localhost:3000
 ```
 
+**Local convenience:** put `FAL_KEY=...` in `.env.local` and it auto-fills the key field
+in dev (only when the browser has no key stored). It's served via `/api/dev-key`, which
+returns `null` in production — the key is never shipped to a deployed build. Change the env
+key? Hit "Reset all" to pick it up.
+
 ## Flow
 
 1. **Key** — paste your Fal key (saved in the browser).
