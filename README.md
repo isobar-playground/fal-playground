@@ -17,6 +17,13 @@ in dev (only when the browser has no key stored). It's served via `/api/dev-key`
 returns `null` in production — the key is never shipped to a deployed build. Change the env
 key? Hit "Reset all" to pick it up.
 
+**Account balance (optional):** set `FAL_ADMIN_KEY=...` (an **admin** key — the normal key
+gets 403 on billing) in `.env.local` / Vercel env. The bottom bar then shows your Fal
+credit balance, refreshed after each generation. It's read server-side via `/api/credits`
+(`GET /v1/account/billing?expand=credits`); the admin key never reaches the browser, only
+the balance number does. Note: this is the **deployment account's** balance (the admin
+key's), independent of whatever per-user key is typed in the UI. Unset → balance hidden.
+
 ## Flow
 
 1. **Key** — paste your Fal key (saved in the browser).

@@ -31,6 +31,8 @@ function usd(n: number): string {
   if (s.length - s.indexOf(".") - 1 < 2) s = n.toFixed(2);
   return `$${s}`;
 }
+const formatMoney = (n: number, currency: string) =>
+  currency === "USD" ? usd(n) : `${n.toFixed(2)} ${currency}`;
 const errMsg = (e: unknown) =>
   e instanceof Error ? e.message : typeof e === "string" ? e : "Unknown error";
 const uid = () =>
@@ -206,6 +208,18 @@ export default function Page() {
     status: "idle",
   });
   const liveBaseFor = useCallback((m: ModelDef) => liveBaseFromPrice(livePrices[m.id]), [livePrices]);
+
+  // Fal account credit balance (via server-side FAL_ADMIN_KEY; absent → not shown).
+  const [credits, setCredits] = useState<{ balance: number; currency: string } | null>(null);
+  const refreshCredits = useCallback(() => {
+    fetch("/api/credits")
+      .then((r) => r.json())
+      .then((d) => setCredits(d?.available ? { balance: d.balance, currency: d.currency ?? "USD" } : null))
+      .catch(() => setCredits(null));
+  }, []);
+  useEffect(() => {
+    if (mounted) refreshCredits();
+  }, [mounted, refreshCredits]);
 
   const activeIds = useMemo(() => [...new Set(activeModels.map((m) => m.id))], [activeModels]);
   const activeIdsKey = activeIds.join(",");
@@ -389,7 +403,8 @@ export default function Page() {
     );
 
     setGenerating(false);
-  }, [canGenerate, apiKey, references, activeModels, prompt, settingsFor, setRuns, updateItem, refreshPrices, livePrices]);
+    refreshCredits(); // balance dropped after spending
+  }, [canGenerate, apiKey, references, activeModels, prompt, settingsFor, setRuns, updateItem, refreshPrices, livePrices, refreshCredits]);
 
   const resetAll = useCallback(() => {
     if (!confirm("Reset everything? This clears your key, prompt history, results and references.")) return;
@@ -761,14 +776,24 @@ export default function Page() {
               {pricing.status === "idle" && "Pricing refreshes from Fal when you pick models."}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={handleGenerate}
-            disabled={!canGenerate}
-            className="rounded-xl bg-amber-400 px-6 py-2.5 font-semibold text-amber-950 shadow-sm transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:bg-neutral-200 disabled:text-neutral-400"
-          >
-            {generating ? "Generating…" : `Generate (≈ ${usd(totalEstimate)})`}
-          </button>
+          <div className="flex items-stretch gap-3">
+            {credits && (
+              <div className="flex flex-col justify-center rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-2 text-right">
+                <span className="text-[10px] font-medium uppercase tracking-wide text-neutral-400">Fal balance</span>
+                <span className="text-lg font-semibold leading-tight text-neutral-800">
+                  {formatMoney(credits.balance, credits.currency)}
+                </span>
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={handleGenerate}
+              disabled={!canGenerate}
+              className="rounded-xl bg-amber-400 px-6 py-2.5 font-semibold text-amber-950 shadow-sm transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:bg-neutral-200 disabled:text-neutral-400"
+            >
+              {generating ? "Generating…" : `Generate (≈ ${usd(totalEstimate)})`}
+            </button>
+          </div>
         </div>
       </div>
 
