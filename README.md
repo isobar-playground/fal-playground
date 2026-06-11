@@ -22,7 +22,10 @@ key? Hit "Reset all" to pick it up.
 1. **Key** — paste your Fal key (saved in the browser).
 2. **References** — drop any number of images (used by *edit* models).
 3. **Prompt** — type it; optionally "Save to history" (session, click to reload).
-4. **Models** — pick one or more; set images / resolution / quality / size per model.
+4. **Models** — pick one or more. Each model shows only the settings it actually
+   supports (from its Fal input schema): images, plus e.g. resolution/aspect/seed/safety
+   tolerance/format for Nano Banana, or quality/size/format for GPT Image. `seed` appears
+   only for seed-capable models (empty = random; 🎲 to randomize).
 5. **Cost** — bottom bar shows the estimate, priced against **live Fal pricing** fetched
    for the selected models (refreshed on selection change and again right before generating).
 6. **Generate** — runs each model in parallel with live logs.

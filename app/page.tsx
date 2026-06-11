@@ -6,15 +6,12 @@ import {
   MODELS,
   MODEL_BY_KEY,
   MODEL_GROUPS,
-  QUALITY_LABELS,
-  QUALITY_OPTIONS,
-  RESOLUTION_LABELS,
+  buildInput,
   effectiveResolution,
   effectiveSize,
   estimateCost,
   liveBaseFromPrice,
   unitCost,
-  type GptQuality,
   type LivePrice,
   type ModelDef,
   type ModelSettings,
@@ -41,6 +38,31 @@ const uid = () =>
     ? crypto.randomUUID()
     : Math.random().toString(36).slice(2);
 
+// Drop prompt/image_urls — keep only the tunable params we want to surface in results.
+function paramsOf(input: Record<string, unknown>): Record<string, unknown> {
+  const { prompt: _p, image_urls: _u, ...rest } = input;
+  return rest;
+}
+
+const PARAM_LABELS: Record<string, string> = {
+  num_images: "images",
+  resolution: "resolution",
+  image_size: "size",
+  quality: "quality",
+  seed: "seed",
+  aspect_ratio: "aspect",
+  safety_tolerance: "safety",
+  output_format: "format",
+};
+
+function paramText(v: unknown): string {
+  if (v && typeof v === "object" && "width" in v && "height" in v) {
+    const o = v as { width: number; height: number };
+    return `${o.width}×${o.height}`;
+  }
+  return String(v);
+}
+
 interface SavedPrompt {
   text: string;
   ts: number;
@@ -50,6 +72,8 @@ interface GalleryImage {
   url: string;
   modelLabel: string;
   prompt: string;
+  params?: Record<string, unknown>;
+  refUrls?: string[];
   key: string;
 }
 
@@ -122,9 +146,13 @@ export default function Page() {
   // Step 4 — models + settings
   const [selectedKeys, setSelectedKeys] = useState<string[]>(["nano-banana"]);
   const [settings, setSettings] = useState<Record<string, ModelSettings>>({});
-  const settingsFor = useCallback((key: string) => settings[key] ?? DEFAULT_SETTINGS, [settings]);
+  // Always merge over defaults so every field exists (e.g. imported/older sessions).
+  const settingsFor = useCallback(
+    (key: string): ModelSettings => ({ ...DEFAULT_SETTINGS, ...settings[key] }),
+    [settings],
+  );
   const patchSettings = useCallback((key: string, patch: Partial<ModelSettings>) => {
-    setSettings((prev) => ({ ...prev, [key]: { ...(prev[key] ?? DEFAULT_SETTINGS), ...patch } }));
+    setSettings((prev) => ({ ...prev, [key]: { ...DEFAULT_SETTINGS, ...prev[key], ...patch } }));
   }, []);
   const toggleModel = useCallback((key: string) => {
     setSelectedKeys((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
@@ -212,7 +240,14 @@ export default function Page() {
     for (const run of runs)
       for (const item of run.items)
         item.images.forEach((img, i) =>
-          arr.push({ url: img.url, modelLabel: item.modelLabel, prompt: run.prompt, key: `${run.id}:${item.modelKey}:${i}` }),
+          arr.push({
+            url: img.url,
+            modelLabel: item.modelLabel,
+            prompt: run.prompt,
+            params: item.params,
+            refUrls: item.refUrls,
+            key: `${run.id}:${item.modelKey}:${i}`,
+          }),
         );
     return arr;
   }, [runs]);
@@ -222,14 +257,25 @@ export default function Page() {
     return m;
   }, [gallery]);
 
-  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [lightbox, setLightbox] = useState<{ images: GalleryImage[]; index: number } | null>(null);
   const openImage = useCallback(
     (runId: string, modelKey: string, imgIdx: number) => {
       const idx = indexByKey.get(`${runId}:${modelKey}:${imgIdx}`);
-      if (idx != null) setLightboxIndex(idx);
+      if (idx != null) setLightbox({ images: gallery, index: idx });
     },
-    [indexByKey],
+    [indexByKey, gallery],
   );
+  const openRefs = useCallback((urls: string[], index: number, label: string) => {
+    setLightbox({
+      images: urls.map((u, i) => ({
+        url: u,
+        modelLabel: `Reference ${i + 1}/${urls.length}`,
+        prompt: label,
+        key: `ref:${label}:${u}:${i}`,
+      })),
+      index,
+    });
+  }, []);
 
   const canGenerate = Boolean(apiKey) && prompt.trim().length > 0 && activeModels.length > 0 && !generating;
 
@@ -266,6 +312,7 @@ export default function Page() {
       referenceUrls: imageUrls,
       items: models.map((m) => {
         const s = settingsFor(m.key);
+        const input = buildInput(m, promptText, imageUrls, s);
         return {
           modelKey: m.key,
           modelLabel: m.label,
@@ -274,6 +321,8 @@ export default function Page() {
           unitCost: unitCost(m, s, baseFor(m)),
           estimatedCost: estimateCost(m, s, baseFor(m)),
           settings: s,
+          params: paramsOf(input),
+          refUrls: Array.isArray(input.image_urls) ? (input.image_urls as string[]) : undefined,
         };
       }),
     };
@@ -284,10 +333,17 @@ export default function Page() {
       models.map(async (m) => {
         const s = settingsFor(m.key);
         try {
-          const images = await runModel(m, promptText, imageUrls, s, (line) =>
+          const { images, seed } = await runModel(m, promptText, imageUrls, s, (line) =>
             setLogLines((prev) => ({ ...prev, [m.key]: line })),
           );
-          updateItem(runId, m.key, { status: "done", images, actualCost: unitCost(m, s, baseFor(m)) * images.length });
+          const base = run.items.find((it) => it.modelKey === m.key)?.params ?? {};
+          const params = seed != null ? { ...base, seed } : base;
+          updateItem(runId, m.key, {
+            status: "done",
+            images,
+            actualCost: unitCost(m, s, baseFor(m)) * images.length,
+            params,
+          });
         } catch (e) {
           updateItem(runId, m.key, { status: "error", error: errMsg(e) });
         }
@@ -307,7 +363,7 @@ export default function Page() {
     setPrompt("");
     setSelectedKeys(["nano-banana"]);
     setSettings({});
-    setLightboxIndex(null);
+    setLightbox(null);
     loadEnvKey(); // restore the dev env key if present
   }, [references, setApiKey, setHistory, setRuns, loadEnvKey]);
 
@@ -366,7 +422,7 @@ export default function Page() {
               .map((r) => ({ kind: "url" as const, id: uid(), url: r.url, origin: r.origin === "manual" ? "manual" : "generated" }))
           : [],
       );
-      setLightboxIndex(null);
+      setLightbox(null);
     },
     [references, setApiKey, setHistory, setRuns],
   );
@@ -595,6 +651,7 @@ export default function Page() {
                   logLines={logLines}
                   onUseAsReference={addUrlReference}
                   onOpenImage={(modelKey, imgIdx) => openImage(run.id, modelKey, imgIdx)}
+                  onOpenRefs={openRefs}
                   onDelete={() => setRuns((prev) => prev.filter((r) => r.id !== run.id))}
                 />
               ))}
@@ -639,12 +696,13 @@ export default function Page() {
         </div>
       </div>
 
-      {lightboxIndex != null && gallery[lightboxIndex] && (
+      {lightbox && lightbox.images[lightbox.index] && (
         <Lightbox
-          images={gallery}
-          index={lightboxIndex}
-          onIndex={setLightboxIndex}
-          onClose={() => setLightboxIndex(null)}
+          images={lightbox.images}
+          index={lightbox.index}
+          onIndex={(i) => setLightbox((lb) => (lb ? { ...lb, index: i } : lb))}
+          onClose={() => setLightbox(null)}
+          onOpenRefs={openRefs}
         />
       )}
     </div>
@@ -684,6 +742,57 @@ function Section({
 function Badge({ children }: { children: React.ReactNode }) {
   return (
     <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-600">{children}</span>
+  );
+}
+
+function ParamChips({ params, tone = "light" }: { params?: Record<string, unknown>; tone?: "light" | "dark" }) {
+  const entries = params ? Object.entries(params) : [];
+  if (!entries.length) return null;
+  const chip = tone === "dark" ? "bg-white/10 text-white/80" : "bg-neutral-100 text-neutral-600";
+  const key = tone === "dark" ? "text-white/50" : "text-neutral-400";
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {entries.map(([k, v]) => (
+        <span key={k} className={`rounded px-1.5 py-0.5 text-[11px] ${chip}`}>
+          <span className={key}>{PARAM_LABELS[k] ?? k}:</span> {paramText(v)}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function RefThumbs({
+  urls,
+  tone = "light",
+  onOpen,
+}: {
+  urls?: string[];
+  tone?: "light" | "dark";
+  onOpen?: (index: number) => void;
+}) {
+  if (!urls?.length) return null;
+  const label = tone === "dark" ? "text-white/50" : "text-neutral-400";
+  const border = tone === "dark" ? "border-white/20" : "border-neutral-200";
+  const cls = `block overflow-hidden rounded border ${border}`;
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className={`shrink-0 text-[11px] ${label}`}>based on:</span>
+      <div className="flex flex-wrap gap-1">
+        {urls.map((u, i) =>
+          onOpen ? (
+            <button key={i} type="button" onClick={() => onOpen(i)} title="Open in lightbox" className={cls}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={u} alt="reference" className="size-9 object-cover" />
+            </button>
+          ) : (
+            <a key={i} href={u} target="_blank" rel="noreferrer" title="Open reference image" className={cls}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={u} alt="reference" className="size-9 object-cover" />
+            </a>
+          ),
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -771,40 +880,75 @@ function ModelRow({
       </div>
 
       {active && (
-        <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-amber-200/70 pt-3 pl-7 text-sm">
-          <Select
-            label="Images"
-            value={settings.numImages}
-            onChange={(v) => onPatch({ numImages: Number(v) })}
-            options={[1, 2, 3, 4].map((n) => ({ value: n, label: String(n) }))}
-          />
-          {model.controls.resolutions && (
-            <Select
-              label="Resolution"
-              value={effectiveResolution(model, settings)}
-              onChange={(v) => onPatch({ resolution: v })}
-              options={model.controls.resolutions.map((r) => ({ value: r, label: RESOLUTION_LABELS[r] ?? r }))}
-            />
-          )}
-          {model.controls.quality && (
-            <Select
-              label="Quality"
-              value={settings.quality}
-              onChange={(v) => onPatch({ quality: v as GptQuality })}
-              options={QUALITY_OPTIONS.map((q) => ({ value: q, label: QUALITY_LABELS[q] }))}
-            />
-          )}
-          {model.controls.sizes && (
-            <Select
-              label="Size"
-              value={effectiveSize(model, settings)}
-              onChange={(v) => onPatch({ size: v })}
-              options={model.controls.sizes}
-            />
-          )}
+        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-amber-200/70 pt-3 pl-7 text-sm">
+          {model.fields.map((field) => {
+            if (field.kind === "images") {
+              return (
+                <Select
+                  key="images"
+                  label="Images"
+                  value={settings.numImages}
+                  onChange={(v) => onPatch({ numImages: Number(v) })}
+                  options={[1, 2, 3, 4].map((n) => ({ value: n, label: String(n) }))}
+                />
+              );
+            }
+            if (field.kind === "seed") {
+              return <SeedField key="seed" value={settings.seed} onChange={(v) => onPatch({ seed: v })} />;
+            }
+            const value =
+              field.key === "resolution"
+                ? effectiveResolution(model, settings)
+                : field.key === "size"
+                  ? effectiveSize(model, settings)
+                  : settings[field.key];
+            return (
+              <Select
+                key={field.key}
+                label={field.label}
+                value={value}
+                onChange={(v) => onPatch({ [field.key]: v } as Partial<ModelSettings>)}
+                options={field.options}
+              />
+            );
+          })}
         </div>
       )}
     </div>
+  );
+}
+
+function SeedField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <span className="flex items-center gap-1.5">
+      <span className="text-neutral-500">Seed</span>
+      <input
+        type="text"
+        inputMode="numeric"
+        value={value}
+        onChange={(e) => onChange(e.target.value.replace(/[^0-9]/g, ""))}
+        placeholder="random"
+        className="w-24 rounded-md border border-neutral-300 bg-white px-2 py-1"
+      />
+      <button
+        type="button"
+        onClick={() => onChange(String(Math.floor(Math.random() * 1_000_000_000)))}
+        title="Random seed"
+        className="rounded-md border border-neutral-300 bg-white px-1.5 py-1 leading-none hover:bg-neutral-50"
+      >
+        🎲
+      </button>
+      {value && (
+        <button
+          type="button"
+          onClick={() => onChange("")}
+          title="Clear seed (random)"
+          className="text-neutral-400 hover:text-red-500"
+        >
+          ✕
+        </button>
+      )}
+    </span>
   );
 }
 
@@ -850,12 +994,14 @@ function RunCard({
   logLines,
   onUseAsReference,
   onOpenImage,
+  onOpenRefs,
   onDelete,
 }: {
   run: GenerationRun;
   logLines: Record<string, string>;
   onUseAsReference: (url: string) => void;
   onOpenImage: (modelKey: string, imgIdx: number) => void;
+  onOpenRefs: (urls: string[], index: number, label: string) => void;
   onDelete: () => void;
 }) {
   return (
@@ -890,6 +1036,21 @@ function RunCard({
               )}
               {item.status === "error" && <span className="text-red-500">error</span>}
             </div>
+
+            {item.params && (
+              <div className="mb-2">
+                <ParamChips params={item.params} />
+              </div>
+            )}
+
+            {item.refUrls && item.refUrls.length > 0 && (
+              <div className="mb-2">
+                <RefThumbs
+                  urls={item.refUrls}
+                  onOpen={(i) => onOpenRefs(item.refUrls!, i, `Reference for ${item.modelLabel}`)}
+                />
+              </div>
+            )}
 
             {item.status === "error" && (
               <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{item.error}</p>
@@ -948,11 +1109,13 @@ function Lightbox({
   index,
   onIndex,
   onClose,
+  onOpenRefs,
 }: {
   images: GalleryImage[];
   index: number;
   onIndex: (i: number) => void;
   onClose: () => void;
+  onOpenRefs: (urls: string[], index: number, label: string) => void;
 }) {
   const len = images.length;
   const go = useCallback((i: number) => onIndex(((i % len) + len) % len), [len, onIndex]);
@@ -985,6 +1148,20 @@ function Lightbox({
         <div className="min-w-0">
           <div className="text-sm font-medium">{cur.modelLabel}</div>
           <div className="max-w-[60vw] truncate text-xs text-white/60">{cur.prompt}</div>
+          {cur.params && (
+            <div className="mt-1">
+              <ParamChips params={cur.params} tone="dark" />
+            </div>
+          )}
+          {cur.refUrls && cur.refUrls.length > 0 && (
+            <div className="mt-1">
+              <RefThumbs
+                urls={cur.refUrls}
+                tone="dark"
+                onOpen={(i) => onOpenRefs(cur.refUrls!, i, `Reference for ${cur.modelLabel}`)}
+              />
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-3 text-sm">
           <span className="text-white/70">

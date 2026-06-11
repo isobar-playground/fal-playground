@@ -22,6 +22,8 @@ export interface RunItem {
   estimatedCost: number; // unitCost * requested images
   actualCost?: number; // unitCost * returned images (set when done)
   settings: ModelSettings;
+  params?: Record<string, unknown>; // input params sent to Fal (prompt/image_urls stripped)
+  refUrls?: string[]; // image_urls passed to edit/image-to-image models
 }
 
 export interface GenerationRun {

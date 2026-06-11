@@ -22,7 +22,7 @@ export async function runModel(
   imageUrls: string[],
   settings: ModelSettings,
   onLog?: (line: string) => void,
-): Promise<ResultImage[]> {
+): Promise<{ images: ResultImage[]; seed?: number }> {
   const result = await fal.subscribe(model.id, {
     input: buildInput(model, prompt, imageUrls, settings),
     logs: true,
@@ -35,6 +35,10 @@ export async function runModel(
     },
   });
 
-  const data = result.data as { images?: Array<{ url: string; width?: number; height?: number }> };
-  return (data.images ?? []).map((img) => ({ url: img.url, width: img.width, height: img.height }));
+  const data = result.data as {
+    images?: Array<{ url: string; width?: number; height?: number }>;
+    seed?: number;
+  };
+  const images = (data.images ?? []).map((img) => ({ url: img.url, width: img.width, height: img.height }));
+  return { images, seed: typeof data.seed === "number" ? data.seed : undefined };
 }

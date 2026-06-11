@@ -1,5 +1,6 @@
-// Model catalog + price estimation. Prices are hardcoded from the Fal model
-// pages (June 2026), USD per output image. They are estimates — Fal is the
+// Model catalog + price estimation. Each model declares the settings fields it
+// actually supports (from Fal's input schema); the UI renders only those.
+// Prices are hardcoded estimates (June 2026), USD per output image — Fal is the
 // source of truth for actual billing.
 
 export type ModelMode = "generate" | "edit";
@@ -11,16 +12,25 @@ export type ModelFamily =
   | "gpt-image-1"
   | "gpt-image-2";
 
-export interface SizeOption {
+export interface FieldOption {
   value: string;
   label: string;
 }
 
-export interface ModelControls {
-  resolutions?: string[]; // nano-banana-2 / pro
-  quality?: boolean; // gpt-image
-  sizes?: SizeOption[]; // gpt-image
-}
+/** Which ModelSettings property a select field drives. */
+export type SettingsSelectKey =
+  | "resolution"
+  | "quality"
+  | "size"
+  | "aspectRatio"
+  | "safetyTolerance"
+  | "outputFormat";
+
+/** A declarative settings control. The UI renders one per entry, in order. */
+export type Field =
+  | { kind: "images" }
+  | { kind: "seed" }
+  | { kind: "select"; key: SettingsSelectKey; label: string; options: FieldOption[] };
 
 export interface ModelDef {
   key: string;
@@ -31,14 +41,18 @@ export interface ModelDef {
   mode: ModelMode;
   needsReferences: boolean;
   blurb: string;
-  controls: ModelControls;
+  fields: Field[];
 }
 
 export interface ModelSettings {
   numImages: number;
-  quality: GptQuality;
-  size: string; // gpt-image size key
+  quality: GptQuality; // gpt-image
+  size: string; // gpt-image dimensions key
   resolution: string; // nano-banana-2 / pro
+  aspectRatio: string; // nano-banana family ("" = default)
+  seed: string; // "" = random
+  safetyTolerance: string; // "" = default
+  outputFormat: string; // "" = default
 }
 
 export const DEFAULT_SETTINGS: ModelSettings = {
@@ -46,38 +60,73 @@ export const DEFAULT_SETTINGS: ModelSettings = {
   quality: "medium",
   size: "",
   resolution: "",
+  aspectRatio: "",
+  seed: "",
+  safetyTolerance: "",
+  outputFormat: "",
 };
 
-const NB2_RES = ["512px", "1K", "2K", "4K"];
-const NBP_RES = ["1K", "2K", "4K"];
+// --- field option sets --------------------------------------------------
 
-const GPT1_SIZES: SizeOption[] = [
+const NB2_RES_OPTS: FieldOption[] = [
+  { value: "0.5K", label: "0.5K" },
+  { value: "1K", label: "1K" },
+  { value: "2K", label: "2K" },
+  { value: "4K", label: "4K" },
+];
+const NBP_RES_OPTS: FieldOption[] = [
+  { value: "1K", label: "1K" },
+  { value: "2K", label: "2K" },
+  { value: "4K", label: "4K" },
+];
+
+const GPT1_SIZE_OPTS: FieldOption[] = [
   { value: "1024x1024", label: "Square 1024²" },
   { value: "1536x1024", label: "Landscape 1536×1024" },
   { value: "1024x1536", label: "Portrait 1024×1536" },
 ];
-
-const GPT2_SIZES: SizeOption[] = [
+const GPT2_SIZE_OPTS: FieldOption[] = [
   { value: "1024x1024", label: "Square 1024²" },
   { value: "1024x768", label: "Landscape 1024×768" },
   { value: "1024x1536", label: "Portrait 1024×1536" },
   { value: "3840x2160", label: "4K 3840×2160" },
 ];
 
-const QUALITIES: GptQuality[] = ["low", "medium", "high"];
+const QUALITY_OPTS: FieldOption[] = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+];
 
-export const QUALITY_LABELS: Record<GptQuality, string> = {
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-};
+const ASPECT_OPTS: FieldOption[] = [
+  { value: "", label: "Default" },
+  ...["21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16"].map((r) => ({ value: r, label: r })),
+];
 
-export const RESOLUTION_LABELS: Record<string, string> = {
-  "512px": "0.5K",
-  "1K": "1K",
-  "2K": "2K",
-  "4K": "4K",
-};
+const TOLERANCE_OPTS: FieldOption[] = [
+  { value: "", label: "Default" },
+  ...["1", "2", "3", "4", "5", "6"].map((n) => ({ value: n, label: n })),
+];
+
+const FORMAT_OPTS: FieldOption[] = [
+  { value: "", label: "Default" },
+  { value: "jpeg", label: "JPEG" },
+  { value: "png", label: "PNG" },
+  { value: "webp", label: "WebP" },
+];
+
+// field shorthands
+const images: Field = { kind: "images" };
+const seed: Field = { kind: "seed" };
+const aspect: Field = { kind: "select", key: "aspectRatio", label: "Aspect", options: ASPECT_OPTS };
+const tolerance: Field = { kind: "select", key: "safetyTolerance", label: "Safety", options: TOLERANCE_OPTS };
+const format: Field = { kind: "select", key: "outputFormat", label: "Format", options: FORMAT_OPTS };
+const quality: Field = { kind: "select", key: "quality", label: "Quality", options: QUALITY_OPTS };
+const resolution = (options: FieldOption[]): Field => ({ kind: "select", key: "resolution", label: "Resolution", options });
+const size = (options: FieldOption[]): Field => ({ kind: "select", key: "size", label: "Size", options });
+
+const NANO_BASE: Field[] = [images, aspect, seed, tolerance, format];
+const nano2 = (res: FieldOption[]): Field[] => [images, resolution(res), aspect, seed, tolerance, format];
 
 // --- price tables (USD / image) -----------------------------------------
 
@@ -86,15 +135,13 @@ const GPT1_PRICE: Record<string, Record<GptQuality, number>> = {
   "1536x1024": { low: 0.016, medium: 0.063, high: 0.25 },
   "1024x1536": { low: 0.016, medium: 0.063, high: 0.25 },
 };
-
 const GPT2_PRICE: Record<string, Record<GptQuality, number>> = {
   "1024x1024": { low: 0.006, medium: 0.053, high: 0.211 },
   "1024x768": { low: 0.005, medium: 0.037, high: 0.145 },
   "1024x1536": { low: 0.005, medium: 0.042, high: 0.165 },
   "3840x2160": { low: 0.012, medium: 0.101, high: 0.401 },
 };
-
-const NB2_PRICE: Record<string, number> = { "512px": 0.06, "1K": 0.08, "2K": 0.12, "4K": 0.16 };
+const NB2_PRICE: Record<string, number> = { "0.5K": 0.06, "1K": 0.08, "2K": 0.12, "4K": 0.16 };
 const NBP_PRICE: Record<string, number> = { "1K": 0.15, "2K": 0.15, "4K": 0.3 };
 
 // --- catalog ------------------------------------------------------------
@@ -112,7 +159,7 @@ export const MODELS: ModelDef[] = [
     mode: "generate",
     needsReferences: false,
     blurb: "Original Gemini Flash image model. Cheap and fast.",
-    controls: {},
+    fields: NANO_BASE,
   },
   {
     key: "nano-banana-edit",
@@ -123,7 +170,7 @@ export const MODELS: ModelDef[] = [
     mode: "edit",
     needsReferences: true,
     blurb: "Edit or combine reference images.",
-    controls: {},
+    fields: NANO_BASE,
   },
   {
     key: "nano-banana-2",
@@ -134,7 +181,7 @@ export const MODELS: ModelDef[] = [
     mode: "generate",
     needsReferences: false,
     blurb: "New fast model. Resolution up to 4K.",
-    controls: { resolutions: NB2_RES },
+    fields: nano2(NB2_RES_OPTS),
   },
   {
     key: "nano-banana-2-edit",
@@ -145,7 +192,7 @@ export const MODELS: ModelDef[] = [
     mode: "edit",
     needsReferences: true,
     blurb: "Edit with up to 14 reference images.",
-    controls: { resolutions: NB2_RES },
+    fields: nano2(NB2_RES_OPTS),
   },
   {
     key: "nano-banana-pro",
@@ -156,7 +203,7 @@ export const MODELS: ModelDef[] = [
     mode: "generate",
     needsReferences: false,
     blurb: "State-of-the-art realism & typography (Gemini 3 Pro Image).",
-    controls: { resolutions: NBP_RES },
+    fields: nano2(NBP_RES_OPTS),
   },
   {
     key: "nano-banana-pro-edit",
@@ -167,7 +214,7 @@ export const MODELS: ModelDef[] = [
     mode: "edit",
     needsReferences: true,
     blurb: "Pro editing with reference images.",
-    controls: { resolutions: NBP_RES },
+    fields: nano2(NBP_RES_OPTS),
   },
   {
     key: "gpt-image-1",
@@ -178,7 +225,7 @@ export const MODELS: ModelDef[] = [
     mode: "generate",
     needsReferences: false,
     blurb: "OpenAI GPT Image 1.",
-    controls: { quality: true, sizes: GPT1_SIZES },
+    fields: [images, quality, size(GPT1_SIZE_OPTS), format],
   },
   {
     key: "gpt-image-1-edit",
@@ -189,7 +236,7 @@ export const MODELS: ModelDef[] = [
     mode: "edit",
     needsReferences: true,
     blurb: "GPT Image 1 with reference images.",
-    controls: { quality: true, sizes: GPT1_SIZES },
+    fields: [images, quality, size(GPT1_SIZE_OPTS), format],
   },
   {
     key: "gpt-image-2",
@@ -200,7 +247,7 @@ export const MODELS: ModelDef[] = [
     mode: "generate",
     needsReferences: false,
     blurb: "OpenAI's latest. Fine detail & typography, up to 4K.",
-    controls: { quality: true, sizes: GPT2_SIZES },
+    fields: [images, quality, size(GPT2_SIZE_OPTS), format],
   },
   {
     key: "gpt-image-2-edit",
@@ -211,31 +258,36 @@ export const MODELS: ModelDef[] = [
     mode: "edit",
     needsReferences: true,
     blurb: "GPT Image 2 with reference images.",
-    controls: { quality: true, sizes: GPT2_SIZES },
+    fields: [images, quality, size(GPT2_SIZE_OPTS), format],
   },
 ];
 
-export const MODEL_BY_KEY: Record<string, ModelDef> = Object.fromEntries(
-  MODELS.map((m) => [m.key, m]),
-);
-
+export const MODEL_BY_KEY: Record<string, ModelDef> = Object.fromEntries(MODELS.map((m) => [m.key, m]));
 export const MODEL_GROUPS: string[] = [...new Set(MODELS.map((m) => m.group))];
 
-// --- pricing + request building -----------------------------------------
+// --- field helpers ------------------------------------------------------
+
+function selectOptions(model: ModelDef, key: SettingsSelectKey): FieldOption[] {
+  const f = model.fields.find((f) => f.kind === "select" && f.key === key);
+  return f && f.kind === "select" ? f.options : [];
+}
+
+export const hasField = (model: ModelDef, key: SettingsSelectKey | "seed"): boolean =>
+  model.fields.some((f) => (f.kind === "seed" && key === "seed") || (f.kind === "select" && f.key === key));
 
 export function effectiveSize(model: ModelDef, s: ModelSettings): string {
-  const opts = model.controls.sizes;
-  if (!opts?.length) return s.size;
+  const opts = selectOptions(model, "size");
+  if (!opts.length) return s.size;
   return opts.some((o) => o.value === s.size) ? s.size : opts[0].value;
 }
 
 export function effectiveResolution(model: ModelDef, s: ModelSettings): string {
-  const opts = model.controls.resolutions;
-  if (!opts?.length) return s.resolution;
-  return opts.includes(s.resolution) ? s.resolution : opts[0];
+  const opts = selectOptions(model, "resolution");
+  if (!opts.length) return s.resolution;
+  return opts.some((o) => o.value === s.resolution) ? s.resolution : opts[0].value;
 }
 
-export const QUALITY_OPTIONS = QUALITIES;
+// --- pricing ------------------------------------------------------------
 
 /** A live price record from Fal's GET /v1/models/pricing endpoint. */
 export interface LivePrice {
@@ -294,6 +346,8 @@ export function liveBaseFromPrice(p?: LivePrice): number | undefined {
   return p.unit?.toLowerCase().startsWith("image") ? p.unit_price : undefined;
 }
 
+// --- request building ---------------------------------------------------
+
 export function buildInput(
   model: ModelDef,
   prompt: string,
@@ -320,6 +374,15 @@ export function buildInput(
       break;
     }
   }
+
+  // Optional, schema-gated extras.
+  if (hasField(model, "seed")) {
+    const n = Number.parseInt(s.seed, 10);
+    if (s.seed.trim() !== "" && Number.isFinite(n)) input.seed = n;
+  }
+  if (hasField(model, "aspectRatio") && s.aspectRatio) input.aspect_ratio = s.aspectRatio;
+  if (hasField(model, "safetyTolerance") && s.safetyTolerance) input.safety_tolerance = s.safetyTolerance;
+  if (hasField(model, "outputFormat") && s.outputFormat) input.output_format = s.outputFormat;
 
   if (model.mode === "edit") input.image_urls = imageUrls;
   return input;
