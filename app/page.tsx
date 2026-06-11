@@ -184,10 +184,21 @@ export default function Page() {
   const toggleModel = useCallback((key: string) => {
     setSelectedKeys((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
   }, []);
+  const switchToEdit = useCallback((genKey: string, editKey: string) => {
+    setSelectedKeys((prev) => {
+      const next = prev.filter((k) => k !== genKey);
+      if (!next.includes(editKey)) next.push(editKey);
+      return next;
+    });
+  }, []);
 
   const activeModels = useMemo(
     () => selectedKeys.map((k) => MODEL_BY_KEY[k]).filter((m) => m && (!m.needsReferences || hasReferences)),
     [selectedKeys, hasReferences],
+  );
+  const hasEditSelected = useMemo(
+    () => selectedKeys.some((k) => MODEL_BY_KEY[k]?.mode === "edit"),
+    [selectedKeys],
   );
   // Live Fal pricing for the currently selected endpoints.
   const [livePrices, setLivePrices] = useState<Record<string, LivePrice>>({});
@@ -570,6 +581,12 @@ export default function Page() {
             ))}
           </div>
         )}
+        {hasReferences && !hasEditSelected && (
+          <p className="mt-3 rounded-lg bg-amber-100/80 px-3 py-2 text-xs text-amber-900">
+            ⚠ None of your selected models use reference images. Pick an <b>edit / image-to-image</b> model in step 4
+            to apply them — otherwise they’re ignored.
+          </p>
+        )}
       </Section>
 
       {/* STEP 3 — PROMPT */}
@@ -654,18 +671,27 @@ export default function Page() {
             <div key={group}>
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">{group}</p>
               <div className="space-y-2">
-                {MODELS.filter((m) => m.group === group).map((m) => (
-                  <ModelRow
-                    key={m.key}
-                    model={m}
-                    selected={selectedKeys.includes(m.key)}
-                    blocked={m.needsReferences && !hasReferences}
-                    settings={settingsFor(m.key)}
-                    liveBase={liveBaseFor(m)}
-                    onToggle={() => toggleModel(m.key)}
-                    onPatch={(patch) => patchSettings(m.key, patch)}
-                  />
-                ))}
+                {MODELS.filter((m) => m.group === group).map((m) => {
+                  const editVariant =
+                    m.mode === "generate"
+                      ? MODELS.find((x) => x.family === m.family && x.mode === "edit")
+                      : undefined;
+                  return (
+                    <ModelRow
+                      key={m.key}
+                      model={m}
+                      selected={selectedKeys.includes(m.key)}
+                      blocked={m.needsReferences && !hasReferences}
+                      ignoresRefs={hasReferences && m.mode === "generate" && selectedKeys.includes(m.key)}
+                      editVariantLabel={editVariant?.label}
+                      onUseEditVariant={editVariant ? () => switchToEdit(m.key, editVariant.key) : undefined}
+                      settings={settingsFor(m.key)}
+                      liveBase={liveBaseFor(m)}
+                      onToggle={() => toggleModel(m.key)}
+                      onPatch={(patch) => patchSettings(m.key, patch)}
+                    />
+                  );
+                })}
               </div>
             </div>
           ))}
@@ -879,6 +905,9 @@ function ModelRow({
   model,
   selected,
   blocked,
+  ignoresRefs,
+  editVariantLabel,
+  onUseEditVariant,
   settings,
   liveBase,
   onToggle,
@@ -887,6 +916,9 @@ function ModelRow({
   model: ModelDef;
   selected: boolean;
   blocked: boolean;
+  ignoresRefs: boolean;
+  editVariantLabel?: string;
+  onUseEditVariant?: () => void;
   settings: ModelSettings;
   liveBase?: number;
   onToggle: () => void;
@@ -928,6 +960,21 @@ function ModelRow({
           </a>
         </div>
       </div>
+
+      {ignoresRefs && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-amber-100/80 px-3 py-2 text-xs text-amber-900">
+          <span>⚠ This model generates from the prompt only — your reference images won’t be used.</span>
+          {onUseEditVariant && (
+            <button
+              type="button"
+              onClick={onUseEditVariant}
+              className="rounded-md bg-amber-500 px-2 py-1 font-medium text-amber-950 hover:bg-amber-400"
+            >
+              Use {editVariantLabel ?? "the edit model"} instead
+            </button>
+          )}
+        </div>
+      )}
 
       {active && (
         <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-amber-200/70 pt-3 pl-7 text-sm">
