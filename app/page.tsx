@@ -100,7 +100,7 @@ const SEND_OPTS: { value: SendMode; label: string }[] = [
   { value: "beautified", label: "Upiększony" },
   { value: "both", label: "Oba" },
 ];
-const BEAUTIFY_MAX_CHARS = 8000;
+const BEAUTIFY_MAX_CHARS = 100_000;
 
 export default function Page() {
   const [mounted, setMounted] = useState(false);

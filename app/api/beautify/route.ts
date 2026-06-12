@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 
 const ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_MODEL = "google/gemini-3.5-flash";
-const MAX_PROMPT_CHARS = 8000; // hard input cap — guards input-token cost
+const MAX_PROMPT_CHARS = 100_000; // hard input cap — guards input-token cost
 const MAX_TOKENS = 900; // output cap — enough for a rich prompt
 
 type Strength = "light" | "moderate" | "aggressive";
