@@ -1,8 +1,11 @@
 import type { ModelSettings } from "./models";
 
 export type Reference =
-  | { kind: "file"; id: string; file: File; previewUrl: string }
-  | { kind: "url"; id: string; url: string; origin: "generated" | "manual" };
+  | { kind: "file"; id: string; file: File; previewUrl: string; label?: string }
+  | { kind: "url"; id: string; url: string; origin: "generated" | "manual"; label?: string };
+
+/** Which prompt variant a run item was generated from. */
+export type PromptKind = "original" | "beautified";
 
 export interface ResultImage {
   url: string;
@@ -13,8 +16,11 @@ export interface ResultImage {
 export type RunItemStatus = "pending" | "running" | "done" | "error";
 
 export interface RunItem {
+  id: string; // unique per item — keys runs (in "both" mode one modelKey yields two items)
   modelKey: string;
   modelLabel: string;
+  prompt: string; // the prompt text actually sent for this item
+  promptKind: PromptKind; // which variant produced it
   status: RunItemStatus;
   images: ResultImage[];
   error?: string;
@@ -44,5 +50,5 @@ export interface SessionExport {
   runs: GenerationRun[];
   selectedKeys: string[];
   settings: Record<string, ModelSettings>;
-  references: { url: string; origin: "generated" | "manual" }[];
+  references: { url: string; origin: "generated" | "manual"; label?: string }[];
 }

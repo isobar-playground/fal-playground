@@ -2,8 +2,12 @@
 
 Browser tool for testing prompts on Fal.ai image models (Nano Banana family + OpenAI
 GPT Image). Your Fal key lives in `localStorage` and calls fal.ai directly from the
-browser. The only server code is a thin pricing proxy (`/api/pricing`) — no env vars,
-no stored secrets.
+browser. Most server code is thin proxies (`/api/pricing`, `/api/credits`, `/api/dev-key`).
+
+**One exception:** the prompt **beautifier** (`/api/beautify`) calls OpenRouter with a
+**server-side secret** (`OPENROUTER_API_KEY`). That key is read via `process.env` in the
+route, never logged, and never shipped to the browser. So unlike the rest of the app, this
+feature does require a stored server secret — set it to enable the ✨ Upiększ button.
 
 ## Run
 
@@ -23,6 +27,16 @@ credit balance, refreshed after each generation. It's read server-side via `/api
 (`GET /v1/account/billing?expand=credits`); the admin key never reaches the browser, only
 the balance number does. Note: this is the **deployment account's** balance (the admin
 key's), independent of whatever per-user key is typed in the UI. Unset → balance hidden.
+
+**Prompt beautifier (optional):** set `OPENROUTER_API_KEY=...` in `.env.local` / Vercel env
+to enable the ✨ **Upiększ** button under the prompt. It rewrites your raw prompt into a
+polished one via OpenRouter (default model `google/gemini-3.5-flash`, override with
+`OPENROUTER_MODEL`). The key is server-only — read in [`/api/beautify`](app/api/beautify/route.ts),
+never sent to the browser. Without the key the button returns a clear "not configured" error
+and normal generation (sending **your** prompt) is unaffected. Input is hard-capped at 8000
+chars to bound input-token cost. You pick a **style** (Lekkie / Umiarkowane / Agresywne) and
+**language** (Auto / EN / PL), get an editable beautified field, and in the bottom bar choose
+to send **Twój / Upiększony / Oba** (Oba runs each model twice → ~2× image cost).
 
 ## Flow
 
@@ -81,8 +95,10 @@ Cost is computed as **live base price × tier multiplier × images**:
 
 ## Deploy (Vercel)
 
-No env vars (the user supplies the key in the UI). `/api/pricing` runs as a serverless
-function; everything else is static — still zero-config on Vercel.
+Image generation needs no env vars (the user supplies the Fal key in the UI). Optional env:
+`FAL_KEY` (dev autofill), `FAL_ADMIN_KEY` (balance display), and `OPENROUTER_API_KEY` /
+`OPENROUTER_MODEL` (prompt beautifier — server secret, never shipped to the browser). The
+`/api/*` routes run as serverless functions; the rest is static.
 
 ```bash
 npx vercel --prod
