@@ -2,8 +2,21 @@ import type { ModelSettings } from "./models";
 import type { VideoSettings } from "./video/models";
 
 export type Reference =
-  | { kind: "file"; id: string; file: File; previewUrl: string }
+  | {
+      kind: "file";
+      id: string;
+      file: File;
+      previewUrl: string;
+      // Eager-upload cache: the real Fal storage URL once the file is uploaded.
+      uploadedUrl?: string;
+      uploading?: boolean;
+      uploadError?: string;
+    }
   | { kind: "url"; id: string; url: string; origin: "generated" | "manual" };
+
+/** The Fal URL a reference resolves to (cached upload for files, the URL itself otherwise). */
+export const referenceUrl = (r: Reference): string | undefined =>
+  r.kind === "url" ? r.url : r.uploadedUrl;
 
 export interface ResultImage {
   url: string;
@@ -27,6 +40,7 @@ export interface RunItem {
   settings: ModelSettings;
   params?: Record<string, unknown>; // input params sent to Fal (prompt/image_urls stripped)
   refUrls?: string[]; // image_urls passed to edit/image-to-image models
+  sentInput?: Record<string, unknown>; // exact JSON sent to Fal (incl. prompt/urls) — v3+
 }
 
 export interface GenerationRun {
@@ -66,6 +80,7 @@ export interface VideoRunItem {
   params?: Record<string, unknown>; // input params sent to Fal (prompt/frame urls stripped)
   startUrl?: string; // start frame passed in (for the card)
   endUrl?: string; // optional end frame passed in
+  sentInput?: Record<string, unknown>; // exact JSON sent to Fal (incl. prompt/frames) — v3+
 }
 
 export interface VideoRun {
@@ -91,4 +106,8 @@ export interface SessionExport {
   videoRuns?: VideoRun[];
   videoSelectedKey?: string;
   videoSettings?: Record<string, VideoSettings>;
+  // Request-override additions (version 3+). Active verbatim request overrides keyed
+  // by model key. Optional on read so v1/v2 files still import.
+  overrides?: Record<string, Record<string, unknown>>; // image model key → verbatim input
+  videoOverrides?: Record<string, Record<string, unknown>>; // video model key → verbatim input
 }

@@ -20,12 +20,20 @@ import { configureFal, runModel, uploadReference } from "@/lib/fal";
 import { fetchLivePrices } from "@/lib/pricing";
 import { decodeSession, encodeSession } from "@/lib/session";
 import { useLocalStorage, useSessionStorage } from "@/lib/hooks";
-import type {
-  AppMode,
-  GenerationRun,
-  Reference,
-  SessionExport,
-  VideoRun,
+import {
+  imageRequestSchema,
+  videoRequestSchema,
+  validateOverride,
+  prettyJson,
+  type OverrideValidation,
+} from "@/lib/request";
+import {
+  referenceUrl,
+  type AppMode,
+  type GenerationRun,
+  type Reference,
+  type SessionExport,
+  type VideoRun,
 } from "@/lib/types";
 // --- video (separate code path; see lib/video/*) -------------------------
 import {
@@ -121,12 +129,16 @@ interface GalleryImage {
 }
 
 // A video frame slot holds an uploaded File (with a local preview) or a URL
-// (a generated/manual image). Files are uploaded to Fal storage at generate time.
+// (a generated/manual image). Files are eager-uploaded to Fal storage on add; the
+// resulting URL is cached so the request preview shows real URLs and the send path
+// reuses them (no double-upload).
 type VideoFrame =
-  | { kind: "file"; file: File; previewUrl: string }
+  | { kind: "file"; file: File; previewUrl: string; uploadedUrl?: string; uploading?: boolean; uploadError?: string }
   | { kind: "url"; url: string };
 
 const frameSrc = (f: VideoFrame): string => (f.kind === "file" ? f.previewUrl : f.url);
+// The Fal URL a frame resolves to (cached upload for files, the URL itself otherwise).
+const frameUrl = (f: VideoFrame): string | undefined => (f.kind === "url" ? f.url : f.uploadedUrl);
 
 // Input-mode badge label for the video model rows.
 const VIDEO_MODE_BADGE: Record<string, string> = {
@@ -177,7 +189,13 @@ export default function Page() {
   const addFiles = useCallback((files: FileList | File[]) => {
     const next: Reference[] = Array.from(files)
       .filter((f) => f.type.startsWith("image/"))
-      .map((file) => ({ kind: "file" as const, id: uid(), file, previewUrl: URL.createObjectURL(file) }));
+      .map((file) => ({
+        kind: "file" as const,
+        id: uid(),
+        file,
+        previewUrl: URL.createObjectURL(file),
+        uploading: true,
+      }));
     if (next.length) setReferences((prev) => [...prev, ...next]);
   }, []);
 
@@ -196,6 +214,42 @@ export default function Page() {
       return prev.filter((r) => r.id !== id);
     });
   }, []);
+
+  // Eager-upload any file reference that hasn't been uploaded yet, so the request
+  // preview shows real Fal URLs and the send path reuses them (no double-upload).
+  useEffect(() => {
+    if (!apiKey) return;
+    const pending = references.filter(
+      (r) => r.kind === "file" && !r.uploadedUrl && r.uploading && !r.uploadError,
+    );
+    if (!pending.length) return;
+    configureFal(apiKey);
+    for (const ref of pending) {
+      if (ref.kind !== "file") continue;
+      uploadReference(ref.file)
+        .then((url) =>
+          setReferences((prev) =>
+            prev.map((r) => (r.id === ref.id && r.kind === "file" ? { ...r, uploadedUrl: url, uploading: false } : r)),
+          ),
+        )
+        .catch((e) =>
+          setReferences((prev) =>
+            prev.map((r) =>
+              r.id === ref.id && r.kind === "file" ? { ...r, uploading: false, uploadError: errMsg(e) } : r,
+            ),
+          ),
+        );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [references, apiKey]);
+
+  // True while any reference is still uploading — Generate waits on these.
+  const referencesUploading = useMemo(
+    () => references.some((r) => r.kind === "file" && r.uploading),
+    [references],
+  );
+  // The Fal URLs for every reference, in order — undefined entries mean "not ready".
+  const referenceUrls = useMemo(() => references.map((r) => referenceUrl(r)), [references]);
 
   // Step 3 — prompt + history
   // Image and video prompts are independent — keyed by `mode` so switching the
@@ -257,6 +311,62 @@ export default function Page() {
     setStashedPrompt(null);
   }, [stashedPrompt]);
 
+  // --- Request overrides (the "inspect & edit the exact request" feature) ---
+  // Active overrides are the verbatim edited JSON *text* for a block, keyed by model
+  // key. Presence of a key === that block is in Edit mode (frozen, sent verbatim).
+  // Stored as text (not parsed) so a mid-edit invalid draft survives a reload too.
+  // Persisted in localStorage; exported as parsed objects (see exportSession).
+  const [overrides, setOverrides] = useLocalStorage<Record<string, string>>("fal:overrides", {});
+  const [videoOverrides, setVideoOverrides] = useLocalStorage<Record<string, string>>(
+    "fal:video-overrides",
+    {},
+  );
+  // "Form is master": drop an image model's override (re-sync to the form).
+  const clearOverride = useCallback(
+    (modelKey: string) =>
+      setOverrides((prev) => {
+        if (!(modelKey in prev)) return prev;
+        const { [modelKey]: _drop, ...rest } = prev;
+        return rest;
+      }),
+    [setOverrides],
+  );
+  // Drop overrides for every image model (used when the shared prompt / references change).
+  const clearAllImageOverrides = useCallback(
+    () => setOverrides((prev) => (Object.keys(prev).length ? {} : prev)),
+    [setOverrides],
+  );
+  const clearVideoOverride = useCallback(
+    (modelKey: string) =>
+      setVideoOverrides((prev) => {
+        if (!(modelKey in prev)) return prev;
+        const { [modelKey]: _drop, ...rest } = prev;
+        return rest;
+      }),
+    [setVideoOverrides],
+  );
+  const clearAllVideoOverrides = useCallback(
+    () => setVideoOverrides((prev) => (Object.keys(prev).length ? {} : prev)),
+    [setVideoOverrides],
+  );
+  // Begin editing a block: freeze its current form-derived JSON as the override text.
+  const beginEditOverride = useCallback(
+    (modelKey: string, seedText: string) => setOverrides((prev) => ({ ...prev, [modelKey]: seedText })),
+    [setOverrides],
+  );
+  const setOverrideText = useCallback(
+    (modelKey: string, text: string) => setOverrides((prev) => ({ ...prev, [modelKey]: text })),
+    [setOverrides],
+  );
+  const beginEditVideoOverride = useCallback(
+    (modelKey: string, seedText: string) => setVideoOverrides((prev) => ({ ...prev, [modelKey]: seedText })),
+    [setVideoOverrides],
+  );
+  const setVideoOverrideText = useCallback(
+    (modelKey: string, text: string) => setVideoOverrides((prev) => ({ ...prev, [modelKey]: text })),
+    [setVideoOverrides],
+  );
+
   // Step 4 — models + settings
   const [selectedKeys, setSelectedKeys] = useState<string[]>(["nano-banana"]);
   const [settings, setSettings] = useState<Record<string, ModelSettings>>({});
@@ -265,9 +375,14 @@ export default function Page() {
     (key: string): ModelSettings => ({ ...DEFAULT_SETTINGS, ...settings[key] }),
     [settings],
   );
-  const patchSettings = useCallback((key: string, patch: Partial<ModelSettings>) => {
-    setSettings((prev) => ({ ...prev, [key]: { ...DEFAULT_SETTINGS, ...prev[key], ...patch } }));
-  }, []);
+  const patchSettings = useCallback(
+    (key: string, patch: Partial<ModelSettings>) => {
+      setSettings((prev) => ({ ...prev, [key]: { ...DEFAULT_SETTINGS, ...prev[key], ...patch } }));
+      // Form is master: a per-model settings change discards only that model's override.
+      clearOverride(key);
+    },
+    [clearOverride],
+  );
   const toggleModel = useCallback((key: string) => {
     setSelectedKeys((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
   }, []);
@@ -309,7 +424,7 @@ export default function Page() {
   const setFrameFile = useCallback(
     (slot: "start" | "end", file: File) => {
       if (!file.type.startsWith("image/")) return;
-      setFrame(slot, { kind: "file", file, previewUrl: URL.createObjectURL(file) });
+      setFrame(slot, { kind: "file", file, previewUrl: URL.createObjectURL(file), uploading: true });
     },
     [setFrame],
   );
@@ -317,6 +432,39 @@ export default function Page() {
     (slot: "start" | "end", url: string) => setFrame(slot, { kind: "url", url }),
     [setFrame],
   );
+
+  // Eager-upload a file frame on add, caching its Fal URL on the frame (mirrors the
+  // reference eager-upload). `apply` is the slot's setter.
+  const uploadFrame = useCallback(
+    (frame: VideoFrame | null, apply: React.Dispatch<React.SetStateAction<VideoFrame | null>>) => {
+      if (!apiKey || !frame || frame.kind !== "file" || frame.uploadedUrl || frame.uploadError || !frame.uploading) {
+        return;
+      }
+      const { file } = frame;
+      configureFal(apiKey);
+      uploadReference(file)
+        .then((url) =>
+          apply((cur) =>
+            cur && cur.kind === "file" && cur.file === file ? { ...cur, uploadedUrl: url, uploading: false } : cur,
+          ),
+        )
+        .catch((e) =>
+          apply((cur) =>
+            cur && cur.kind === "file" && cur.file === file
+              ? { ...cur, uploading: false, uploadError: errMsg(e) }
+              : cur,
+          ),
+        );
+    },
+    [apiKey],
+  );
+  useEffect(() => uploadFrame(startFrame, setStartFrame), [startFrame, uploadFrame]);
+  useEffect(() => uploadFrame(endFrame, setEndFrame), [endFrame, uploadFrame]);
+
+  const framesUploading =
+    (startFrame?.kind === "file" && startFrame.uploading) ||
+    (endFrame?.kind === "file" && endFrame.uploading) ||
+    false;
 
   // Step 4 (video) — single-select model + per-model duration/aspect settings.
   const [videoKey, setVideoKey] = useState<string>("veo3.1-text");
@@ -326,9 +474,40 @@ export default function Page() {
     (key: string): VideoSettings => ({ ...DEFAULT_VIDEO_SETTINGS, ...videoSettings[key] }),
     [videoSettings],
   );
-  const patchVideoSettings = useCallback((key: string, patch: Partial<VideoSettings>) => {
-    setVideoSettings((prev) => ({ ...prev, [key]: { ...DEFAULT_VIDEO_SETTINGS, ...prev[key], ...patch } }));
-  }, []);
+  const patchVideoSettings = useCallback(
+    (key: string, patch: Partial<VideoSettings>) => {
+      setVideoSettings((prev) => ({ ...prev, [key]: { ...DEFAULT_VIDEO_SETTINGS, ...prev[key], ...patch } }));
+      // Form is master: a per-model settings change discards that video model's override.
+      clearVideoOverride(key);
+    },
+    [clearVideoOverride],
+  );
+
+  // --- "Form is master" upstream-change discards (prompt / refs / frames) ---
+  // A per-model settings change is handled inline in patchSettings/patchVideoSettings.
+  // The shared prompt and the reference/frame *set* affect all relevant blocks; we
+  // diff a derived signature and discard overrides when it actually changes. Refs hold
+  // the previous signature so the first render (hydration) doesn't wipe a restored override.
+  const imagePromptRef = useRef<string | null>(null);
+  const refsSig = referenceUrls.join("|");
+  const imageFormSig = `${promptByMode.image} ${refsSig}`;
+  useEffect(() => {
+    if (imagePromptRef.current !== null && imagePromptRef.current !== imageFormSig) {
+      clearAllImageOverrides();
+    }
+    imagePromptRef.current = imageFormSig;
+  }, [imageFormSig, clearAllImageOverrides]);
+
+  const videoFormRef = useRef<string | null>(null);
+  const videoFormSig = `${promptByMode.video} ${frameUrl(startFrame ?? { kind: "url", url: "" }) ?? ""} ${
+    frameUrl(endFrame ?? { kind: "url", url: "" }) ?? ""
+  }`;
+  useEffect(() => {
+    if (videoFormRef.current !== null && videoFormRef.current !== videoFormSig) {
+      clearAllVideoOverrides();
+    }
+    videoFormRef.current = videoFormSig;
+  }, [videoFormSig, clearAllVideoOverrides]);
 
   // Live Fal pricing for the currently selected endpoints.
   const [livePrices, setLivePrices] = useState<Record<string, LivePrice>>({});
@@ -522,25 +701,116 @@ export default function Page() {
     });
   }, []);
 
-  const sendReady = prompt.trim().length > 0;
+  // --- Effective request per block (the form-derived JSON, or a verbatim override) ---
+  // For each active image block: the form-derived input, the override text (if any),
+  // its validation, and the input we'd actually send. One source of truth for the
+  // preview, the send path, the result record, and Generate gating.
+  interface ImageBlock {
+    model: ModelDef;
+    formInput: Record<string, unknown>;
+    overrideText?: string; // present === Edit mode (frozen, verbatim)
+    validation?: OverrideValidation;
+    effectiveInput?: Record<string, unknown>; // override parsed, else form
+    blocked: boolean; // syntax error in the override
+  }
+  const imageBlocks = useMemo<ImageBlock[]>(() => {
+    const promptText = prompt.trim();
+    // Resolved Fal URLs for refs (skip any not-yet-uploaded so the preview is literal).
+    const urls = referenceUrls.filter((u): u is string => Boolean(u));
+    return activeModels.map((m) => {
+      const formInput = buildInput(m, promptText, urls, settingsFor(m.key));
+      const overrideText = overrides[m.key];
+      if (overrideText === undefined) {
+        return { model: m, formInput, effectiveInput: formInput, blocked: false };
+      }
+      const validation = validateOverride(overrideText, imageRequestSchema(m));
+      return {
+        model: m,
+        formInput,
+        overrideText,
+        validation,
+        effectiveInput: validation.parsed,
+        blocked: Boolean(validation.syntaxError),
+      };
+    });
+  }, [activeModels, prompt, referenceUrls, settingsFor, overrides]);
+
+  // Video block — same shape, for the single selected model.
+  const startResolved = startFrame ? frameUrl(startFrame) : undefined;
+  const endResolved = endFrame ? frameUrl(endFrame) : undefined;
+  const videoBlock = useMemo(() => {
+    const promptText = prompt.trim();
+    const frames = { startUrl: startResolved, endUrl: endResolved };
+    const formInput = buildVideoInput(videoModel, promptText, frames, videoSettingsFor(videoModel.key));
+    const overrideText = videoOverrides[videoModel.key];
+    if (overrideText === undefined) {
+      return { model: videoModel, formInput, effectiveInput: formInput, blocked: false } as {
+        model: VideoModelDef;
+        formInput: Record<string, unknown>;
+        overrideText?: string;
+        validation?: OverrideValidation;
+        effectiveInput?: Record<string, unknown>;
+        blocked: boolean;
+      };
+    }
+    const validation = validateOverride(overrideText, videoRequestSchema(videoModel));
+    return {
+      model: videoModel,
+      formInput,
+      overrideText,
+      validation,
+      effectiveInput: validation.parsed,
+      blocked: Boolean(validation.syntaxError),
+    };
+  }, [videoModel, prompt, startResolved, endResolved, videoSettingsFor, videoOverrides]);
+
+  // Send-readiness keys off the *effective* request: an override carrying its own
+  // prompt is sendable even with an empty prompt textarea; a syntax-invalid override
+  // blocks. Without an override we fall back to "the prompt textarea is non-empty".
+  const promptTyped = prompt.trim().length > 0;
+  const imageSendReady = useMemo(() => {
+    if (!activeModels.length) return false;
+    // Every active block must be sendable: not syntax-blocked, and carry a usable prompt.
+    return imageBlocks.every((b) => {
+      if (b.blocked) return false;
+      const eff = b.effectiveInput;
+      const hasOwnPrompt = typeof eff?.prompt === "string" && (eff.prompt as string).trim().length > 0;
+      return promptTyped || hasOwnPrompt;
+    });
+  }, [activeModels, imageBlocks, promptTyped]);
+
+  const videoOwnPrompt =
+    typeof videoBlock.effectiveInput?.prompt === "string" &&
+    (videoBlock.effectiveInput.prompt as string).trim().length > 0;
+  const videoSendReady = !videoBlock.blocked && (promptTyped || videoOwnPrompt);
+
   // Video gate: a start/start-end model needs a start frame; end stays optional.
   const videoStartMissing = videoModel.inputMode !== "text" && !startFrame;
   const canGenerate =
     Boolean(apiKey) &&
-    sendReady &&
     !generating &&
-    (isVideo ? !videoStartMissing : activeModels.length > 0);
+    (isVideo
+      ? videoSendReady && !videoStartMissing && !framesUploading
+      : imageSendReady && activeModels.length > 0 && !referencesUploading);
 
   const handleGenerate = useCallback(async () => {
     if (!canGenerate) return;
     setGenerating(true);
     setLogLines({});
 
+    // Reference URLs are eager-uploaded on add. Reuse the cache; upload any straggler
+    // (e.g. apiKey was missing when added) so we never double-upload the common path.
     let imageUrls: string[] = [];
     try {
       configureFal(apiKey);
       imageUrls = await Promise.all(
-        references.map((ref) => (ref.kind === "file" ? uploadReference(ref.file) : Promise.resolve(ref.url))),
+        references.map((ref) =>
+          ref.kind === "url"
+            ? Promise.resolve(ref.url)
+            : ref.uploadedUrl
+              ? Promise.resolve(ref.uploadedUrl)
+              : uploadReference(ref.file),
+        ),
       );
     } catch (e) {
       alert("Failed to upload reference images:\n" + errMsg(e));
@@ -558,22 +828,26 @@ export default function Page() {
     const runId = uid();
     const promptText = prompt.trim();
 
-    // One job per selected model, each with its own item id.
-    const jobs = models.map((m) => ({ id: uid(), model: m, text: promptText }));
+    // One job per active block — each carries its *effective* input (override or form).
+    const jobs = imageBlocks.map((b) => {
+      const input = b.effectiveInput ?? buildInput(b.model, promptText, imageUrls, settingsFor(b.model.key));
+      return { id: uid(), model: b.model, input };
+    });
 
     const run: GenerationRun = {
       id: runId,
       createdAt: Date.now(),
       prompt: promptText,
       referenceUrls: imageUrls,
-      items: jobs.map(({ id, model: m, text }) => {
+      items: jobs.map(({ id, model: m, input }) => {
         const s = settingsFor(m.key);
-        const input = buildInput(m, text, imageUrls, s);
+        // Metadata derives from the *sent* input, so overrides aren't misrepresented.
+        const sentPrompt = typeof input.prompt === "string" ? input.prompt : promptText;
         return {
           id,
           modelKey: m.key,
           modelLabel: m.label,
-          prompt: text,
+          prompt: sentPrompt,
           status: "running" as const,
           images: [],
           unitCost: unitCost(m, s, baseFor(m)),
@@ -581,6 +855,7 @@ export default function Page() {
           settings: s,
           params: paramsOf(input),
           refUrls: Array.isArray(input.image_urls) ? (input.image_urls as string[]) : undefined,
+          sentInput: input,
         };
       }),
     };
@@ -588,10 +863,10 @@ export default function Page() {
     requestAnimationFrame(() => resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
 
     await Promise.all(
-      jobs.map(async ({ id, model: m, text }) => {
+      jobs.map(async ({ id, model: m, input }) => {
         const s = settingsFor(m.key);
         try {
-          const { images, seed } = await runModel(m, text, imageUrls, s, (line) =>
+          const { images, seed } = await runModel(m, input, (line) =>
             setLogLines((prev) => ({ ...prev, [id]: line })),
           );
           const base = run.items.find((it) => it.id === id)?.params ?? {};
@@ -610,7 +885,7 @@ export default function Page() {
 
     setGenerating(false);
     refreshCredits(); // balance dropped after spending
-  }, [canGenerate, apiKey, references, activeModels, prompt, settingsFor, setRuns, updateItem, refreshPrices, livePrices, refreshCredits]);
+  }, [canGenerate, apiKey, references, activeModels, imageBlocks, prompt, settingsFor, setRuns, updateItem, refreshPrices, livePrices, refreshCredits]);
 
   // Video generate — single model, optional start/end frames, prompt variant(s).
   // Long-running: streams queue/log status per item; no resume after refresh.
@@ -621,17 +896,16 @@ export default function Page() {
 
     const m = videoModel;
 
-    // Upload any File frames; pass URL frames straight through. Start required for
-    // start/start-end models (gated above); end is optional.
+    // Frames are eager-uploaded on add. Reuse the cache; upload any straggler.
     let startUrl: string | undefined;
     let endUrl: string | undefined;
     try {
       configureFal(apiKey);
       if (m.inputMode !== "text" && startFrame) {
-        startUrl = startFrame.kind === "file" ? await uploadReference(startFrame.file) : startFrame.url;
+        startUrl = startFrame.kind === "file" ? startFrame.uploadedUrl ?? (await uploadReference(startFrame.file)) : startFrame.url;
       }
       if (m.inputMode === "start-end" && endFrame) {
-        endUrl = endFrame.kind === "file" ? await uploadReference(endFrame.file) : endFrame.url;
+        endUrl = endFrame.kind === "file" ? endFrame.uploadedUrl ?? (await uploadReference(endFrame.file)) : endFrame.url;
       }
     } catch (e) {
       alert("Failed to upload frame images:\n" + errMsg(e));
@@ -649,35 +923,36 @@ export default function Page() {
     const promptText = prompt.trim();
 
     const s = videoSettingsFor(m.key);
-    const jobs = [{ id: uid(), text: promptText }];
+    // The effective input: a verbatim override if present, else the form-derived JSON.
+    const input = videoBlock.effectiveInput ?? buildVideoInput(m, promptText, frames, s);
+    const sentPrompt = typeof input.prompt === "string" ? input.prompt : promptText;
+    const jobs = [{ id: uid(), input }];
 
     const run: VideoRun = {
       id: runId,
       createdAt: Date.now(),
       prompt: promptText,
-      items: jobs.map(({ id, text }) => {
-        const input = buildVideoInput(m, text, frames, s);
-        return {
-          id,
-          modelKey: m.key,
-          modelLabel: m.label,
-          prompt: text,
-          status: "running" as const,
-          estimatedCost: estimateVideoCost(m, s, liveBase),
-          settings: s,
-          params: videoParamsOf(input),
-          startUrl,
-          endUrl,
-        };
-      }),
+      items: jobs.map(({ id, input }) => ({
+        id,
+        modelKey: m.key,
+        modelLabel: m.label,
+        prompt: sentPrompt,
+        status: "running" as const,
+        estimatedCost: estimateVideoCost(m, s, liveBase),
+        settings: s,
+        params: videoParamsOf(input),
+        startUrl,
+        endUrl,
+        sentInput: input,
+      })),
     };
     setVideoRuns((prev) => [run, ...prev]);
     requestAnimationFrame(() => resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
 
     await Promise.all(
-      jobs.map(async ({ id, text }) => {
+      jobs.map(async ({ id, input }) => {
         try {
-          const video = await runVideoModel(m, text, frames, s, (st) =>
+          const video = await runVideoModel(m, input, (st) =>
             setVideoStatus((prev) => ({
               ...prev,
               [id]:
@@ -699,7 +974,7 @@ export default function Page() {
 
     setGenerating(false);
     refreshCredits();
-  }, [canGenerate, apiKey, videoModel, startFrame, endFrame, prompt, videoSettingsFor, setVideoRuns, updateVideoItem, refreshPrices, livePrices, refreshCredits]);
+  }, [canGenerate, apiKey, videoModel, videoBlock, startFrame, endFrame, prompt, videoSettingsFor, setVideoRuns, updateVideoItem, refreshPrices, livePrices, refreshCredits]);
 
   const resetAll = useCallback(() => {
     if (!confirm("Reset everything? This clears your key, prompt history, results and references.")) return;
@@ -720,8 +995,10 @@ export default function Page() {
     setVideoSettings({});
     setStartFrame((f) => (clearFrame(f), null));
     setEndFrame((f) => (clearFrame(f), null));
+    setOverrides({});
+    setVideoOverrides({});
     loadEnvKey(); // restore the dev env key if present
-  }, [references, setApiKey, setHistory, setRuns, setVideoRuns, clearFrame, loadEnvKey]);
+  }, [references, setApiKey, setHistory, setRuns, setVideoRuns, setOverrides, setVideoOverrides, clearFrame, loadEnvKey]);
 
   // Export / import the whole session (share progress with others).
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -730,9 +1007,23 @@ export default function Page() {
     if (apiKey && !confirm("⚠️ The exported file includes your Fal API key. Only share it with people you trust. Continue?")) {
       return;
     }
+    // Overrides export as parsed objects (verbatim inputs). Drop any with a JSON
+    // syntax error — a malformed draft isn't a reproducible request.
+    const parseOverrides = (src: Record<string, string>) => {
+      const out: Record<string, Record<string, unknown>> = {};
+      for (const [key, text] of Object.entries(src)) {
+        try {
+          const obj = JSON.parse(text);
+          if (obj && typeof obj === "object" && !Array.isArray(obj)) out[key] = obj;
+        } catch {
+          /* skip malformed drafts */
+        }
+      }
+      return out;
+    };
     const data: SessionExport = {
       app: "fal-prompt-playground",
-      version: 2, // bumped: v2 carries video runs + the active mode
+      version: 3, // bumped: v3 carries request overrides + per-result sentInput
       exportedAt: new Date().toISOString(),
       key: apiKey,
       promptHistory: history,
@@ -747,6 +1038,9 @@ export default function Page() {
       videoRuns,
       videoSelectedKey: videoKey,
       videoSettings,
+      // override additions (v3+)
+      overrides: parseOverrides(overrides),
+      videoOverrides: parseOverrides(videoOverrides),
     };
     const blob = new Blob([encodeSession(data)], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
@@ -755,7 +1049,7 @@ export default function Page() {
     a.download = `fal-session-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.falsession`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [apiKey, history, runs, selectedKeys, settings, references, mode, videoRuns, videoKey, videoSettings]);
+  }, [apiKey, history, runs, selectedKeys, settings, references, mode, videoRuns, videoKey, videoSettings, overrides, videoOverrides]);
 
   const importSession = useCallback(
     async (file: File) => {
@@ -804,8 +1098,23 @@ export default function Page() {
       setVideoStatus({});
       setStartFrame((f) => (clearFrame(f), null));
       setEndFrame((f) => (clearFrame(f), null));
+      // override additions (v3+; optional-on-read so v1/v2 files still import).
+      const importOverrides = (src: unknown): Record<string, string> => {
+        if (!src || typeof src !== "object") return {};
+        const out: Record<string, string> = {};
+        for (const [key, obj] of Object.entries(src as Record<string, unknown>)) {
+          if (obj && typeof obj === "object") out[key] = prettyJson(obj as Record<string, unknown>);
+        }
+        return out;
+      };
+      setOverrides(importOverrides(data.overrides));
+      setVideoOverrides(importOverrides(data.videoOverrides));
+      // Don't let the form-is-master diff effect wipe the just-imported overrides on the
+      // first post-import render: re-prime the signature refs to the imported form state.
+      imagePromptRef.current = null;
+      videoFormRef.current = null;
     },
-    [references, setApiKey, setHistory, setRuns, setMode, setVideoRuns, clearFrame],
+    [references, setApiKey, setHistory, setRuns, setMode, setVideoRuns, setOverrides, setVideoOverrides, clearFrame],
   );
 
   if (!mounted) {
@@ -1146,6 +1455,61 @@ export default function Page() {
         )}
       </Section>
 
+      {/* STEP 5 — REQUEST (the exact JSON sent to Fal; per active model) */}
+      {(isVideo || activeModels.length > 0) && (
+        <Section
+          step={5}
+          title="Request"
+          done={
+            isVideo
+              ? videoBlock.overrideText !== undefined
+              : imageBlocks.some((b) => b.overrideText !== undefined)
+          }
+        >
+          <p className="mb-3 text-sm text-neutral-500">
+            The exact JSON sent to Fal{isVideo ? "" : " — one block per active model"}. Toggle{" "}
+            <b>Edit</b> to freeze a block and send it <b>verbatim</b> (add any param the UI doesn’t
+            expose). Any change to the prompt, that model’s settings, or its images re-syncs the block.
+          </p>
+          {referencesUploading && !isVideo && (
+            <p className="mb-3 rounded-lg bg-amber-100/80 px-3 py-2 text-xs text-amber-900">
+              ⏳ Uploading reference image(s) — the request will show real URLs once done.
+            </p>
+          )}
+          {framesUploading && isVideo && (
+            <p className="mb-3 rounded-lg bg-amber-100/80 px-3 py-2 text-xs text-amber-900">
+              ⏳ Uploading frame(s) — the request will show real URLs once done.
+            </p>
+          )}
+          <div className="space-y-4">
+            {isVideo ? (
+              <RequestBlock
+                modelLabel={videoBlock.model.label}
+                formInput={videoBlock.formInput}
+                overrideText={videoBlock.overrideText}
+                validation={videoBlock.validation}
+                onBeginEdit={(seed) => beginEditVideoOverride(videoBlock.model.key, seed)}
+                onChangeText={(t) => setVideoOverrideText(videoBlock.model.key, t)}
+                onReset={() => clearVideoOverride(videoBlock.model.key)}
+              />
+            ) : (
+              imageBlocks.map((b) => (
+                <RequestBlock
+                  key={b.model.key}
+                  modelLabel={b.model.label}
+                  formInput={b.formInput}
+                  overrideText={b.overrideText}
+                  validation={b.validation}
+                  onBeginEdit={(seed) => beginEditOverride(b.model.key, seed)}
+                  onChangeText={(t) => setOverrideText(b.model.key, t)}
+                  onReset={() => clearOverride(b.model.key)}
+                />
+              ))
+            )}
+          </div>
+        </Section>
+      )}
+
       {/* RESULTS */}
       <div ref={resultsRef}>
         {!isVideo && runs.length > 0 && (
@@ -1310,6 +1674,127 @@ function Section({
       </div>
       {children}
     </section>
+  );
+}
+
+// One request block: read-only pretty-printed JSON synced from the form, or an
+// editable textarea (Edit on) frozen + sent verbatim. Shared by image & video.
+function RequestBlock({
+  modelLabel,
+  formInput,
+  overrideText,
+  validation,
+  onBeginEdit,
+  onChangeText,
+  onReset,
+}: {
+  modelLabel: string;
+  formInput: Record<string, unknown>;
+  overrideText?: string; // present === Edit mode
+  validation?: OverrideValidation;
+  onBeginEdit: (seedText: string) => void;
+  onChangeText: (text: string) => void;
+  onReset: () => void;
+}) {
+  const editing = overrideText !== undefined;
+  const formText = prettyJson(formInput);
+  const display = editing ? overrideText! : formText;
+  const [copied, setCopied] = useState(false);
+  const copy = useCallback(() => {
+    navigator.clipboard?.writeText(display).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1200);
+      },
+      () => {},
+    );
+  }, [display]);
+
+  const syntaxError = editing ? validation?.syntaxError : undefined;
+  const warnings = editing ? validation?.warnings ?? [] : [];
+
+  return (
+    <div
+      className={`rounded-xl border ${
+        syntaxError ? "border-red-300" : editing ? "border-amber-300" : "border-neutral-200"
+      } bg-white`}
+    >
+      <div className="flex flex-wrap items-center gap-2 border-b border-neutral-100 px-3 py-2">
+        <span className="font-medium text-sm">{modelLabel}</span>
+        {editing ? (
+          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800">
+            ✎ editing — sent verbatim
+          </span>
+        ) : (
+          <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-500">
+            synced from form
+          </span>
+        )}
+        <div className="ml-auto flex items-center gap-2 text-xs">
+          <button
+            type="button"
+            onClick={copy}
+            className="rounded-md border border-neutral-200 px-2 py-1 text-neutral-600 hover:border-amber-300 hover:text-amber-700"
+          >
+            {copied ? "Copied" : "Copy"}
+          </button>
+          {editing ? (
+            <button
+              type="button"
+              onClick={onReset}
+              className="rounded-md border border-neutral-200 px-2 py-1 text-neutral-600 hover:border-amber-300 hover:text-amber-700"
+              title="Discard the edit and re-sync from the form"
+            >
+              Reset to settings
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onBeginEdit(formText)}
+              className="rounded-md bg-neutral-900 px-2 py-1 font-medium text-white hover:bg-neutral-700"
+            >
+              Edit
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="p-3">
+        {editing ? (
+          <textarea
+            value={overrideText}
+            onChange={(e) => onChangeText(e.target.value)}
+            spellCheck={false}
+            rows={Math.min(20, Math.max(6, overrideText!.split("\n").length + 1))}
+            className={`w-full resize-y rounded-lg border bg-neutral-50 px-3 py-2 font-mono text-xs outline-none focus:ring-2 ${
+              syntaxError
+                ? "border-red-300 focus:border-red-400 focus:ring-red-100"
+                : "border-neutral-300 focus:border-amber-400 focus:ring-amber-100"
+            }`}
+            aria-label={`Edit request JSON for ${modelLabel}`}
+          />
+        ) : (
+          <pre className="max-h-80 overflow-auto rounded-lg bg-neutral-50 px-3 py-2 font-mono text-xs text-neutral-700">
+            {display}
+          </pre>
+        )}
+
+        {syntaxError && (
+          <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-xs text-red-600">
+            ⛔ Invalid JSON — fix it to generate this block. <span className="text-red-400">{syntaxError}</span>
+          </p>
+        )}
+        {warnings.length > 0 && (
+          <ul className="mt-2 space-y-1">
+            {warnings.map((w, i) => (
+              <li key={i} className="rounded-md bg-amber-50 px-3 py-1.5 text-xs text-amber-800">
+                ⚠ {w}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -1613,6 +2098,44 @@ function PromptBlock({
   );
 }
 
+// Collapsible "Request" on a result card — reveals the exact JSON sent to Fal.
+function CollapsibleRequest({ input }: { input?: Record<string, unknown> }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  if (!input) return null;
+  const text = prettyJson(input);
+  return (
+    <div className="mb-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="text-xs font-medium text-neutral-500 hover:text-amber-700"
+      >
+        {open ? "▾" : "▸"} Request
+      </button>
+      {open && (
+        <div className="mt-1">
+          <pre className="max-h-72 overflow-auto rounded-lg bg-neutral-50 px-3 py-2 font-mono text-[11px] text-neutral-700">
+            {text}
+          </pre>
+          <button
+            type="button"
+            onClick={() =>
+              navigator.clipboard?.writeText(text).then(() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1200);
+              }, () => {})
+            }
+            className="mt-1 text-[11px] text-neutral-500 hover:text-amber-700"
+          >
+            {copied ? "Copied" : "Copy JSON"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RunCard({
   run,
   logLines,
@@ -1669,6 +2192,8 @@ function RunCard({
                 <ParamChips params={item.params} />
               </div>
             )}
+
+            <CollapsibleRequest input={item.sentInput} />
 
             {item.refUrls && item.refUrls.length > 0 && (
               <div className="mb-2">
@@ -2104,6 +2629,8 @@ function VideoRunCard({
                 <VideoParamChips params={item.params} />
               </div>
             )}
+
+            <CollapsibleRequest input={item.sentInput} />
 
             {(item.startUrl || item.endUrl) && (
               <div className="mb-2 flex items-center gap-1.5">

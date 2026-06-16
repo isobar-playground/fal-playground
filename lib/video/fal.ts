@@ -6,7 +6,7 @@
 // so we stream queue status (position) + logs back through `onStatus` for the UI.
 
 import { fal } from "@fal-ai/client";
-import { buildVideoInput, type VideoModelDef, type VideoSettings } from "./models";
+import type { VideoModelDef } from "./models";
 import type { ResultVideo } from "../types";
 
 export { configureFal, uploadReference } from "../fal";
@@ -18,15 +18,15 @@ export interface VideoRunStatus {
   log?: string;
 }
 
+// Takes a pre-built `input` object (from `buildVideoInput` or a verbatim user
+// override), mirroring the image runner — one source of truth for the request.
 export async function runVideoModel(
   model: VideoModelDef,
-  prompt: string,
-  frames: { startUrl?: string; endUrl?: string },
-  settings: VideoSettings,
+  input: Record<string, unknown>,
   onStatus?: (s: VideoRunStatus) => void,
 ): Promise<ResultVideo> {
   const result = await fal.subscribe(model.id, {
-    input: buildVideoInput(model, prompt, frames, settings),
+    input,
     logs: true,
     onQueueUpdate(update) {
       if (update.status === "IN_QUEUE") {
