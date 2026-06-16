@@ -23,7 +23,6 @@ import { useLocalStorage, useSessionStorage } from "@/lib/hooks";
 import type {
   AppMode,
   GenerationRun,
-  PromptKind,
   Reference,
   SessionExport,
   VideoRun,
@@ -116,7 +115,6 @@ interface GalleryImage {
   url: string;
   modelLabel: string;
   prompt: string;
-  promptKind?: PromptKind;
   params?: Record<string, unknown>;
   refUrls?: string[];
   key: string;
@@ -136,28 +134,6 @@ const VIDEO_MODE_BADGE: Record<string, string> = {
   start: "Start",
   "start-end": "Start+End",
 };
-
-// --- prompt beautifier ("Upiększacz") ------------------------------------
-type BeautifyStrength = "light" | "moderate" | "aggressive";
-type BeautifyLanguage = "auto" | "en" | "pl";
-type SendMode = "original" | "beautified" | "both";
-
-const STRENGTH_OPTS: { value: BeautifyStrength; label: string }[] = [
-  { value: "light", label: "Lekkie" },
-  { value: "moderate", label: "Umiarkowane" },
-  { value: "aggressive", label: "Agresywne" },
-];
-const LANGUAGE_OPTS: { value: BeautifyLanguage; label: string }[] = [
-  { value: "auto", label: "Auto" },
-  { value: "en", label: "EN" },
-  { value: "pl", label: "PL" },
-];
-const SEND_OPTS: { value: SendMode; label: string }[] = [
-  { value: "original", label: "Twój" },
-  { value: "beautified", label: "Upiększony" },
-  { value: "both", label: "Oba" },
-];
-const BEAUTIFY_MAX_CHARS = 100_000;
 
 export default function Page() {
   const [mounted, setMounted] = useState(false);
@@ -221,11 +197,6 @@ export default function Page() {
     });
   }, []);
 
-  // Per-reference role label ("logo klienta", "aktorka") — fed to the beautifier in order.
-  const setReferenceLabel = useCallback((id: string, label: string) => {
-    setReferences((prev) => prev.map((r) => (r.id === id ? { ...r, label } : r)));
-  }, []);
-
   // Step 3 — prompt + history
   // Image and video prompts are independent — keyed by `mode` so switching the
   // asset-type toggle never carries one mode's text into the other.
@@ -285,100 +256,6 @@ export default function Page() {
     if (stashedPrompt != null) setPrompt(stashedPrompt);
     setStashedPrompt(null);
   }, [stashedPrompt]);
-
-  // Step 3b — prompt beautifier ("Upiększacz"). Ephemeral, like `prompt` (not persisted).
-  const [strength, setStrength] = useState<BeautifyStrength>("moderate");
-  const [language, setLanguage] = useState<BeautifyLanguage>("auto");
-  // Per-mode, like `prompt` — switching modes must not show the other mode's beautified text.
-  const [beautifiedByMode, setBeautifiedByMode] = useState<Record<AppMode, string>>({ image: "", video: "" });
-  const beautified = beautifiedByMode[mode]; // editable field 2; "" = none yet
-  const setBeautified = useCallback(
-    (next: string | ((b: string) => string)) =>
-      setBeautifiedByMode((prev) => ({
-        ...prev,
-        [mode]: typeof next === "function" ? (next as (b: string) => string)(prev[mode]) : next,
-      })),
-    [mode],
-  );
-  const [beautifying, setBeautifying] = useState(false);
-  const [beautifyError, setBeautifyError] = useState<string | null>(null);
-  // The original prompt snapshot at the moment of the last beautify, to detect "stale". Per-mode.
-  const [beautifySourceByMode, setBeautifySourceByMode] = useState<Record<AppMode, string | null>>({
-    image: null,
-    video: null,
-  });
-  const beautifySource = beautifySourceByMode[mode];
-  const setBeautifySource = useCallback(
-    (next: string | null | ((s: string | null) => string | null)) =>
-      setBeautifySourceByMode((prev) => ({
-        ...prev,
-        [mode]: typeof next === "function" ? (next as (s: string | null) => string | null)(prev[mode]) : next,
-      })),
-    [mode],
-  );
-  const hasBeautified = beautified.trim().length > 0;
-  const beautifyStale = hasBeautified && beautifySource != null && prompt.trim() !== beautifySource.trim();
-
-  // Human-readable beautifier model name + system prompt, resolved server-side
-  // (the env slug never reaches here; the system prompt isn't secret, shown in a tooltip).
-  const [beautifyInfo, setBeautifyInfo] = useState<{
-    available: boolean;
-    name: string;
-    systemPrompt?: string;
-  } | null>(null);
-  useEffect(() => {
-    if (!mounted) return;
-    fetch("/api/beautify")
-      .then((r) => r.json())
-      .then((d) =>
-        setBeautifyInfo(
-          d?.name
-            ? {
-                available: Boolean(d.available),
-                name: d.name,
-                systemPrompt: typeof d.systemPrompt === "string" ? d.systemPrompt : undefined,
-              }
-            : null,
-        ),
-      )
-      .catch(() => setBeautifyInfo(null));
-  }, [mounted]);
-
-  const handleBeautify = useCallback(async () => {
-    const text = prompt.trim();
-    if (!text || beautifying) return;
-    if (text.length > BEAUTIFY_MAX_CHARS) {
-      setBeautifyError(`Prompt za długi (${text.length} > ${BEAUTIFY_MAX_CHARS} znaków).`);
-      return;
-    }
-    setBeautifying(true);
-    setBeautifyError(null);
-    try {
-      const res = await fetch("/api/beautify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: text,
-          strength,
-          language,
-          mode, // image → static-detail rewrite; video → cinematic rewrite
-          referenceCount: references.length,
-          referenceLabels: references.map((r) => r.label ?? ""),
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data?.prompt) {
-        throw new Error(data?.error || `Błąd upiększania (${res.status})`);
-      }
-      setBeautified(data.prompt);
-      setBeautifySource(text); // pin the source so edits to field 1 mark it stale
-      // Deliberately do NOT switch sendMode — only unlock the options.
-    } catch (e) {
-      setBeautifyError(errMsg(e));
-    } finally {
-      setBeautifying(false);
-    }
-  }, [prompt, beautifying, strength, language, mode, references]);
 
   // Step 4 — models + settings
   const [selectedKeys, setSelectedKeys] = useState<string[]>(["nano-banana"]);
@@ -509,22 +386,16 @@ export default function Page() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiKey, activeIdsKey, refreshPrices]);
 
-  // Which prompt variant(s) to send. "beautified"/"both" are unusable without a beautified prompt.
-  const [sendMode, setSendMode] = useState<SendMode>("original");
-  const effectiveSendMode: SendMode = hasBeautified ? sendMode : "original";
-  // How many prompt variants each model runs with — "both" doubles cost & item count.
-  const variantCount = effectiveSendMode === "both" ? 2 : 1;
-
   const costRows = useMemo(
     () => activeModels.map((m) => ({ model: m, cost: estimateCost(m, settingsFor(m.key), liveBaseFor(m)) })),
     [activeModels, settingsFor, liveBaseFor],
   );
-  const imageTotalEstimate = costRows.reduce((sum, r) => sum + r.cost, 0) * variantCount;
+  const imageTotalEstimate = costRows.reduce((sum, r) => sum + r.cost, 0);
 
-  // Video cost — one clip from the single selected model, scaled by duration (×variants).
+  // Video cost — one clip from the single selected model, scaled by duration.
   const videoEstimate = useMemo(
-    () => estimateVideoCost(videoModel, videoSettingsFor(videoModel.key), liveVideoBaseFor(videoModel)) * variantCount,
-    [videoModel, videoSettingsFor, liveVideoBaseFor, variantCount],
+    () => estimateVideoCost(videoModel, videoSettingsFor(videoModel.key), liveVideoBaseFor(videoModel)),
+    [videoModel, videoSettingsFor, liveVideoBaseFor],
   );
   const totalEstimate = isVideo ? videoEstimate : imageTotalEstimate;
 
@@ -618,7 +489,6 @@ export default function Page() {
             url: img.url,
             modelLabel: item.modelLabel,
             prompt: item.prompt ?? run.prompt, // older runs predate per-item prompt
-            promptKind: item.promptKind,
             params: item.params,
             refUrls: item.refUrls,
             key: `${run.id}:${item.id ?? item.modelKey}:${i}`,
@@ -652,8 +522,7 @@ export default function Page() {
     });
   }, []);
 
-  // "beautified" needs a non-empty beautified prompt; "original"/"both" always need the typed one.
-  const sendReady = effectiveSendMode === "beautified" ? hasBeautified : prompt.trim().length > 0;
+  const sendReady = prompt.trim().length > 0;
   // Video gate: a start/start-end model needs a start frame; end stays optional.
   const videoStartMissing = videoModel.inputMode !== "text" && !startFrame;
   const canGenerate =
@@ -687,30 +556,17 @@ export default function Page() {
     const baseFor = (m: ModelDef) => liveBaseFromPrice(priceMap[m.id]);
 
     const runId = uid();
-    const originalText = prompt.trim();
-    const beautifiedText = beautified.trim();
-    // Which prompt variant(s) each model runs with. "both" → original first, then beautified.
-    const variants: { kind: PromptKind; text: string }[] =
-      effectiveSendMode === "beautified"
-        ? [{ kind: "beautified", text: beautifiedText }]
-        : effectiveSendMode === "both"
-          ? [
-              { kind: "original", text: originalText },
-              { kind: "beautified", text: beautifiedText },
-            ]
-          : [{ kind: "original", text: originalText }];
+    const promptText = prompt.trim();
 
-    // Flatten (model × variant) into discrete jobs, each with its own item id.
-    const jobs = models.flatMap((m) =>
-      variants.map((v) => ({ id: uid(), model: m, kind: v.kind, text: v.text })),
-    );
+    // One job per selected model, each with its own item id.
+    const jobs = models.map((m) => ({ id: uid(), model: m, text: promptText }));
 
     const run: GenerationRun = {
       id: runId,
       createdAt: Date.now(),
-      prompt: originalText, // header / "your prompt" reference stays the typed text
+      prompt: promptText,
       referenceUrls: imageUrls,
-      items: jobs.map(({ id, model: m, kind, text }) => {
+      items: jobs.map(({ id, model: m, text }) => {
         const s = settingsFor(m.key);
         const input = buildInput(m, text, imageUrls, s);
         return {
@@ -718,7 +574,6 @@ export default function Page() {
           modelKey: m.key,
           modelLabel: m.label,
           prompt: text,
-          promptKind: kind,
           status: "running" as const,
           images: [],
           unitCost: unitCost(m, s, baseFor(m)),
@@ -755,7 +610,7 @@ export default function Page() {
 
     setGenerating(false);
     refreshCredits(); // balance dropped after spending
-  }, [canGenerate, apiKey, references, activeModels, prompt, beautified, effectiveSendMode, settingsFor, setRuns, updateItem, refreshPrices, livePrices, refreshCredits]);
+  }, [canGenerate, apiKey, references, activeModels, prompt, settingsFor, setRuns, updateItem, refreshPrices, livePrices, refreshCredits]);
 
   // Video generate — single model, optional start/end frames, prompt variant(s).
   // Long-running: streams queue/log status per item; no resume after refresh.
@@ -791,33 +646,22 @@ export default function Page() {
     const liveBase = liveVideoBaseFromPrice(priceMap[m.id]);
 
     const runId = uid();
-    const originalText = prompt.trim();
-    const beautifiedText = beautified.trim();
-    const variants: { kind: PromptKind; text: string }[] =
-      effectiveSendMode === "beautified"
-        ? [{ kind: "beautified", text: beautifiedText }]
-        : effectiveSendMode === "both"
-          ? [
-              { kind: "original", text: originalText },
-              { kind: "beautified", text: beautifiedText },
-            ]
-          : [{ kind: "original", text: originalText }];
+    const promptText = prompt.trim();
 
     const s = videoSettingsFor(m.key);
-    const jobs = variants.map((v) => ({ id: uid(), kind: v.kind, text: v.text }));
+    const jobs = [{ id: uid(), text: promptText }];
 
     const run: VideoRun = {
       id: runId,
       createdAt: Date.now(),
-      prompt: originalText,
-      items: jobs.map(({ id, kind, text }) => {
+      prompt: promptText,
+      items: jobs.map(({ id, text }) => {
         const input = buildVideoInput(m, text, frames, s);
         return {
           id,
           modelKey: m.key,
           modelLabel: m.label,
           prompt: text,
-          promptKind: kind,
           status: "running" as const,
           estimatedCost: estimateVideoCost(m, s, liveBase),
           settings: s,
@@ -855,7 +699,7 @@ export default function Page() {
 
     setGenerating(false);
     refreshCredits();
-  }, [canGenerate, apiKey, videoModel, startFrame, endFrame, prompt, beautified, effectiveSendMode, videoSettingsFor, setVideoRuns, updateVideoItem, refreshPrices, livePrices, refreshCredits]);
+  }, [canGenerate, apiKey, videoModel, startFrame, endFrame, prompt, videoSettingsFor, setVideoRuns, updateVideoItem, refreshPrices, livePrices, refreshCredits]);
 
   const resetAll = useCallback(() => {
     if (!confirm("Reset everything? This clears your key, prompt history, results and references.")) return;
@@ -866,10 +710,6 @@ export default function Page() {
     setReferences([]);
     setPrompt("");
     setStashedPrompt(null);
-    setBeautified("");
-    setBeautifySource(null);
-    setBeautifyError(null);
-    setSendMode("original");
     setSelectedKeys(["nano-banana"]);
     setSettings({});
     setLightbox(null);
@@ -900,7 +740,7 @@ export default function Page() {
       selectedKeys,
       settings,
       references: references.flatMap((r) =>
-        r.kind === "url" ? [{ url: r.url, origin: r.origin, ...(r.label ? { label: r.label } : {}) }] : [],
+        r.kind === "url" ? [{ url: r.url, origin: r.origin }] : [],
       ),
       // video additions (v2+)
       mode,
@@ -947,15 +787,10 @@ export default function Page() {
                 id: uid(),
                 url: r.url,
                 origin: r.origin === "manual" ? "manual" : "generated",
-                ...(r.label ? { label: r.label } : {}),
               }))
           : [],
       );
       setStashedPrompt(null);
-      setBeautified("");
-      setBeautifySource(null);
-      setBeautifyError(null);
-      setSendMode("original");
       setLightbox(null);
       // video path (optional in v1 files; defaults keep legacy imports working)
       setMode(data.mode === "video" ? "video" : "image");
@@ -1144,48 +979,33 @@ export default function Page() {
         </p>
         <Dropzone onFiles={addFiles} />
         {hasReferences && (
-          <>
-            <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4">
-              {references.map((ref, idx) => (
-                <figure key={ref.id} className="group flex flex-col gap-1">
-                  <div className="relative overflow-hidden rounded-lg border border-neutral-200">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={ref.kind === "file" ? ref.previewUrl : ref.url}
-                      alt="reference"
-                      className="aspect-square w-full object-cover"
-                    />
-                    <span className="absolute left-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">
-                      image {idx + 1}
-                    </span>
-                    {ref.kind === "url" && ref.origin === "generated" && (
-                      <span className="absolute left-1 bottom-1 rounded bg-amber-400 px-1.5 py-0.5 text-[10px] font-medium text-amber-950">
-                        result
-                      </span>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => removeReference(ref.id)}
-                      className="absolute right-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[11px] text-white opacity-0 transition group-hover:opacity-100"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                  <input
-                    type="text"
-                    value={ref.label ?? ""}
-                    onChange={(e) => setReferenceLabel(ref.id, e.target.value)}
-                    placeholder="rola/opis…"
-                    title="Rola tej referencji (np. logo klienta, aktorka) — trafia do upiększacza jako opis image N"
-                    className="w-full rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-100"
-                  />
-                </figure>
-              ))}
-            </div>
-            <p className="mt-2 text-xs text-neutral-400">
-              Opisy ról (kolejność = „image 1, image 2…") trafiają do upiększacza promptów. Bez analizy pikseli.
-            </p>
-          </>
+          <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4">
+            {references.map((ref, idx) => (
+              <figure key={ref.id} className="group relative overflow-hidden rounded-lg border border-neutral-200">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={ref.kind === "file" ? ref.previewUrl : ref.url}
+                  alt="reference"
+                  className="aspect-square w-full object-cover"
+                />
+                <span className="absolute left-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                  image {idx + 1}
+                </span>
+                {ref.kind === "url" && ref.origin === "generated" && (
+                  <span className="absolute left-1 bottom-1 rounded bg-amber-400 px-1.5 py-0.5 text-[10px] font-medium text-amber-950">
+                    result
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => removeReference(ref.id)}
+                  className="absolute right-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[11px] text-white opacity-0 transition group-hover:opacity-100"
+                >
+                  Remove
+                </button>
+              </figure>
+            ))}
+          </div>
         )}
         {hasReferences && !hasEditSelected && (
           <p className="mt-3 rounded-lg bg-amber-100/80 px-3 py-2 text-xs text-amber-900">
@@ -1294,113 +1114,6 @@ export default function Page() {
                 ✕
               </button>
             </span>
-          )}
-        </div>
-
-        {/* Prompt beautifier ("Upiększacz") — strategy + language + ✨ wand */}
-        <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/40 p-3">
-          <div className="mb-3">
-            <div className="flex flex-wrap items-center gap-x-1.5 text-sm font-medium text-amber-900">
-              <span>✨ Automatyczne upiększanie przez </span>
-              {beautifyInfo?.name && <span className="text-amber-700">{beautifyInfo.name}</span>}
-              {beautifyInfo && !beautifyInfo.available && (
-                <span className="rounded bg-orange-100 px-1.5 py-0.5 text-[11px] font-normal text-orange-700">
-                  nieskonfigurowane — ustaw OPENROUTER_API_KEY
-                </span>
-              )}
-              {beautifyInfo?.systemPrompt && (
-                <span className="group relative ml-auto inline-flex">
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 rounded-md border border-amber-300 px-1.5 py-0.5 text-[11px] font-normal text-amber-700 hover:bg-amber-100"
-                    aria-label="Pokaż prompt systemowy upiększacza"
-                  >
-                    ⓘ prompt systemowy
-                  </button>
-                  <span
-                    role="tooltip"
-                    className="invisible absolute right-0 top-full z-30 max-h-80 w-[min(90vw,34rem)] overflow-auto whitespace-pre-wrap rounded-lg border border-neutral-200 bg-white p-3 text-left font-mono text-[11px] font-normal leading-relaxed text-neutral-700 opacity-0 shadow-xl transition group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
-                  >
-                    {beautifyInfo.systemPrompt}
-                  </span>
-                </span>
-              )}
-            </div>
-            <p className="mt-0.5 text-xs text-neutral-500">
-              Przepisuje Twój prompt modelem językowym, dodając szczegóły i porządkując opis. Wynik trafia do
-              osobnego, edytowalnego pola poniżej.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-3 text-sm">
-            <Select
-              label="Styl"
-              value={strength}
-              onChange={(v) => setStrength(v as BeautifyStrength)}
-              options={STRENGTH_OPTS}
-            />
-            <Select
-              label="Język"
-              value={language}
-              onChange={(v) => setLanguage(v as BeautifyLanguage)}
-              options={LANGUAGE_OPTS}
-            />
-            <button
-              type="button"
-              onClick={handleBeautify}
-              disabled={!prompt.trim() || beautifying}
-              className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-amber-400 px-3 py-1.5 font-medium text-amber-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:bg-neutral-200 disabled:text-neutral-400"
-              title="Przepisz prompt modelem językowym (OpenRouter)"
-            >
-              {beautifying ? (
-                <>
-                  <span className="inline-block size-3.5 animate-spin rounded-full border-2 border-amber-950/30 border-t-amber-950" />
-                  Upiększam…
-                </>
-              ) : (
-                <>✨ Upiększ</>
-              )}
-            </button>
-          </div>
-
-          {beautifyError && (
-            <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">⚠ {beautifyError}</p>
-          )}
-
-          {hasBeautified && (
-            <div className="mt-3">
-              <div className="mb-1 flex flex-wrap items-center gap-2">
-                <span className="inline-flex items-center gap-1 rounded-full bg-amber-200 px-2 py-0.5 text-[11px] font-medium text-amber-900">
-                  ✨ Upiększony
-                </span>
-                {beautifyStale && (
-                  <span
-                    className="inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-0.5 text-[11px] font-medium text-orange-700"
-                    title="Zmieniłeś oryginalny prompt po upiększeniu — upiększ ponownie lub edytuj ręcznie."
-                  >
-                    ⚠ nieaktualny
-                  </span>
-                )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setBeautified("");
-                    setBeautifySource(null);
-                    setBeautifyError(null);
-                    setSendMode("original");
-                  }}
-                  className="ml-auto text-xs text-neutral-500 hover:text-red-500"
-                >
-                  Usuń
-                </button>
-              </div>
-              <textarea
-                value={beautified}
-                onChange={(e) => setBeautified(e.target.value)}
-                rows={5}
-                placeholder="Upiększony prompt pojawi się tutaj — możesz go edytować."
-                className="w-full resize-y rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
-              />
-            </div>
           )}
         </div>
 
@@ -1513,21 +1226,11 @@ export default function Page() {
               Estimated cost: <span className="text-amber-700">{usd(totalEstimate)}</span>
             </div>
             <div className="text-xs text-neutral-500">
-              {isVideo ? (
-                <>
-                  {`${videoModel.label} · ${effectiveDuration(videoModel, videoSettingsFor(videoModel.key))}s`}
-                  {effectiveSendMode === "both" && <span className="text-amber-700"> · ×2 (Twój + Upiększony)</span>}
-                </>
-              ) : (
-                <>
-                  {activeModels.length > 0
-                    ? costRows.map((r) => `${r.model.label} ${usd(r.cost)}`).join(" · ")
-                    : "Add a key, a prompt and pick at least one model."}
-                  {effectiveSendMode === "both" && activeModels.length > 0 && (
-                    <span className="text-amber-700"> · ×2 (Twój + Upiększony)</span>
-                  )}
-                </>
-              )}
+              {isVideo
+                ? `${videoModel.label} · ${effectiveDuration(videoModel, videoSettingsFor(videoModel.key))}s`
+                : activeModels.length > 0
+                  ? costRows.map((r) => `${r.model.label} ${usd(r.cost)}`).join(" · ")
+                  : "Add a key, a prompt and pick at least one model."}
             </div>
             <div className="text-[11px] text-neutral-400">
               {pricing.status === "loading" && "Fetching live Fal pricing…"}
@@ -1543,34 +1246,6 @@ export default function Page() {
             </div>
           </div>
           <div className="flex items-stretch gap-3">
-            {/* "Wyślij" — which prompt variant(s) to send. Locked until a beautified prompt exists. */}
-            <div className="flex flex-col justify-center">
-              <span className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-neutral-400">Wyślij</span>
-              <div className="inline-flex overflow-hidden rounded-lg border border-neutral-300">
-                {SEND_OPTS.map((opt) => {
-                  const locked = opt.value !== "original" && !hasBeautified;
-                  const selected = effectiveSendMode === opt.value;
-                  return (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      disabled={locked}
-                      onClick={() => setSendMode(opt.value)}
-                      title={locked ? "Najpierw upiększ prompt (✨ Upiększ)" : undefined}
-                      className={`px-2.5 py-1.5 text-xs font-medium transition ${
-                        selected
-                          ? "bg-amber-400 text-amber-950"
-                          : locked
-                            ? "cursor-not-allowed bg-neutral-50 text-neutral-300"
-                            : "bg-white text-neutral-600 hover:bg-amber-50"
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
             {credits && (
               <div className="flex flex-col justify-center rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-2 text-right">
                 <span className="text-[10px] font-medium uppercase tracking-wide text-neutral-400">Fal balance</span>
@@ -1909,28 +1584,12 @@ function Dropzone({ onFiles }: { onFiles: (files: FileList | File[]) => void }) 
   );
 }
 
-// Variant badge: "Twój prompt" / "✨ Upiększony".
-function PromptKindBadge({ kind, tone = "light" }: { kind?: PromptKind; tone?: "light" | "dark" }) {
-  const beautified = kind === "beautified";
-  const base = "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium";
-  const cls = beautified
-    ? tone === "dark"
-      ? "bg-amber-400/30 text-amber-200"
-      : "bg-amber-200 text-amber-900"
-    : tone === "dark"
-      ? "bg-white/10 text-white/70"
-      : "bg-neutral-100 text-neutral-600";
-  return <span className={`${base} ${cls}`}>{beautified ? "✨ Upiększony" : "Twój prompt"}</span>;
-}
-
-// Collapsible, whitespace-preserving prompt with a variant badge. Replaces the old `truncate`.
+// Collapsible, whitespace-preserving prompt. Replaces the old `truncate`.
 function PromptBlock({
   prompt,
-  kind,
   tone = "light",
 }: {
   prompt: string;
-  kind?: PromptKind;
   tone?: "light" | "dark";
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -1940,7 +1599,6 @@ function PromptBlock({
   const textCls = tone === "dark" ? "text-white/80" : "text-neutral-700";
   return (
     <div className="flex flex-col gap-1">
-      <PromptKindBadge kind={kind} tone={tone} />
       <p className={`whitespace-pre-wrap text-sm ${textCls} ${expanded ? "" : "line-clamp-2"}`}>{prompt}</p>
       {longish && (
         <button
@@ -2002,7 +1660,7 @@ function RunCard({
 
             {item.prompt && (
               <div className="mb-2 rounded-lg border border-neutral-100 bg-neutral-50/60 px-3 py-2">
-                <PromptBlock prompt={item.prompt} kind={item.promptKind} />
+                <PromptBlock prompt={item.prompt} />
               </div>
             )}
 
@@ -2116,12 +1774,10 @@ function Lightbox({
       <div className="flex items-center justify-between gap-4 p-3 text-white" onClick={stop}>
         <div className="min-w-0 max-w-[60vw]">
           <div className="text-sm font-medium">{cur.modelLabel}</div>
-          {cur.promptKind ? (
+          {cur.prompt && (
             <div className="mt-1 max-h-32 overflow-auto">
-              <PromptBlock prompt={cur.prompt} kind={cur.promptKind} tone="dark" />
+              <PromptBlock prompt={cur.prompt} tone="dark" />
             </div>
-          ) : (
-            <div className="whitespace-pre-wrap text-xs text-white/60">{cur.prompt}</div>
           )}
           {cur.params && (
             <div className="mt-1">
@@ -2439,7 +2095,7 @@ function VideoRunCard({
 
             {item.prompt && (
               <div className="mb-2 rounded-lg border border-neutral-100 bg-neutral-50/60 px-3 py-2">
-                <PromptBlock prompt={item.prompt} kind={item.promptKind} />
+                <PromptBlock prompt={item.prompt} />
               </div>
             )}
 
