@@ -12,6 +12,7 @@ const MAX_TOKENS = 900; // output cap — enough for a rich prompt
 
 type Strength = "light" | "moderate" | "aggressive";
 type Language = "auto" | "en" | "pl";
+type Mode = "image" | "video";
 
 const SYSTEM_PROMPT = `You are a prompt engineer for state-of-the-art text-to-image and image-editing
 models (Google's Nano Banana / Gemini-image family and OpenAI's GPT Image).
@@ -51,8 +52,51 @@ Strength (per request):
 - aggressive -> richly detailed, photographer-grade specificity, still obeying
   rules 1-2.`;
 
+// Cinematic variant — same intent-preservation / language / strength discipline,
+// but asks for video language (camera motion, shot type, pacing, motion) instead
+// of static-image detail. Used when the request carries mode: "video".
+const VIDEO_SYSTEM_PROMPT = `You are a prompt engineer for state-of-the-art text-to-video and
+image-to-video models (Google Veo, Kling, Seedance, Sora, Wan). Rewrite the user's
+raw video prompt into ONE polished prompt these models follow well. Output ONLY the
+rewritten prompt — no preamble, quotes, markdown or notes.
+
+Rules:
+1. Preserve intent exactly. Keep every concrete element: subjects, named/brand
+   entities, on-screen text, counts, colors, spatial relations, and any stated
+   action. Never swap the subject; never drop details the user gave.
+2. Describe MOTION over time, not a single frozen image. Make explicit:
+   - subject action / movement and how it evolves across the shot;
+   - CAMERA work (e.g. slow dolly-in, handheld follow, crane up, static locked-off,
+     orbit, whip pan) — choose what serves the intent, do not over-direct;
+   - SHOT TYPE / framing (wide establishing, medium, close-up, macro) and lensing;
+   - PACING / rhythm and, if relevant, a sense of the clip's short duration.
+3. Set the scene's lighting, atmosphere, mood and setting in service of the action,
+   never overwriting or contradicting the user's intent.
+4. If a START or END frame image is attached, treat the prompt as describing the
+   motion FROM that frame — animate it; do not redescribe the still or invent a new
+   subject. With an end frame, describe the transition toward it.
+5. Modern natural-language prose, one coherent block. No keyword soup, no legacy
+   boosters, no shot-list bullet syntax — write it as a director's brief paragraph.
+6. Keep audio cues only if the user mentioned them (dialogue, sfx, music); never
+   invent speech or text not asked for.
+
+Language and Strength rules are identical to the image rewriter:
+- light -> fix grammar/clarity, resolve ambiguity, minimal additions, add only a
+  light touch of camera/motion language, stay close to original length.
+- moderate -> enrich with one tight paragraph of motion, camera, shot type, pacing,
+  light and mood.
+- aggressive -> richly detailed, cinematographer-grade specificity, still obeying
+  rules 1-4.
+
+Reference frames (if mentioned): you CANNOT see them — never describe their pixels
+or invent contents. Refer to them by role ("the provided start frame") and animate.
+
+Language (per request): en -> English; pl -> Polish; auto -> same as the user's
+prompt. Translate faithfully, preserving proper nouns and any verbatim render text.`;
+
 const STRENGTHS: Strength[] = ["light", "moderate", "aggressive"];
 const LANGUAGES: Language[] = ["auto", "en", "pl"];
+const MODES: Mode[] = ["image", "video"];
 
 function buildUserMessage(
   prompt: string,
@@ -106,6 +150,8 @@ export async function POST(req: Request) {
   const language: Language = LANGUAGES.includes(b.language as Language)
     ? (b.language as Language)
     : "auto";
+  const mode: Mode = MODES.includes(b.mode as Mode) ? (b.mode as Mode) : "image";
+  const systemPrompt = mode === "video" ? VIDEO_SYSTEM_PROMPT : SYSTEM_PROMPT;
   const referenceCount =
     typeof b.referenceCount === "number" && Number.isFinite(b.referenceCount)
       ? Math.max(0, Math.min(50, Math.floor(b.referenceCount)))
@@ -131,7 +177,7 @@ export async function POST(req: Request) {
         max_tokens: MAX_TOKENS,
         temperature: 0.7,
         messages: [
-          { role: "system", content: SYSTEM_PROMPT },
+          { role: "system", content: systemPrompt },
           { role: "user", content: userMessage },
         ],
       }),
@@ -159,7 +205,7 @@ export async function POST(req: Request) {
       return Response.json({ error: "OpenRouter returned an empty completion." }, { status: 502 });
     }
 
-    return Response.json({ prompt: beautified, model, strength, language });
+    return Response.json({ prompt: beautified, model, strength, language, mode });
   } catch (e) {
     return Response.json(
       { error: e instanceof Error ? e.message : "Beautify request failed" },

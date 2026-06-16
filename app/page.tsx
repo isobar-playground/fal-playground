@@ -20,7 +20,30 @@ import { configureFal, runModel, uploadReference } from "@/lib/fal";
 import { fetchLivePrices } from "@/lib/pricing";
 import { decodeSession, encodeSession } from "@/lib/session";
 import { useLocalStorage, useSessionStorage } from "@/lib/hooks";
-import type { GenerationRun, PromptKind, Reference, SessionExport } from "@/lib/types";
+import type {
+  AppMode,
+  GenerationRun,
+  PromptKind,
+  Reference,
+  SessionExport,
+  VideoRun,
+} from "@/lib/types";
+// --- video (separate code path; see lib/video/*) -------------------------
+import {
+  DEFAULT_VIDEO_SETTINGS,
+  VIDEO_MODELS,
+  VIDEO_MODEL_BY_KEY,
+  VIDEO_MODEL_GROUPS,
+  buildVideoInput,
+  effectiveAspectRatio,
+  effectiveDuration,
+  estimateVideoCost,
+  hasVideoField,
+  liveVideoBaseFromPrice,
+  type VideoModelDef,
+  type VideoSettings,
+} from "@/lib/video/models";
+import { runVideoModel } from "@/lib/video/fal";
 
 // Sub-dollar amounts keep up to 4 decimals (so $0.0398 isn't rounded to $0.04),
 // trailing zeros trimmed but at least 2 shown; $1+ uses plain 2-decimal currency.
@@ -65,6 +88,25 @@ function paramText(v: unknown): string {
   return String(v);
 }
 
+// Video param chips — drop prompt + frame URLs, keep the tunables (duration/aspect).
+function videoParamsOf(input: Record<string, unknown>): Record<string, unknown> {
+  const {
+    prompt: _p,
+    image_url: _i,
+    start_image_url: _s,
+    end_image_url: _e,
+    first_frame_url: _f,
+    last_frame_url: _l,
+    ...rest
+  } = input;
+  return rest;
+}
+
+const VIDEO_PARAM_LABELS: Record<string, string> = {
+  duration: "duration",
+  aspect_ratio: "aspect",
+};
+
 interface SavedPrompt {
   text: string;
   ts: number;
@@ -79,6 +121,21 @@ interface GalleryImage {
   refUrls?: string[];
   key: string;
 }
+
+// A video frame slot holds an uploaded File (with a local preview) or a URL
+// (a generated/manual image). Files are uploaded to Fal storage at generate time.
+type VideoFrame =
+  | { kind: "file"; file: File; previewUrl: string }
+  | { kind: "url"; url: string };
+
+const frameSrc = (f: VideoFrame): string => (f.kind === "file" ? f.previewUrl : f.url);
+
+// Input-mode badge label for the video model rows.
+const VIDEO_MODE_BADGE: Record<string, string> = {
+  text: "Text",
+  start: "Start",
+  "start-end": "Start+End",
+};
 
 // --- prompt beautifier ("Upiększacz") ------------------------------------
 type BeautifyStrength = "light" | "moderate" | "aggressive";
@@ -105,6 +162,11 @@ const BEAUTIFY_MAX_CHARS = 100_000;
 export default function Page() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
+
+  // Top-level mode — Images | Video. Persisted; shared steps (key, prompt) render
+  // in both; steps 2/4/5 swap to their video versions. Default "image".
+  const [mode, setMode] = useLocalStorage<AppMode>("fal:mode", "image");
+  const isVideo = mode === "video";
 
   // Step 1 — API key
   const [apiKey, setApiKey] = useLocalStorage<string>("fal:key", "");
@@ -253,6 +315,7 @@ export default function Page() {
           prompt: text,
           strength,
           language,
+          mode, // image → static-detail rewrite; video → cinematic rewrite
           referenceCount: references.length,
           referenceLabels: references.map((r) => r.label ?? ""),
         }),
@@ -269,7 +332,7 @@ export default function Page() {
     } finally {
       setBeautifying(false);
     }
-  }, [prompt, beautifying, strength, language, references]);
+  }, [prompt, beautifying, strength, language, mode, references]);
 
   // Step 4 — models + settings
   const [selectedKeys, setSelectedKeys] = useState<string[]>(["nano-banana"]);
@@ -301,12 +364,59 @@ export default function Page() {
     () => selectedKeys.some((k) => MODEL_BY_KEY[k]?.mode === "edit"),
     [selectedKeys],
   );
+
+  // --- Video state (separate code path; only used when mode === "video") ---
+  // Step 2 (video) — Start / End frame slots. Each holds an uploaded File (with a
+  // local preview) OR a URL (a generated/manual image), enabling "generate → animate".
+  const [startFrame, setStartFrame] = useState<VideoFrame | null>(null);
+  const [endFrame, setEndFrame] = useState<VideoFrame | null>(null);
+  const clearFrame = useCallback((frame: VideoFrame | null) => {
+    if (frame?.kind === "file") URL.revokeObjectURL(frame.previewUrl);
+  }, []);
+  const setFrame = useCallback(
+    (slot: "start" | "end", next: VideoFrame | null) => {
+      const apply = slot === "start" ? setStartFrame : setEndFrame;
+      apply((prev) => {
+        clearFrame(prev);
+        return next;
+      });
+    },
+    [clearFrame],
+  );
+  const setFrameFile = useCallback(
+    (slot: "start" | "end", file: File) => {
+      if (!file.type.startsWith("image/")) return;
+      setFrame(slot, { kind: "file", file, previewUrl: URL.createObjectURL(file) });
+    },
+    [setFrame],
+  );
+  const setFrameUrl = useCallback(
+    (slot: "start" | "end", url: string) => setFrame(slot, { kind: "url", url }),
+    [setFrame],
+  );
+
+  // Step 4 (video) — single-select model + per-model duration/aspect settings.
+  const [videoKey, setVideoKey] = useState<string>("veo3.1-text");
+  const videoModel = VIDEO_MODEL_BY_KEY[videoKey] ?? VIDEO_MODELS[0];
+  const [videoSettings, setVideoSettings] = useState<Record<string, VideoSettings>>({});
+  const videoSettingsFor = useCallback(
+    (key: string): VideoSettings => ({ ...DEFAULT_VIDEO_SETTINGS, ...videoSettings[key] }),
+    [videoSettings],
+  );
+  const patchVideoSettings = useCallback((key: string, patch: Partial<VideoSettings>) => {
+    setVideoSettings((prev) => ({ ...prev, [key]: { ...DEFAULT_VIDEO_SETTINGS, ...prev[key], ...patch } }));
+  }, []);
+
   // Live Fal pricing for the currently selected endpoints.
   const [livePrices, setLivePrices] = useState<Record<string, LivePrice>>({});
   const [pricing, setPricing] = useState<{ status: "idle" | "loading" | "live" | "error"; at?: number; error?: string }>({
     status: "idle",
   });
   const liveBaseFor = useCallback((m: ModelDef) => liveBaseFromPrice(livePrices[m.id]), [livePrices]);
+  const liveVideoBaseFor = useCallback(
+    (m: VideoModelDef) => liveVideoBaseFromPrice(livePrices[m.id]),
+    [livePrices],
+  );
 
   // Fal account credit balance (via server-side FAL_ADMIN_KEY; absent → not shown).
   const [credits, setCredits] = useState<{ balance: number; currency: string } | null>(null);
@@ -320,7 +430,12 @@ export default function Page() {
     if (mounted) refreshCredits();
   }, [mounted, refreshCredits]);
 
-  const activeIds = useMemo(() => [...new Set(activeModels.map((m) => m.id))], [activeModels]);
+  // Endpoints to price: image mode → the selected image models; video mode → the
+  // single selected video model. The same refresh mechanism serves both.
+  const activeIds = useMemo(
+    () => (isVideo ? [videoModel.id] : [...new Set(activeModels.map((m) => m.id))]),
+    [isVideo, videoModel.id, activeModels],
+  );
   const activeIdsKey = activeIds.join(",");
 
   const refreshPrices = useCallback(
@@ -358,12 +473,24 @@ export default function Page() {
     () => activeModels.map((m) => ({ model: m, cost: estimateCost(m, settingsFor(m.key), liveBaseFor(m)) })),
     [activeModels, settingsFor, liveBaseFor],
   );
-  const totalEstimate = costRows.reduce((sum, r) => sum + r.cost, 0) * variantCount;
+  const imageTotalEstimate = costRows.reduce((sum, r) => sum + r.cost, 0) * variantCount;
+
+  // Video cost — one clip from the single selected model, scaled by duration (×variants).
+  const videoEstimate = useMemo(
+    () => estimateVideoCost(videoModel, videoSettingsFor(videoModel.key), liveVideoBaseFor(videoModel)) * variantCount,
+    [videoModel, videoSettingsFor, liveVideoBaseFor, variantCount],
+  );
+  const totalEstimate = isVideo ? videoEstimate : imageTotalEstimate;
 
   // Generation + results
   const [runs, setRuns] = useLocalStorage<GenerationRun[]>("fal:runs", []);
+  const [videoRuns, setVideoRuns] = useLocalStorage<VideoRun[]>("fal:video-runs", []);
   const [generating, setGenerating] = useState(false);
   const [logLines, setLogLines] = useState<Record<string, string>>({});
+  // Live status line per running video item (queue position / log). Ephemeral.
+  const [videoStatus, setVideoStatus] = useState<Record<string, string>>({});
+  // Elapsed-time ticker for in-flight video jobs (video runs are long).
+  const [, setNowTick] = useState(0);
   const resultsRef = useRef<HTMLDivElement>(null);
 
   const updateItem = useCallback(
@@ -379,6 +506,30 @@ export default function Page() {
     [setRuns],
   );
 
+  const updateVideoItem = useCallback(
+    (runId: string, itemId: string, patch: Partial<VideoRun["items"][number]>) => {
+      setVideoRuns((prev) =>
+        prev.map((run) =>
+          run.id !== runId
+            ? run
+            : { ...run, items: run.items.map((it) => (it.id === itemId ? { ...it, ...patch } : it)) },
+        ),
+      );
+    },
+    [setVideoRuns],
+  );
+
+  // Tick once a second while any video job is running, so elapsed timers update.
+  const anyVideoRunning = useMemo(
+    () => videoRuns.some((r) => r.items.some((it) => it.status === "running")),
+    [videoRuns],
+  );
+  useEffect(() => {
+    if (!anyVideoRunning) return;
+    const t = setInterval(() => setNowTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [anyVideoRunning]);
+
   // Spend across every stored run.
   const spend = useMemo(() => {
     let total = 0;
@@ -390,6 +541,26 @@ export default function Page() {
       }
     return { total, images };
   }, [runs]);
+
+  // Generated images available to drop into a frame slot (this session, both modes).
+  const framePickerUrls = useMemo(() => {
+    const urls = new Set<string>();
+    for (const run of runs) for (const item of run.items) for (const img of item.images) urls.add(img.url);
+    return [...urls];
+  }, [runs]);
+
+  // Video spend across every stored video run.
+  const videoSpend = useMemo(() => {
+    let total = 0;
+    let count = 0;
+    for (const run of videoRuns)
+      for (const item of run.items)
+        if (item.status === "done") {
+          total += item.actualCost ?? 0;
+          count += 1;
+        }
+    return { total, count };
+  }, [videoRuns]);
 
   // Flat gallery of every generated image, for the lightbox.
   const gallery = useMemo<GalleryImage[]>(() => {
@@ -437,7 +608,13 @@ export default function Page() {
 
   // "beautified" needs a non-empty beautified prompt; "original"/"both" always need the typed one.
   const sendReady = effectiveSendMode === "beautified" ? hasBeautified : prompt.trim().length > 0;
-  const canGenerate = Boolean(apiKey) && sendReady && activeModels.length > 0 && !generating;
+  // Video gate: a start/start-end model needs a start frame; end stays optional.
+  const videoStartMissing = videoModel.inputMode !== "text" && !startFrame;
+  const canGenerate =
+    Boolean(apiKey) &&
+    sendReady &&
+    !generating &&
+    (isVideo ? !videoStartMissing : activeModels.length > 0);
 
   const handleGenerate = useCallback(async () => {
     if (!canGenerate) return;
@@ -534,6 +711,106 @@ export default function Page() {
     refreshCredits(); // balance dropped after spending
   }, [canGenerate, apiKey, references, activeModels, prompt, beautified, effectiveSendMode, settingsFor, setRuns, updateItem, refreshPrices, livePrices, refreshCredits]);
 
+  // Video generate — single model, optional start/end frames, prompt variant(s).
+  // Long-running: streams queue/log status per item; no resume after refresh.
+  const handleGenerateVideo = useCallback(async () => {
+    if (!canGenerate) return;
+    setGenerating(true);
+    setVideoStatus({});
+
+    const m = videoModel;
+
+    // Upload any File frames; pass URL frames straight through. Start required for
+    // start/start-end models (gated above); end is optional.
+    let startUrl: string | undefined;
+    let endUrl: string | undefined;
+    try {
+      configureFal(apiKey);
+      if (m.inputMode !== "text" && startFrame) {
+        startUrl = startFrame.kind === "file" ? await uploadReference(startFrame.file) : startFrame.url;
+      }
+      if (m.inputMode === "start-end" && endFrame) {
+        endUrl = endFrame.kind === "file" ? await uploadReference(endFrame.file) : endFrame.url;
+      }
+    } catch (e) {
+      alert("Failed to upload frame images:\n" + errMsg(e));
+      setGenerating(false);
+      return;
+    }
+    const frames = { startUrl, endUrl };
+
+    // Price against fresh Fal numbers right before generating.
+    const fresh = await refreshPrices([m.id]);
+    const priceMap = fresh ? { ...livePrices, ...fresh } : livePrices;
+    const liveBase = liveVideoBaseFromPrice(priceMap[m.id]);
+
+    const runId = uid();
+    const originalText = prompt.trim();
+    const beautifiedText = beautified.trim();
+    const variants: { kind: PromptKind; text: string }[] =
+      effectiveSendMode === "beautified"
+        ? [{ kind: "beautified", text: beautifiedText }]
+        : effectiveSendMode === "both"
+          ? [
+              { kind: "original", text: originalText },
+              { kind: "beautified", text: beautifiedText },
+            ]
+          : [{ kind: "original", text: originalText }];
+
+    const s = videoSettingsFor(m.key);
+    const jobs = variants.map((v) => ({ id: uid(), kind: v.kind, text: v.text }));
+
+    const run: VideoRun = {
+      id: runId,
+      createdAt: Date.now(),
+      prompt: originalText,
+      items: jobs.map(({ id, kind, text }) => {
+        const input = buildVideoInput(m, text, frames, s);
+        return {
+          id,
+          modelKey: m.key,
+          modelLabel: m.label,
+          prompt: text,
+          promptKind: kind,
+          status: "running" as const,
+          estimatedCost: estimateVideoCost(m, s, liveBase),
+          settings: s,
+          params: videoParamsOf(input),
+          startUrl,
+          endUrl,
+        };
+      }),
+    };
+    setVideoRuns((prev) => [run, ...prev]);
+    requestAnimationFrame(() => resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+
+    await Promise.all(
+      jobs.map(async ({ id, text }) => {
+        try {
+          const video = await runVideoModel(m, text, frames, s, (st) =>
+            setVideoStatus((prev) => ({
+              ...prev,
+              [id]:
+                st.phase === "queued"
+                  ? `in queue${st.queuePosition != null ? ` · #${st.queuePosition}` : ""}…`
+                  : st.log ?? "rendering…",
+            })),
+          );
+          updateVideoItem(runId, id, {
+            status: "done",
+            video,
+            actualCost: estimateVideoCost(m, s, liveBase),
+          });
+        } catch (e) {
+          updateVideoItem(runId, id, { status: "error", error: errMsg(e) });
+        }
+      }),
+    );
+
+    setGenerating(false);
+    refreshCredits();
+  }, [canGenerate, apiKey, videoModel, startFrame, endFrame, prompt, beautified, effectiveSendMode, videoSettingsFor, setVideoRuns, updateVideoItem, refreshPrices, livePrices, refreshCredits]);
+
   const resetAll = useCallback(() => {
     if (!confirm("Reset everything? This clears your key, prompt history, results and references.")) return;
     references.forEach((r) => r.kind === "file" && URL.revokeObjectURL(r.previewUrl));
@@ -550,8 +827,15 @@ export default function Page() {
     setSelectedKeys(["nano-banana"]);
     setSettings({});
     setLightbox(null);
+    // video path
+    setVideoRuns([]);
+    setVideoStatus({});
+    setVideoKey("veo3.1-text");
+    setVideoSettings({});
+    setStartFrame((f) => (clearFrame(f), null));
+    setEndFrame((f) => (clearFrame(f), null));
     loadEnvKey(); // restore the dev env key if present
-  }, [references, setApiKey, setHistory, setRuns, loadEnvKey]);
+  }, [references, setApiKey, setHistory, setRuns, setVideoRuns, clearFrame, loadEnvKey]);
 
   // Export / import the whole session (share progress with others).
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -562,7 +846,7 @@ export default function Page() {
     }
     const data: SessionExport = {
       app: "fal-prompt-playground",
-      version: 1,
+      version: 2, // bumped: v2 carries video runs + the active mode
       exportedAt: new Date().toISOString(),
       key: apiKey,
       promptHistory: history,
@@ -572,6 +856,11 @@ export default function Page() {
       references: references.flatMap((r) =>
         r.kind === "url" ? [{ url: r.url, origin: r.origin, ...(r.label ? { label: r.label } : {}) }] : [],
       ),
+      // video additions (v2+)
+      mode,
+      videoRuns,
+      videoSelectedKey: videoKey,
+      videoSettings,
     };
     const blob = new Blob([encodeSession(data)], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
@@ -580,7 +869,7 @@ export default function Page() {
     a.download = `fal-session-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.falsession`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [apiKey, history, runs, selectedKeys, settings, references]);
+  }, [apiKey, history, runs, selectedKeys, settings, references, mode, videoRuns, videoKey, videoSettings]);
 
   const importSession = useCallback(
     async (file: File) => {
@@ -622,8 +911,20 @@ export default function Page() {
       setBeautifyError(null);
       setSendMode("original");
       setLightbox(null);
+      // video path (optional in v1 files; defaults keep legacy imports working)
+      setMode(data.mode === "video" ? "video" : "image");
+      setVideoRuns(Array.isArray(data.videoRuns) ? data.videoRuns : []);
+      setVideoKey(
+        typeof data.videoSelectedKey === "string" && VIDEO_MODEL_BY_KEY[data.videoSelectedKey]
+          ? data.videoSelectedKey
+          : "veo3.1-text",
+      );
+      setVideoSettings(data.videoSettings && typeof data.videoSettings === "object" ? data.videoSettings : {});
+      setVideoStatus({});
+      setStartFrame((f) => (clearFrame(f), null));
+      setEndFrame((f) => (clearFrame(f), null));
     },
-    [references, setApiKey, setHistory, setRuns],
+    [references, setApiKey, setHistory, setRuns, setMode, setVideoRuns, clearFrame],
   );
 
   if (!mounted) {
@@ -640,8 +941,23 @@ export default function Page() {
             <span className="mr-1">🍌</span> Fal Prompt Playground
           </h1>
           <p className="mt-1 text-sm text-neutral-500">
-            Test prompts on Fal.ai image models — no code. Everything stays in your browser.
+            Test prompts on Fal.ai {isVideo ? "video" : "image"} models — no code. Everything stays in your browser.
           </p>
+          {/* Top-level mode toggle — Images | Video. Persisted across reloads. */}
+          <div className="mt-3 inline-flex overflow-hidden rounded-lg border border-neutral-300">
+            {(["image", "video"] as const).map((md) => (
+              <button
+                key={md}
+                type="button"
+                onClick={() => setMode(md)}
+                className={`px-4 py-1.5 text-sm font-medium transition ${
+                  mode === md ? "bg-amber-400 text-amber-950" : "bg-white text-neutral-600 hover:bg-amber-50"
+                }`}
+              >
+                {md === "image" ? "🖼 Images" : "🎬 Video"}
+              </button>
+            ))}
+          </div>
         </div>
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
           <button
@@ -708,7 +1024,38 @@ export default function Page() {
         </div>
       </Section>
 
-      {/* STEP 2 — REFERENCES */}
+      {/* STEP 2 — MODEL (video mode; single-select) */}
+      {isVideo && (
+        <Section step={2} title="Model" done={Boolean(videoModel)}>
+          <p className="mb-3 text-sm text-neutral-500">
+            Pick <b>one</b> video model. Selecting a <b>text</b> model hides the frame slots; an{" "}
+            <b>image</b> model reveals Start (and optional End) in step 3.
+          </p>
+          <div className="space-y-5">
+            {VIDEO_MODEL_GROUPS.map((group) => (
+              <div key={group}>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">{group}</p>
+                <div className="space-y-2">
+                  {VIDEO_MODELS.filter((m) => m.group === group).map((m) => (
+                    <VideoModelRow
+                      key={m.key}
+                      model={m}
+                      selected={videoKey === m.key}
+                      settings={videoSettingsFor(m.key)}
+                      live={liveVideoBaseFor(m)}
+                      onSelect={() => setVideoKey(m.key)}
+                      onPatch={(patch) => patchVideoSettings(m.key, patch)}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* STEP 2 — REFERENCES (image mode only) */}
+      {!isVideo && (
       <Section step={2} title="Reference images (optional)" done={hasReferences}>
         <p className="mb-3 text-sm text-neutral-500">
           Upload any number of images. Used by <b>edit</b> models; <b>generate</b> models ignore them.
@@ -765,9 +1112,65 @@ export default function Page() {
           </p>
         )}
       </Section>
+      )}
 
-      {/* STEP 3 — PROMPT */}
-      <Section step={3} title="Prompt" done={prompt.trim().length > 0}>
+      {/* STEP 3 — FRAMES (video mode only) */}
+      {isVideo && (
+        <Section
+          step={3}
+          title="Frames"
+          done={videoModel.inputMode === "text" || Boolean(startFrame)}
+        >
+          {videoModel.inputMode === "text" ? (
+            <p className="text-sm text-neutral-500">
+              <b>{videoModel.label}</b> is text-to-video — it needs no input frames. Pick an{" "}
+              <b>image</b> model in step 2 to animate a start (and optional end) frame.
+            </p>
+          ) : (
+            <>
+              <p className="mb-3 text-sm text-neutral-500">
+                Drop or pick a <b>start frame</b>
+                {videoModel.inputMode === "start-end" && (
+                  <>
+                    {" "}
+                    and an optional <b>end frame</b>
+                  </>
+                )}
+                . You can reuse any image generated in this session (“generate image → animate it”).
+              </p>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <FrameSlot
+                  label="Start frame"
+                  required
+                  frame={startFrame}
+                  pickerUrls={framePickerUrls}
+                  onFile={(f) => setFrameFile("start", f)}
+                  onUrl={(u) => setFrameUrl("start", u)}
+                  onClear={() => setFrame("start", null)}
+                />
+                {videoModel.inputMode === "start-end" && (
+                  <FrameSlot
+                    label="End frame (optional)"
+                    frame={endFrame}
+                    pickerUrls={framePickerUrls}
+                    onFile={(f) => setFrameFile("end", f)}
+                    onUrl={(u) => setFrameUrl("end", u)}
+                    onClear={() => setFrame("end", null)}
+                  />
+                )}
+              </div>
+              {videoStartMissing && (
+                <p className="mt-3 text-xs font-medium text-red-500">
+                  A start frame is required for this model — add one to generate.
+                </p>
+              )}
+            </>
+          )}
+        </Section>
+      )}
+
+      {/* STEP 3 — PROMPT (image mode) / STEP 4 — PROMPT (video mode) */}
+      <Section step={isVideo ? 4 : 3} title="Prompt" done={prompt.trim().length > 0}>
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
@@ -948,7 +1351,8 @@ export default function Page() {
         )}
       </Section>
 
-      {/* STEP 4 — MODELS */}
+      {/* STEP 4 — MODELS (image mode) */}
+      {!isVideo && (
       <Section step={4} title="Models" done={activeModels.length > 0}>
         <div className="space-y-5">
           {MODEL_GROUPS.map((group) => (
@@ -981,10 +1385,11 @@ export default function Page() {
           ))}
         </div>
       </Section>
+      )}
 
       {/* RESULTS */}
       <div ref={resultsRef}>
-        {runs.length > 0 && (
+        {!isVideo && runs.length > 0 && (
           <div className="mt-10">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-lg font-semibold">
@@ -1018,6 +1423,40 @@ export default function Page() {
             </div>
           </div>
         )}
+
+        {/* VIDEO RESULTS */}
+        {isVideo && videoRuns.length > 0 && (
+          <div className="mt-10">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-lg font-semibold">
+                Video results{" "}
+                <span className="ml-1 text-sm font-normal text-neutral-500">· {videoSpend.count} clip{videoSpend.count === 1 ? "" : "s"} · spent {usd(videoSpend.total)}</span>
+              </h2>
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm("Delete all video results from your browser?")) setVideoRuns([]);
+                }}
+                className="text-sm text-neutral-500 hover:text-red-500"
+              >
+                Clear results
+              </button>
+            </div>
+            <p className="mb-3 rounded-lg bg-amber-100/80 px-3 py-2 text-xs text-amber-900">
+              ⏳ Video jobs can take a while. <b>Keep this tab open</b> — there is no resume after a reload.
+            </p>
+            <div className="space-y-6">
+              {videoRuns.map((run) => (
+                <VideoRunCard
+                  key={run.id}
+                  run={run}
+                  status={videoStatus}
+                  onDelete={() => setVideoRuns((prev) => prev.filter((r) => r.id !== run.id))}
+                />
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* STICKY COST + GENERATE BAR */}
@@ -1028,11 +1467,20 @@ export default function Page() {
               Estimated cost: <span className="text-amber-700">{usd(totalEstimate)}</span>
             </div>
             <div className="text-xs text-neutral-500">
-              {activeModels.length > 0
-                ? costRows.map((r) => `${r.model.label} ${usd(r.cost)}`).join(" · ")
-                : "Add a key, a prompt and pick at least one model."}
-              {effectiveSendMode === "both" && activeModels.length > 0 && (
-                <span className="text-amber-700"> · ×2 (Twój + Upiększony)</span>
+              {isVideo ? (
+                <>
+                  {`${videoModel.label} · ${effectiveDuration(videoModel, videoSettingsFor(videoModel.key))}s`}
+                  {effectiveSendMode === "both" && <span className="text-amber-700"> · ×2 (Twój + Upiększony)</span>}
+                </>
+              ) : (
+                <>
+                  {activeModels.length > 0
+                    ? costRows.map((r) => `${r.model.label} ${usd(r.cost)}`).join(" · ")
+                    : "Add a key, a prompt and pick at least one model."}
+                  {effectiveSendMode === "both" && activeModels.length > 0 && (
+                    <span className="text-amber-700"> · ×2 (Twój + Upiększony)</span>
+                  )}
+                </>
               )}
             </div>
             <div className="text-[11px] text-neutral-400">
@@ -1087,11 +1535,15 @@ export default function Page() {
             )}
             <button
               type="button"
-              onClick={handleGenerate}
+              onClick={isVideo ? handleGenerateVideo : handleGenerate}
               disabled={!canGenerate}
               className="rounded-xl bg-amber-400 px-6 py-2.5 font-semibold text-amber-950 shadow-sm transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:bg-neutral-200 disabled:text-neutral-400"
             >
-              {generating ? "Generating…" : `Generate (≈ ${usd(totalEstimate)})`}
+              {generating
+                ? "Generating…"
+                : isVideo
+                  ? `Generate video (≈ ${usd(totalEstimate)})`
+                  : `Generate (≈ ${usd(totalEstimate)})`}
             </button>
           </div>
         </div>
@@ -1696,6 +2148,336 @@ function Lightbox({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/* --------------------------- video subcomponents ------------------------- */
+
+// A Start / End frame slot: drag-drop or click to upload, or pick a generated
+// image from this session. Shows a thumbnail + clear when filled.
+function FrameSlot({
+  label,
+  required,
+  frame,
+  pickerUrls,
+  onFile,
+  onUrl,
+  onClear,
+}: {
+  label: string;
+  required?: boolean;
+  frame: VideoFrame | null;
+  pickerUrls: string[];
+  onFile: (file: File) => void;
+  onUrl: (url: string) => void;
+  onClear: () => void;
+}) {
+  const [over, setOver] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2 text-sm font-medium text-neutral-700">
+        <span>{label}</span>
+        {required && <span className="text-[11px] font-normal text-red-500">required</span>}
+      </div>
+
+      {frame ? (
+        <figure className="relative overflow-hidden rounded-xl border border-neutral-200">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={frameSrc(frame)} alt={label} className="aspect-video w-full object-cover" />
+          <button
+            type="button"
+            onClick={onClear}
+            className="absolute right-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[11px] text-white hover:bg-black/80"
+          >
+            Clear
+          </button>
+        </figure>
+      ) : (
+        <div
+          onDragOver={(e) => {
+            e.preventDefault();
+            setOver(true);
+          }}
+          onDragLeave={() => setOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setOver(false);
+            const f = e.dataTransfer.files?.[0];
+            if (f) onFile(f);
+          }}
+          onClick={() => inputRef.current?.click()}
+          className={`flex aspect-video cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-4 py-6 text-center text-sm transition ${
+            over ? "border-amber-400 bg-amber-50" : "border-neutral-300 hover:border-amber-300"
+          }`}
+        >
+          <span className="text-neutral-600">Drop an image or click to choose</span>
+          <span className="mt-0.5 text-xs text-neutral-400">PNG, JPG, WebP</span>
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) onFile(f);
+              e.target.value = "";
+            }}
+          />
+        </div>
+      )}
+
+      {pickerUrls.length > 0 && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setPicking((p) => !p)}
+            className="text-xs font-medium text-amber-600 hover:text-amber-700"
+          >
+            {picking ? "Hide" : `Use a generated image (${pickerUrls.length})`}
+          </button>
+          {picking && (
+            <div className="mt-2 grid max-h-40 grid-cols-4 gap-1.5 overflow-auto rounded-lg border border-neutral-200 p-2 sm:grid-cols-5">
+              {pickerUrls.map((u) => (
+                <button
+                  key={u}
+                  type="button"
+                  onClick={() => {
+                    onUrl(u);
+                    setPicking(false);
+                  }}
+                  className="overflow-hidden rounded border border-neutral-200 hover:border-amber-400"
+                  title="Use this frame"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={u} alt="generated" className="aspect-square w-full object-cover" />
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// A single-select video model row with input-mode + audio badges, blurb, cost,
+// and the schema-gated duration/aspect controls when selected.
+function VideoModelRow({
+  model,
+  selected,
+  settings,
+  live,
+  onSelect,
+  onPatch,
+}: {
+  model: VideoModelDef;
+  selected: boolean;
+  settings: VideoSettings;
+  live?: { base: number; unit: "second" | "video" };
+  onSelect: () => void;
+  onPatch: (patch: Partial<VideoSettings>) => void;
+}) {
+  return (
+    <div
+      className={`rounded-xl border p-3 transition ${
+        selected ? "border-amber-300 bg-amber-50" : "border-neutral-200 bg-white"
+      }`}
+    >
+      <div className="flex items-start gap-3">
+        <label className="flex flex-1 cursor-pointer items-start gap-3">
+          {/* radio — single-select */}
+          <input type="radio" checked={selected} onChange={onSelect} className="mt-1 size-4 accent-amber-500" />
+          <div className="flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium">{model.label}</span>
+              <Badge>{VIDEO_MODE_BADGE[model.inputMode]}</Badge>
+              {model.supportsAudio && <Badge>🔊 audio</Badge>}
+              <Badge>{model.tier}</Badge>
+            </div>
+            <p className="text-sm text-neutral-500">{model.blurb}</p>
+          </div>
+        </label>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          {selected && (
+            <span className="text-sm font-semibold text-amber-700">{usd(estimateVideoCost(model, settings, live))}</span>
+          )}
+          <a
+            href={`https://fal.ai/models/${model.id}/api`}
+            target="_blank"
+            rel="noreferrer"
+            className="whitespace-nowrap text-xs text-neutral-400 hover:text-amber-600"
+            title={`Open ${model.id} API docs on fal.ai`}
+          >
+            API ↗
+          </a>
+        </div>
+      </div>
+
+      {selected && model.fields.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-amber-200/70 pt-3 pl-7 text-sm">
+          {hasVideoField(model, "durationSec") && (
+            <Select
+              label="Duration"
+              value={String(effectiveDuration(model, settings))}
+              onChange={(v) => onPatch({ durationSec: Number(v) })}
+              options={(model.fields.find((f) => f.key === "durationSec")?.options ?? []).map((o) => ({
+                value: o.value,
+                label: o.label,
+              }))}
+            />
+          )}
+          {hasVideoField(model, "aspectRatio") && (
+            <Select
+              label="Aspect"
+              value={effectiveAspectRatio(model, settings)}
+              onChange={(v) => onPatch({ aspectRatio: v })}
+              options={(model.fields.find((f) => f.key === "aspectRatio")?.options ?? []).map((o) => ({
+                value: o.value,
+                label: o.label,
+              }))}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Elapsed time since a run was created, for in-flight video jobs (mm:ss).
+function elapsed(from: number): string {
+  const s = Math.max(0, Math.floor((Date.now() - from) / 1000));
+  const m = Math.floor(s / 60);
+  return `${m}:${String(s % 60).padStart(2, "0")}`;
+}
+
+// A video run card: per-item status (queue/elapsed/log), inline <video> player on
+// success, download link + actual cost; errors land on the card. Terminal output —
+// no reuse / no frame extraction (decision #7).
+function VideoRunCard({
+  run,
+  status,
+  onDelete,
+}: {
+  run: VideoRun;
+  status: Record<string, string>;
+  onDelete: () => void;
+}) {
+  return (
+    <article className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <p className="text-xs text-neutral-400">{new Date(run.createdAt).toLocaleString()}</p>
+        <button type="button" onClick={onDelete} className="text-sm text-neutral-400 hover:text-red-500">
+          Delete
+        </button>
+      </div>
+
+      <div className="space-y-5">
+        {run.items.map((item) => (
+          <div key={item.id}>
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
+              <span className="font-medium">{item.modelLabel}</span>
+              {item.status === "running" && (
+                <span className="text-amber-600">
+                  ⏳ {status[item.id] ?? "working…"} · {elapsed(run.createdAt)}
+                </span>
+              )}
+              {item.status === "done" && (
+                <span className="text-green-600">✓ done · {usd(item.actualCost ?? item.estimatedCost)}</span>
+              )}
+              {item.status === "error" && <span className="text-red-500">error</span>}
+            </div>
+
+            {item.prompt && (
+              <div className="mb-2 rounded-lg border border-neutral-100 bg-neutral-50/60 px-3 py-2">
+                <PromptBlock prompt={item.prompt} kind={item.promptKind} />
+              </div>
+            )}
+
+            {item.params && (
+              <div className="mb-2">
+                <VideoParamChips params={item.params} />
+              </div>
+            )}
+
+            {(item.startUrl || item.endUrl) && (
+              <div className="mb-2 flex items-center gap-1.5">
+                <span className="shrink-0 text-[11px] text-neutral-400">frames:</span>
+                <div className="flex gap-1">
+                  {[item.startUrl, item.endUrl].filter(Boolean).map((u, i) => (
+                    <a
+                      key={i}
+                      href={u as string}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block overflow-hidden rounded border border-neutral-200"
+                      title={i === 0 ? "Start frame" : "End frame"}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={u as string} alt="frame" className="size-9 object-cover" />
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {item.status === "error" && (
+              <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{item.error}</p>
+            )}
+
+            {item.status === "done" && item.video?.url && (
+              <figure className="overflow-hidden rounded-lg border border-neutral-200">
+                {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                <video src={item.video.url} controls className="w-full bg-black" />
+                <div className="flex divide-x divide-neutral-200 border-t border-neutral-200 text-xs">
+                  <a
+                    href={item.video.url}
+                    download
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex-1 py-1.5 text-center hover:bg-amber-50"
+                    title="Download the video"
+                  >
+                    ↓ download
+                  </a>
+                  <a
+                    href={item.video.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex-1 py-1.5 text-center hover:bg-neutral-50"
+                  >
+                    open
+                  </a>
+                </div>
+              </figure>
+            )}
+
+            {item.status === "running" && (
+              <div className="flex aspect-video w-full animate-pulse items-center justify-center rounded-lg bg-neutral-100 text-sm text-neutral-400">
+                rendering…
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+// Video param chips (duration / aspect), mirrors ParamChips for images.
+function VideoParamChips({ params }: { params?: Record<string, unknown> }) {
+  const entries = params ? Object.entries(params) : [];
+  if (!entries.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {entries.map(([k, v]) => (
+        <span key={k} className="rounded bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-600">
+          <span className="text-neutral-400">{VIDEO_PARAM_LABELS[k] ?? k}:</span> {paramText(v)}
+        </span>
+      ))}
     </div>
   );
 }
