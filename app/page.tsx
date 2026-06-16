@@ -1054,9 +1054,45 @@ export default function Page() {
         </Section>
       )}
 
-      {/* STEP 2 — REFERENCES (image mode only) */}
+      {/* STEP 2 — MODELS (image mode; multi-select) */}
       {!isVideo && (
-      <Section step={2} title="Reference images (optional)" done={hasReferences}>
+      <Section step={2} title="Models" done={activeModels.length > 0}>
+        <div className="space-y-5">
+          {MODEL_GROUPS.map((group) => (
+            <div key={group}>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">{group}</p>
+              <div className="space-y-2">
+                {MODELS.filter((m) => m.group === group).map((m) => {
+                  const editVariant =
+                    m.mode === "generate"
+                      ? MODELS.find((x) => x.family === m.family && x.mode === "edit")
+                      : undefined;
+                  return (
+                    <ModelRow
+                      key={m.key}
+                      model={m}
+                      selected={selectedKeys.includes(m.key)}
+                      blocked={m.needsReferences && !hasReferences}
+                      ignoresRefs={hasReferences && m.mode === "generate" && selectedKeys.includes(m.key)}
+                      editVariantLabel={editVariant?.label}
+                      onUseEditVariant={editVariant ? () => switchToEdit(m.key, editVariant.key) : undefined}
+                      settings={settingsFor(m.key)}
+                      liveBase={liveBaseFor(m)}
+                      onToggle={() => toggleModel(m.key)}
+                      onPatch={(patch) => patchSettings(m.key, patch)}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Section>
+      )}
+
+      {/* STEP 3 — REFERENCES (image mode only) */}
+      {!isVideo && (
+      <Section step={3} title="Reference images (optional)" done={hasReferences}>
         <p className="mb-3 text-sm text-neutral-500">
           Upload any number of images. Used by <b>edit</b> models; <b>generate</b> models ignore them.
         </p>
@@ -1107,7 +1143,7 @@ export default function Page() {
         )}
         {hasReferences && !hasEditSelected && (
           <p className="mt-3 rounded-lg bg-amber-100/80 px-3 py-2 text-xs text-amber-900">
-            ⚠ None of your selected models use reference images. Pick an <b>edit / image-to-image</b> model in step 4
+            ⚠ None of your selected models use reference images. Pick an <b>edit / image-to-image</b> model in step 2
             to apply them — otherwise they’re ignored.
           </p>
         )}
@@ -1169,8 +1205,8 @@ export default function Page() {
         </Section>
       )}
 
-      {/* STEP 3 — PROMPT (image mode) / STEP 4 — PROMPT (video mode) */}
-      <Section step={isVideo ? 4 : 3} title="Prompt" done={prompt.trim().length > 0}>
+      {/* STEP 4 — PROMPT (both modes) */}
+      <Section step={4} title="Prompt" done={prompt.trim().length > 0}>
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
@@ -1350,42 +1386,6 @@ export default function Page() {
           </div>
         )}
       </Section>
-
-      {/* STEP 4 — MODELS (image mode) */}
-      {!isVideo && (
-      <Section step={4} title="Models" done={activeModels.length > 0}>
-        <div className="space-y-5">
-          {MODEL_GROUPS.map((group) => (
-            <div key={group}>
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">{group}</p>
-              <div className="space-y-2">
-                {MODELS.filter((m) => m.group === group).map((m) => {
-                  const editVariant =
-                    m.mode === "generate"
-                      ? MODELS.find((x) => x.family === m.family && x.mode === "edit")
-                      : undefined;
-                  return (
-                    <ModelRow
-                      key={m.key}
-                      model={m}
-                      selected={selectedKeys.includes(m.key)}
-                      blocked={m.needsReferences && !hasReferences}
-                      ignoresRefs={hasReferences && m.mode === "generate" && selectedKeys.includes(m.key)}
-                      editVariantLabel={editVariant?.label}
-                      onUseEditVariant={editVariant ? () => switchToEdit(m.key, editVariant.key) : undefined}
-                      settings={settingsFor(m.key)}
-                      liveBase={liveBaseFor(m)}
-                      onToggle={() => toggleModel(m.key)}
-                      onPatch={(patch) => patchSettings(m.key, patch)}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      </Section>
-      )}
 
       {/* RESULTS */}
       <div ref={resultsRef}>
