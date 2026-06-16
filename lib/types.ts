@@ -2,11 +2,8 @@ import type { ModelSettings } from "./models";
 import type { VideoSettings } from "./video/models";
 
 export type Reference =
-  | { kind: "file"; id: string; file: File; previewUrl: string; label?: string }
-  | { kind: "url"; id: string; url: string; origin: "generated" | "manual"; label?: string };
-
-/** Which prompt variant a run item was generated from. */
-export type PromptKind = "original" | "beautified";
+  | { kind: "file"; id: string; file: File; previewUrl: string }
+  | { kind: "url"; id: string; url: string; origin: "generated" | "manual" };
 
 export interface ResultImage {
   url: string;
@@ -21,7 +18,6 @@ export interface RunItem {
   modelKey: string;
   modelLabel: string;
   prompt: string; // the prompt text actually sent for this item
-  promptKind: PromptKind; // which variant produced it
   status: RunItemStatus;
   images: ResultImage[];
   error?: string;
@@ -61,7 +57,6 @@ export interface VideoRunItem {
   modelKey: string;
   modelLabel: string;
   prompt: string; // prompt text actually sent
-  promptKind: PromptKind; // which variant produced it (shared beautifier)
   status: VideoRunItemStatus;
   video?: ResultVideo; // set when done
   error?: string;
@@ -90,7 +85,7 @@ export interface SessionExport {
   runs: GenerationRun[];
   selectedKeys: string[];
   settings: Record<string, ModelSettings>;
-  references: { url: string; origin: "generated" | "manual"; label?: string }[];
+  references: { url: string; origin: "generated" | "manual" }[];
   // Video additions (version 2+). Optional on read so legacy/v1 files still import.
   mode?: AppMode;
   videoRuns?: VideoRun[];
