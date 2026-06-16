@@ -227,10 +227,34 @@ export default function Page() {
   }, []);
 
   // Step 3 — prompt + history
-  const [prompt, setPrompt] = useState("");
+  // Image and video prompts are independent — keyed by `mode` so switching the
+  // asset-type toggle never carries one mode's text into the other.
+  const [promptByMode, setPromptByMode] = useState<Record<AppMode, string>>({ image: "", video: "" });
+  const prompt = promptByMode[mode];
+  const setPrompt = useCallback(
+    (next: string | ((p: string) => string)) =>
+      setPromptByMode((prev) => ({
+        ...prev,
+        [mode]: typeof next === "function" ? (next as (p: string) => string)(prev[mode]) : next,
+      })),
+    [mode],
+  );
   const [history, setHistory] = useSessionStorage<SavedPrompt[]>("fal:prompts", []);
   // Holds an unsaved draft that got overwritten (by loading history / clearing), so it can be restored.
-  const [stashedPrompt, setStashedPrompt] = useState<string | null>(null);
+  // Per-mode, like `prompt`.
+  const [stashedPromptByMode, setStashedPromptByMode] = useState<Record<AppMode, string | null>>({
+    image: null,
+    video: null,
+  });
+  const stashedPrompt = stashedPromptByMode[mode];
+  const setStashedPrompt = useCallback(
+    (next: string | null | ((p: string | null) => string | null)) =>
+      setStashedPromptByMode((prev) => ({
+        ...prev,
+        [mode]: typeof next === "function" ? (next as (p: string | null) => string | null)(prev[mode]) : next,
+      })),
+    [mode],
+  );
 
   const savePrompt = useCallback(() => {
     const text = prompt.trim();
@@ -265,11 +289,33 @@ export default function Page() {
   // Step 3b — prompt beautifier ("Upiększacz"). Ephemeral, like `prompt` (not persisted).
   const [strength, setStrength] = useState<BeautifyStrength>("moderate");
   const [language, setLanguage] = useState<BeautifyLanguage>("auto");
-  const [beautified, setBeautified] = useState(""); // editable field 2; "" = none yet
+  // Per-mode, like `prompt` — switching modes must not show the other mode's beautified text.
+  const [beautifiedByMode, setBeautifiedByMode] = useState<Record<AppMode, string>>({ image: "", video: "" });
+  const beautified = beautifiedByMode[mode]; // editable field 2; "" = none yet
+  const setBeautified = useCallback(
+    (next: string | ((b: string) => string)) =>
+      setBeautifiedByMode((prev) => ({
+        ...prev,
+        [mode]: typeof next === "function" ? (next as (b: string) => string)(prev[mode]) : next,
+      })),
+    [mode],
+  );
   const [beautifying, setBeautifying] = useState(false);
   const [beautifyError, setBeautifyError] = useState<string | null>(null);
-  // The original prompt snapshot at the moment of the last beautify, to detect "stale".
-  const [beautifySource, setBeautifySource] = useState<string | null>(null);
+  // The original prompt snapshot at the moment of the last beautify, to detect "stale". Per-mode.
+  const [beautifySourceByMode, setBeautifySourceByMode] = useState<Record<AppMode, string | null>>({
+    image: null,
+    video: null,
+  });
+  const beautifySource = beautifySourceByMode[mode];
+  const setBeautifySource = useCallback(
+    (next: string | null | ((s: string | null) => string | null)) =>
+      setBeautifySourceByMode((prev) => ({
+        ...prev,
+        [mode]: typeof next === "function" ? (next as (s: string | null) => string | null)(prev[mode]) : next,
+      })),
+    [mode],
+  );
   const hasBeautified = beautified.trim().length > 0;
   const beautifyStale = hasBeautified && beautifySource != null && prompt.trim() !== beautifySource.trim();
 
