@@ -15,3 +15,168 @@ body {
   scrollbar-width: thin;
   scrollbar-color: #d4d4d0 transparent;
 }
+
+/* --- Chat markdown prose -------------------------------------------------
+   Scoped to .chat-prose so it never affects the image/video wizard. Tailwind v4
+   has no @tailwindcss/typography here, so these are hand-rolled, deliberately
+   compact element styles for react-markdown + remark-gfm output. */
+.chat-prose {
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.chat-prose > :first-child {
+  margin-top: 0;
+}
+.chat-prose > :last-child {
+  margin-bottom: 0;
+}
+.chat-prose p {
+  margin: 0.6em 0;
+}
+.chat-prose h1,
+.chat-prose h2,
+.chat-prose h3,
+.chat-prose h4 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1.1em 0 0.5em;
+}
+.chat-prose h1 {
+  font-size: 1.4em;
+}
+.chat-prose h2 {
+  font-size: 1.25em;
+}
+.chat-prose h3 {
+  font-size: 1.1em;
+}
+.chat-prose ul,
+.chat-prose ol {
+  margin: 0.6em 0;
+  padding-left: 1.4em;
+}
+.chat-prose ul {
+  list-style: disc;
+}
+.chat-prose ol {
+  list-style: decimal;
+}
+.chat-prose li {
+  margin: 0.25em 0;
+}
+.chat-prose li > ul,
+.chat-prose li > ol {
+  margin: 0.25em 0;
+}
+.chat-prose a {
+  color: #b45309;
+  text-decoration: underline;
+}
+.chat-prose blockquote {
+  border-left: 3px solid #e5e5e0;
+  padding-left: 0.9em;
+  margin: 0.7em 0;
+  color: #6b6b66;
+}
+.chat-prose hr {
+  border: 0;
+  border-top: 1px solid #e5e5e0;
+  margin: 1.2em 0;
+}
+.chat-prose table {
+  border-collapse: collapse;
+  margin: 0.7em 0;
+  display: block;
+  overflow-x: auto;
+  font-size: 0.9em;
+}
+.chat-prose th,
+.chat-prose td {
+  border: 1px solid #e5e5e0;
+  padding: 0.4em 0.65em;
+  text-align: left;
+}
+.chat-prose th {
+  background: #f3f3f0;
+  font-weight: 600;
+}
+/* Inline code (code that is NOT inside a fenced block our renderer rewrites). */
+.chat-prose :not(pre) > code {
+  background: #f0f0ec;
+  border: 1px solid #e5e5e0;
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+  font-size: 0.875em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.chat-prose pre {
+  margin: 0;
+  overflow-x: auto;
+  padding: 0.85rem 0.95rem;
+  font-size: 0.825rem;
+  line-height: 1.55;
+}
+.chat-prose pre code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: none;
+  padding: 0;
+  border: 0;
+}
+
+/* --- highlight.js theme (compact, GitHub-light-ish) ---------------------
+   rehype-highlight emits hljs class names; we style them here so no external
+   CSS file needs importing. */
+.hljs {
+  color: #24292e;
+}
+.hljs-comment,
+.hljs-quote {
+  color: #6a737d;
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-doctag,
+.hljs-formula {
+  color: #d73a49;
+}
+.hljs-string,
+.hljs-meta .hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: #032f62;
+}
+.hljs-number,
+.hljs-literal,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-attr,
+.hljs-attribute {
+  color: #005cc5;
+}
+.hljs-title,
+.hljs-section,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: #6f42c1;
+}
+.hljs-built_in,
+.hljs-type,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-meta,
+.hljs-link {
+  color: #e36209;
+}
+.hljs-deletion {
+  color: #b31d28;
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}

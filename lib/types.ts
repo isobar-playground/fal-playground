@@ -1,5 +1,6 @@
 import type { ModelSettings } from "./models";
 import type { VideoSettings } from "./video/models";
+import type { Conversation } from "./chat/store";
 
 export type Reference =
   | {
@@ -54,7 +55,7 @@ export interface GenerationRun {
 // --- video (separate code path, parallel to the image types above) -------
 
 /** Top-level mode the wizard is in. Persisted; default "image". */
-export type AppMode = "image" | "video";
+export type AppMode = "image" | "video" | "chat";
 
 export interface ResultVideo {
   url: string;
@@ -110,4 +111,9 @@ export interface SessionExport {
   // by model key. Optional on read so v1/v2 files still import.
   overrides?: Record<string, Record<string, unknown>>; // image model key → verbatim input
   videoOverrides?: Record<string, Record<string, unknown>>; // video model key → verbatim input
+  // Chat additions (version 4+). Optional on read so v1–v3 files still import
+  // (chat fields simply absent → empty). The OpenRouter key is covered by the
+  // existing "file contains your key" export warning.
+  orKey?: string;
+  conversations?: Conversation[];
 }

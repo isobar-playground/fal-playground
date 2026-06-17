@@ -52,6 +52,9 @@ import {
   type VideoSettings,
 } from "@/lib/video/models";
 import { runVideoModel } from "@/lib/video/fal";
+// --- chat (separate code path; see lib/chat/* + ChatView) ---------------
+import ChatView from "./ChatView";
+import type { Conversation } from "@/lib/chat/store";
 
 // Sub-dollar amounts keep up to 4 decimals (so $0.0398 isn't rounded to $0.04),
 // trailing zeros trimmed but at least 2 shown; $1+ uses plain 2-decimal currency.
@@ -156,6 +159,13 @@ export default function Page() {
   // in both; steps 2/4/5 swap to their video versions. Default "image".
   const [mode, setMode] = useLocalStorage<AppMode>("fal:mode", "image");
   const isVideo = mode === "video";
+  const isChat = mode === "chat";
+
+  // Chat state lives in localStorage here (centralized) so it's covered by
+  // "Reset all" and session export/import. The chat UI itself is isolated in
+  // ChatView; the proxy never reads OPENROUTER_API_KEY from env (BYOK only).
+  const [orKey, setOrKey] = useLocalStorage<string>("chat:orKey", "");
+  const [conversations, setConversations] = useLocalStorage<Conversation[]>("chat:conversations", []);
 
   // Step 1 — API key
   const [apiKey, setApiKey] = useLocalStorage<string>("fal:key", "");
@@ -164,24 +174,37 @@ export default function Page() {
     if (apiKey) configureFal(apiKey);
   }, [apiKey]);
 
-  // Local-dev convenience: pre-fill the key from FAL_KEY (dev only), unless one is stored.
+  // Local-dev convenience: pre-fill keys from FAL_KEY / OPENROUTER_API_KEY (dev only).
+  // Used by Reset all to restore both env keys after a wipe.
   const envTried = useRef(false);
   const loadEnvKey = useCallback(() => {
     fetch("/api/dev-key")
       .then((r) => r.json())
       .then((d) => {
         if (d?.key) setApiKey(d.key);
+        if (d?.openrouterKey) setOrKey(d.openrouterKey);
       })
       .catch(() => {});
-  }, [setApiKey]);
+  }, [setApiKey, setOrKey]);
   useEffect(() => {
     if (!mounted || envTried.current) return;
     envTried.current = true;
+    // Prefill each key only when its slot is empty, so a stored key is never overwritten.
+    let hasFal = false;
+    let hasOr = false;
     try {
-      if (window.localStorage.getItem("fal:key")) return;
+      hasFal = Boolean(window.localStorage.getItem("fal:key"));
+      hasOr = Boolean(window.localStorage.getItem("chat:orKey"));
     } catch {}
-    loadEnvKey();
-  }, [mounted, loadEnvKey]);
+    if (hasFal && hasOr) return;
+    fetch("/api/dev-key")
+      .then((r) => r.json())
+      .then((d) => {
+        if (!hasFal && d?.key) setApiKey(d.key);
+        if (!hasOr && d?.openrouterKey) setOrKey(d.openrouterKey);
+      })
+      .catch(() => {});
+  }, [mounted, setApiKey, setOrKey]);
 
   // Step 2 — references
   const [references, setReferences] = useState<Reference[]>([]);
@@ -255,7 +278,7 @@ export default function Page() {
   // Step 3 — prompt + history
   // Image and video prompts are independent — keyed by `mode` so switching the
   // asset-type toggle never carries one mode's text into the other.
-  const [promptByMode, setPromptByMode] = useState<Record<AppMode, string>>({ image: "", video: "" });
+  const [promptByMode, setPromptByMode] = useState<Record<AppMode, string>>({ image: "", video: "", chat: "" });
   const prompt = promptByMode[mode];
   const setPrompt = useCallback(
     (next: string | ((p: string) => string)) =>
@@ -271,6 +294,7 @@ export default function Page() {
   const [stashedPromptByMode, setStashedPromptByMode] = useState<Record<AppMode, string | null>>({
     image: null,
     video: null,
+    chat: null,
   });
   const stashedPrompt = stashedPromptByMode[mode];
   const setStashedPrompt = useCallback(
@@ -982,7 +1006,7 @@ export default function Page() {
   }, [canGenerate, apiKey, videoModel, videoBlock, startFrame, endFrame, prompt, videoSettingsFor, setVideoRuns, updateVideoItem, refreshPrices, livePrices, refreshCredits]);
 
   const resetAll = useCallback(() => {
-    if (!confirm("Reset everything? This clears your key, prompt history, results and references.")) return;
+    if (!confirm("Reset everything? This clears your keys, prompt history, results, references and chat conversations.")) return;
     references.forEach((r) => r.kind === "file" && URL.revokeObjectURL(r.previewUrl));
     setApiKey("");
     setHistory([]);
@@ -1002,14 +1026,17 @@ export default function Page() {
     setEndFrame((f) => (clearFrame(f), null));
     setOverrides({});
     setVideoOverrides({});
+    // chat path
+    setOrKey("");
+    setConversations([]);
     loadEnvKey(); // restore the dev env key if present
-  }, [references, setApiKey, setHistory, setRuns, setVideoRuns, setOverrides, setVideoOverrides, clearFrame, loadEnvKey]);
+  }, [references, setApiKey, setHistory, setRuns, setVideoRuns, setOverrides, setVideoOverrides, setOrKey, setConversations, clearFrame, loadEnvKey]);
 
   // Export / import the whole session (share progress with others).
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const exportSession = useCallback(() => {
-    if (apiKey && !confirm("⚠️ The exported file includes your Fal API key. Only share it with people you trust. Continue?")) {
+    if ((apiKey || orKey) && !confirm("⚠️ The exported file includes your Fal and OpenRouter API keys. Only share it with people you trust. Continue?")) {
       return;
     }
     // Overrides export as parsed objects (verbatim inputs). Drop any with a JSON
@@ -1028,7 +1055,7 @@ export default function Page() {
     };
     const data: SessionExport = {
       app: "fal-prompt-playground",
-      version: 3, // bumped: v3 carries request overrides + per-result sentInput
+      version: 4, // bumped: v4 carries chat conversations + OpenRouter key
       exportedAt: new Date().toISOString(),
       key: apiKey,
       promptHistory: history,
@@ -1046,6 +1073,9 @@ export default function Page() {
       // override additions (v3+)
       overrides: parseOverrides(overrides),
       videoOverrides: parseOverrides(videoOverrides),
+      // chat additions (v4+)
+      orKey,
+      conversations,
     };
     const blob = new Blob([encodeSession(data)], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
@@ -1054,7 +1084,7 @@ export default function Page() {
     a.download = `fal-session-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.falsession`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [apiKey, history, runs, selectedKeys, settings, references, mode, videoRuns, videoKey, videoSettings, overrides, videoOverrides]);
+  }, [apiKey, history, runs, selectedKeys, settings, references, mode, videoRuns, videoKey, videoSettings, overrides, videoOverrides, orKey, conversations]);
 
   const importSession = useCallback(
     async (file: File) => {
@@ -1092,7 +1122,7 @@ export default function Page() {
       setStashedPrompt(null);
       setLightbox(null);
       // video path (optional in v1 files; defaults keep legacy imports working)
-      setMode(data.mode === "video" ? "video" : "image");
+      setMode(data.mode === "video" || data.mode === "chat" ? data.mode : "image");
       setVideoRuns(Array.isArray(data.videoRuns) ? data.videoRuns : []);
       setVideoKey(
         typeof data.videoSelectedKey === "string" && VIDEO_MODEL_BY_KEY[data.videoSelectedKey]
@@ -1114,12 +1144,15 @@ export default function Page() {
       };
       setOverrides(importOverrides(data.overrides));
       setVideoOverrides(importOverrides(data.videoOverrides));
+      // chat additions (v4+; optional-on-read so v1–v3 files still import).
+      setOrKey(typeof data.orKey === "string" ? data.orKey : "");
+      setConversations(Array.isArray(data.conversations) ? data.conversations : []);
       // Don't let the form-is-master diff effect wipe the just-imported overrides on the
       // first post-import render: re-prime the signature refs to the imported form state.
       imagePromptRef.current = null;
       videoFormRef.current = null;
     },
-    [references, setApiKey, setHistory, setRuns, setMode, setVideoRuns, setOverrides, setVideoOverrides, clearFrame],
+    [references, setApiKey, setHistory, setRuns, setMode, setVideoRuns, setOverrides, setVideoOverrides, setOrKey, setConversations, clearFrame],
   );
 
   if (!mounted) {
@@ -1129,18 +1162,20 @@ export default function Page() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-4 pb-44 pt-8">
-      <header className="mb-8 flex items-start justify-between gap-4">
+    <div className={isChat ? "flex h-screen flex-col overflow-hidden px-4 pt-8" : "mx-auto max-w-3xl px-4 pb-44 pt-8"}>
+      <header className={`flex items-start justify-between gap-4 ${isChat ? "mx-auto mb-4 w-full max-w-5xl shrink-0" : "mb-8"}`}>
         <div>
           <h1 className="text-3xl font-bold tracking-tight">
             <span className="mr-1">🍌</span> Fal Prompt Playground
           </h1>
           <p className="mt-1 text-sm text-neutral-500">
-            Test prompts on Fal.ai {isVideo ? "video" : "image"} models — no code. Everything stays in your browser.
+            {isChat
+              ? "Chat with an LLM via OpenRouter (your own key). Everything stays in your browser."
+              : `Test prompts on Fal.ai ${isVideo ? "video" : "image"} models — no code. Everything stays in your browser.`}
           </p>
-          {/* Top-level mode toggle — Images | Video. Persisted across reloads. */}
+          {/* Top-level mode toggle — Images | Video | Chat. Persisted across reloads. */}
           <div className="mt-3 inline-flex overflow-hidden rounded-lg border border-neutral-300">
-            {(["image", "video"] as const).map((md) => (
+            {(["image", "video", "chat"] as const).map((md) => (
               <button
                 key={md}
                 type="button"
@@ -1149,7 +1184,7 @@ export default function Page() {
                   mode === md ? "bg-amber-400 text-amber-950" : "bg-white text-neutral-600 hover:bg-amber-50"
                 }`}
               >
-                {md === "image" ? "🖼 Images" : "🎬 Video"}
+                {md === "image" ? "🖼 Images" : md === "video" ? "🎬 Video" : "💬 Chat"}
               </button>
             ))}
           </div>
@@ -1192,6 +1227,21 @@ export default function Page() {
         </div>
       </header>
 
+      {/* CHAT MODE — isolated full-height surface (lib/chat/* + ChatView). */}
+      {isChat && (
+        <div className="mx-auto flex w-full min-h-0 max-w-5xl flex-1 flex-col">
+          <ChatView
+            orKey={orKey}
+            setOrKey={setOrKey}
+            conversations={conversations}
+            setConversations={setConversations}
+          />
+        </div>
+      )}
+
+      {/* IMAGE / VIDEO WIZARD — unchanged; hidden in chat mode. */}
+      {!isChat && (
+      <>
       {/* STEP 1 — API KEY */}
       <Section step={1} title="Fal.ai key" done={Boolean(apiKey)}>
         <p className="mb-3 text-sm text-neutral-500">
@@ -1647,6 +1697,8 @@ export default function Page() {
           onClose={() => setLightbox(null)}
           onOpenRefs={openRefs}
         />
+      )}
+      </>
       )}
     </div>
   );
