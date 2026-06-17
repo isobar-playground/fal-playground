@@ -1981,6 +1981,20 @@ function ModelRow({
             if (field.kind === "seed") {
               return <SeedField key="seed" value={settings.seed} onChange={(v) => onPatch({ seed: v })} />;
             }
+            if (field.kind === "number") {
+              return (
+                <NumberField
+                  key={field.key}
+                  label={field.label}
+                  value={settings[field.key]}
+                  placeholder={field.placeholder}
+                  min={field.min}
+                  max={field.max}
+                  step={field.step}
+                  onChange={(v) => onPatch({ [field.key]: v } as Partial<ModelSettings>)}
+                />
+              );
+            }
             const value =
               field.key === "resolution"
                 ? effectiveResolution(model, settings)
@@ -2034,6 +2048,42 @@ function SeedField({ value, onChange }: { value: string; onChange: (v: string) =
         </button>
       )}
     </span>
+  );
+}
+
+// Free numeric field (FLUX steps / guidance). Empty = use the model default,
+// which is shown as the placeholder; buildInput omits the key when blank.
+function NumberField({
+  label,
+  value,
+  placeholder,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <label className="flex items-center gap-1.5">
+      <span className="text-neutral-500">{label}</span>
+      <input
+        type="number"
+        value={value}
+        min={min}
+        max={max}
+        step={step}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-20 rounded-md border border-neutral-300 bg-white px-2 py-1"
+      />
+    </label>
   );
 }
 

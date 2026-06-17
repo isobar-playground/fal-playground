@@ -11,7 +11,7 @@
 // Keeping these pure and catalog-driven means the panel, the send path, and the
 // result record all agree on what a request looks like.
 
-import type { ModelDef, Field } from "./models";
+import { isFluxKontext, type ModelDef, type Field } from "./models";
 import type { VideoModelDef } from "./video/models";
 
 // --- schema descriptor ---------------------------------------------------
@@ -66,6 +66,19 @@ export function imageRequestSchema(model: ModelDef): RequestSchema {
       keys.image_size = { key: "image_size", type: "object" };
       keys.quality = { key: "quality", type: "string" };
       break;
+    case "flux-schnell":
+    case "flux-dev":
+    case "flux-1.1-pro":
+    case "flux-2-dev":
+    case "flux-2-flex":
+    case "flux-2-pro":
+    case "flux-2-max":
+      keys.image_size = { key: "image_size", type: "string" };
+      break;
+    case "flux-1.1-pro-ultra":
+    case "flux-kontext-pro":
+    case "flux-kontext-max":
+      break; // sized via the aspect_ratio field below
   }
 
   // Declarative fields → the input keys + enum constraints they drive.
@@ -81,11 +94,14 @@ export function imageRequestSchema(model: ModelDef): RequestSchema {
       }
     } else if (f.kind === "seed") {
       keys.seed = { key: "seed", type: "number" };
+    } else if (f.kind === "number") {
+      keys[k] = { key: k, type: "number" };
     }
   }
 
   if (model.mode === "edit") {
-    keys.image_urls = { key: "image_urls", type: "array" };
+    if (isFluxKontext(model)) keys.image_url = { key: "image_url", type: "string" };
+    else keys.image_urls = { key: "image_urls", type: "array" };
   }
 
   return { keys };
@@ -95,6 +111,7 @@ export function imageRequestSchema(model: ModelDef): RequestSchema {
 function imageFieldKey(f: Field): string | null {
   if (f.kind === "images") return "num_images";
   if (f.kind === "seed") return "seed";
+  if (f.kind === "number") return f.key === "steps" ? "num_inference_steps" : "guidance_scale";
   switch (f.key) {
     case "resolution":
       return "resolution";
