@@ -17,6 +17,7 @@ import {
   type ModelSettings,
 } from "@/lib/models";
 import { configureFal, runModel, uploadReference } from "@/lib/fal";
+import { logGeneration } from "@/lib/logGeneration";
 import { fetchLivePrices } from "@/lib/pricing";
 import { decodeSession, encodeSession } from "@/lib/session";
 import { useLocalStorage, useSessionStorage } from "@/lib/hooks";
@@ -866,9 +867,10 @@ export default function Page() {
       jobs.map(async ({ id, model: m, input }) => {
         const s = settingsFor(m.key);
         try {
-          const { images, seed } = await runModel(m, input, (line) =>
+          const { images, seed, raw } = await runModel(m, input, (line) =>
             setLogLines((prev) => ({ ...prev, [id]: line })),
           );
+          logGeneration({ kind: "image", model: m.id, input, output: raw });
           const base = run.items.find((it) => it.id === id)?.params ?? {};
           const params = seed != null ? { ...base, seed } : base;
           updateItem(runId, id, {
@@ -878,6 +880,7 @@ export default function Page() {
             params,
           });
         } catch (e) {
+          logGeneration({ kind: "image", model: m.id, input, error: errMsg(e) });
           updateItem(runId, id, { status: "error", error: errMsg(e) });
         }
       }),
@@ -952,7 +955,7 @@ export default function Page() {
     await Promise.all(
       jobs.map(async ({ id, input }) => {
         try {
-          const video = await runVideoModel(m, input, (st) =>
+          const { video, raw } = await runVideoModel(m, input, (st) =>
             setVideoStatus((prev) => ({
               ...prev,
               [id]:
@@ -961,12 +964,14 @@ export default function Page() {
                   : st.log ?? "rendering…",
             })),
           );
+          logGeneration({ kind: "video", model: m.id, input, output: raw });
           updateVideoItem(runId, id, {
             status: "done",
             video,
             actualCost: estimateVideoCost(m, s, liveBase),
           });
         } catch (e) {
+          logGeneration({ kind: "video", model: m.id, input, error: errMsg(e) });
           updateVideoItem(runId, id, { status: "error", error: errMsg(e) });
         }
       }),

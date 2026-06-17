@@ -23,7 +23,7 @@ export async function runModel(
   model: ModelDef,
   input: Record<string, unknown>,
   onLog?: (line: string) => void,
-): Promise<{ images: ResultImage[]; seed?: number }> {
+): Promise<{ images: ResultImage[]; seed?: number; raw: unknown }> {
   const result = await fal.subscribe(model.id, {
     input,
     logs: true,
@@ -41,5 +41,5 @@ export async function runModel(
     seed?: number;
   };
   const images = (data.images ?? []).map((img) => ({ url: img.url, width: img.width, height: img.height }));
-  return { images, seed: typeof data.seed === "number" ? data.seed : undefined };
+  return { images, seed: typeof data.seed === "number" ? data.seed : undefined, raw: result.data };
 }

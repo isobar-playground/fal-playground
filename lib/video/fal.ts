@@ -24,7 +24,7 @@ export async function runVideoModel(
   model: VideoModelDef,
   input: Record<string, unknown>,
   onStatus?: (s: VideoRunStatus) => void,
-): Promise<ResultVideo> {
+): Promise<{ video: ResultVideo; raw: unknown }> {
   const result = await fal.subscribe(model.id, {
     input,
     logs: true,
@@ -46,8 +46,11 @@ export async function runVideoModel(
   const video = data.video;
   if (!video?.url) throw new Error("Fal returned no video URL.");
   return {
-    url: video.url,
-    width: typeof video.width === "number" ? video.width : undefined,
-    height: typeof video.height === "number" ? video.height : undefined,
+    video: {
+      url: video.url,
+      width: typeof video.width === "number" ? video.width : undefined,
+      height: typeof video.height === "number" ? video.height : undefined,
+    },
+    raw: result.data,
   };
 }
