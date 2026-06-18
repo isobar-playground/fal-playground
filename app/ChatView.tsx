@@ -43,6 +43,7 @@ import {
   completeChat,
   streamChat,
 } from "@/lib/chat/openrouter";
+import { logChat } from "@/lib/logChat";
 import { ChatMarkdown } from "./chat/Markdown";
 
 // --- formatting ---------------------------------------------------------
@@ -175,11 +176,11 @@ export default function ChatView({
       let acc = "";
       let accReason = "";
       let usage: ChatUsage | undefined;
+      const body = buildChatBody(
+        { ...conversation, messages: priorMessages },
+        { stream: true },
+      );
       try {
-        const body = buildChatBody(
-          { ...conversation, messages: priorMessages },
-          { stream: true },
-        );
         // Stash the exact request immediately so it's inspectable even if the turn errors.
         setConversations((list) => patchMessage(list, conversation.id, assistant.id, { request: body }));
         const response = await streamChat(
@@ -205,6 +206,13 @@ export default function ChatView({
         setConversations((list) =>
           patchMessage(list, conversation.id, assistant.id, { ...(usage ? { usage } : {}), response }),
         );
+        logChat({
+          conversationId: conversation.id,
+          conversationTitle: conversation.title,
+          model: conversation.model,
+          request: body,
+          response,
+        });
         // Auto-title once: first exchange completed and still on the default title.
         const isFirstExchange = priorMessages.filter((m) => m.role === "user").length === 1;
         if (isFirstExchange && conversation.title === "New chat" && acc.trim()) {
@@ -222,6 +230,13 @@ export default function ChatView({
               content: acc,
             }),
           );
+          logChat({
+            conversationId: conversation.id,
+            conversationTitle: conversation.title,
+            model: conversation.model,
+            request: body,
+            error: message,
+          });
         }
       } finally {
         abortRef.current = null;
