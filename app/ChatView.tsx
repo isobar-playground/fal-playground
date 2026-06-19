@@ -15,6 +15,7 @@ import {
   AUTO_TITLE_MODEL,
   chatModelLabel,
   modelSupportsReasoning,
+  modelSupportsStructuredOutput,
 } from "@/lib/chat/models";
 import {
   appendMessage,
@@ -32,6 +33,7 @@ import {
   deleteConversation as deleteConv,
   addConversation,
   type ChatMessage,
+  type ChatParams,
   type ChatUsage,
   type Conversation,
   type ReasoningEffort,
@@ -642,6 +644,20 @@ function SettingsPanel({
   onSystemPrompt: (v: string) => void;
   onParam: (patch: Partial<Conversation["params"]>) => void;
 }) {
+  const outputFormat = conversation.params.outputFormat ?? "text";
+  const jsonSchema = conversation.params.jsonSchema ?? "";
+  // Inline syntax check: flag a non-empty schema that isn't a parseable JSON object.
+  const schemaInvalid =
+    outputFormat === "json_schema" &&
+    jsonSchema.trim().length > 0 &&
+    !(() => {
+      try {
+        const parsed: unknown = JSON.parse(jsonSchema);
+        return Boolean(parsed) && typeof parsed === "object" && !Array.isArray(parsed);
+      } catch {
+        return false;
+      }
+    })();
   return (
     <div className="border-b border-neutral-200 bg-neutral-50 px-4 py-3">
       <div className="mx-auto max-w-3xl space-y-3">
@@ -701,6 +717,46 @@ function SettingsPanel({
             <span className="mt-1 block text-[11px] text-neutral-400">
               Higher effort = more thinking tokens (slower, pricier). Thinking shows in grey above the reply.
             </span>
+          </label>
+        )}
+        {modelSupportsStructuredOutput(conversation.model) && (
+          <label className="block">
+            <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
+              Output format
+            </span>
+            <select
+              value={outputFormat}
+              onChange={(e) =>
+                onParam({ outputFormat: e.target.value as ChatParams["outputFormat"] })
+              }
+              className="rounded-lg border border-neutral-300 bg-white px-2.5 py-1.5 text-sm outline-none focus:border-amber-400"
+            >
+              <option value="text">Text (default)</option>
+              <option value="json_object">JSON object</option>
+              <option value="json_schema">JSON schema</option>
+            </select>
+            <span className="mt-1 block text-[11px] text-neutral-400">
+              Paste a JSON Schema for the response shape. Sent with strict validation as
+              response_format.json_schema. Only models that support structured outputs show this.
+            </span>
+            {outputFormat === "json_schema" && (
+              <>
+                <textarea
+                  value={jsonSchema}
+                  onChange={(e) => onParam({ jsonSchema: e.target.value })}
+                  rows={4}
+                  placeholder={
+                    '{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}'
+                  }
+                  className="mt-2 w-full resize-y rounded-lg border border-neutral-300 bg-white px-3 py-2 font-mono text-[13px] outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+                />
+                {schemaInvalid && (
+                  <span className="mt-1 block text-[11px] text-red-600">
+                    Invalid JSON Schema — request will be sent without it.
+                  </span>
+                )}
+              </>
+            )}
           </label>
         )}
       </div>

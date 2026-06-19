@@ -15,6 +15,11 @@
 // `reasoning: true` marks models that accept OpenRouter's `reasoning` parameter
 // (verified via the catalog's supported_parameters). Only the two legacy Haikus
 // lack it.
+//
+// `structuredOutput: true` marks models that support `response_format` +
+// `structured_outputs` (verified via the catalog's supported_parameters). Tracked
+// as a separate flag from `reasoning` even though, in this catalog, the same two
+// legacy Haikus are the only ones lacking it — the two capabilities are unrelated.
 
 export interface ChatModelDef {
   /** OpenRouter model slug (sent verbatim as `model`). */
@@ -29,6 +34,8 @@ export interface ChatModelDef {
   contextLength?: number;
   /** Whether the model supports the OpenRouter `reasoning` parameter. */
   reasoning?: boolean;
+  /** Whether the model supports `response_format` / structured outputs. */
+  structuredOutput?: boolean;
 }
 
 // Claude — grouped by tier.
@@ -55,6 +62,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Anthropic's most capable tier — deepest reasoning.",
     contextLength: 1_000_000,
     reasoning: true,
+    structuredOutput: true,
   },
   {
     id: "anthropic/claude-opus-4.7",
@@ -63,6 +71,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Previous flagship Opus.",
     contextLength: 1_000_000,
     reasoning: true,
+    structuredOutput: true,
   },
   {
     id: "anthropic/claude-opus-4.6",
@@ -71,6 +80,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Earlier Opus generation.",
     contextLength: 1_000_000,
     reasoning: true,
+    structuredOutput: true,
   },
   {
     id: "anthropic/claude-opus-4.5",
@@ -79,6 +89,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Earlier Opus generation.",
     contextLength: 200_000,
     reasoning: true,
+    structuredOutput: true,
   },
   {
     id: "anthropic/claude-opus-4.1",
@@ -87,6 +98,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Earlier Opus generation.",
     contextLength: 200_000,
     reasoning: true,
+    structuredOutput: true,
   },
 
   // === Claude Sonnet — balanced tier ========================================
@@ -97,6 +109,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Balanced Claude — strong general default.",
     contextLength: 1_000_000,
     reasoning: true,
+    structuredOutput: true,
   },
   {
     id: "anthropic/claude-sonnet-4.5",
@@ -105,6 +118,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Previous balanced Sonnet.",
     contextLength: 1_000_000,
     reasoning: true,
+    structuredOutput: true,
   },
   {
     id: "anthropic/claude-sonnet-4",
@@ -113,6 +127,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Earlier Sonnet generation.",
     contextLength: 1_000_000,
     reasoning: true,
+    structuredOutput: true,
   },
 
   // === Claude Haiku — fast, low-cost tier ===================================
@@ -123,6 +138,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Fast, low-cost Claude — good for quick turns.",
     contextLength: 200_000,
     reasoning: true,
+    structuredOutput: true,
   },
   {
     id: "anthropic/claude-3.5-haiku",
@@ -147,6 +163,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "OpenAI flagship — broad knowledge and coding.",
     contextLength: 1_050_000,
     reasoning: true,
+    structuredOutput: true,
   },
   {
     id: "openai/gpt-5.5-pro",
@@ -155,6 +172,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "OpenAI's highest-effort reasoning tier.",
     contextLength: 1_050_000,
     reasoning: true,
+    structuredOutput: true,
   },
 
   // === GPT-5.4 ==============================================================
@@ -165,6 +183,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Previous GPT flagship.",
     contextLength: 1_050_000,
     reasoning: true,
+    structuredOutput: true,
   },
   {
     id: "openai/gpt-5.4-pro",
@@ -173,6 +192,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Previous Pro reasoning tier.",
     contextLength: 1_050_000,
     reasoning: true,
+    structuredOutput: true,
   },
   {
     id: "openai/gpt-5.4-mini",
@@ -181,6 +201,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Smaller, faster, cheaper GPT.",
     contextLength: 400_000,
     reasoning: true,
+    structuredOutput: true,
   },
   {
     id: "openai/gpt-5.4-nano",
@@ -189,6 +210,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Smallest, cheapest GPT — quick tasks.",
     contextLength: 400_000,
     reasoning: true,
+    structuredOutput: true,
   },
 
   // === GPT-5.2 ==============================================================
@@ -199,6 +221,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Earlier GPT-5 generation.",
     contextLength: 400_000,
     reasoning: true,
+    structuredOutput: true,
   },
   {
     id: "openai/gpt-5.2-pro",
@@ -207,6 +230,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Earlier Pro reasoning tier.",
     contextLength: 400_000,
     reasoning: true,
+    structuredOutput: true,
   },
 
   // === GPT-5.1 ==============================================================
@@ -217,6 +241,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Earlier GPT-5 generation.",
     contextLength: 400_000,
     reasoning: true,
+    structuredOutput: true,
   },
 
   // === GPT-5 ================================================================
@@ -227,6 +252,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "First GPT-5 release.",
     contextLength: 400_000,
     reasoning: true,
+    structuredOutput: true,
   },
   {
     id: "openai/gpt-5-pro",
@@ -235,6 +261,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "First GPT-5 Pro tier.",
     contextLength: 400_000,
     reasoning: true,
+    structuredOutput: true,
   },
   {
     id: "openai/gpt-5-mini",
@@ -243,6 +270,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Earlier small GPT tier.",
     contextLength: 400_000,
     reasoning: true,
+    structuredOutput: true,
   },
   {
     id: "openai/gpt-5-nano",
@@ -251,6 +279,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Earlier nano GPT tier.",
     contextLength: 400_000,
     reasoning: true,
+    structuredOutput: true,
   },
 
   // === Gemini Pro — most capable tier =======================================
@@ -261,6 +290,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Google's flagship Gemini Pro.",
     contextLength: 1_048_576,
     reasoning: true,
+    structuredOutput: true,
   },
 
   // === Gemini Flash — fast, efficient tier ==================================
@@ -271,6 +301,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Fast, efficient Gemini.",
     contextLength: 1_048_576,
     reasoning: true,
+    structuredOutput: true,
   },
   {
     id: "google/gemini-2.5-flash",
@@ -279,6 +310,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Earlier fast Gemini Flash.",
     contextLength: 1_048_576,
     reasoning: true,
+    structuredOutput: true,
   },
 
   // === Gemini Flash-Lite — lightest, cheapest tier ==========================
@@ -289,6 +321,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Lightest, cheapest Gemini.",
     contextLength: 1_048_576,
     reasoning: true,
+    structuredOutput: true,
   },
   {
     id: "google/gemini-2.5-flash-lite",
@@ -297,6 +330,7 @@ export const CHAT_MODELS: ChatModelDef[] = [
     blurb: "Earlier light Gemini.",
     contextLength: 1_048_576,
     reasoning: true,
+    structuredOutput: true,
   },
 ];
 
@@ -307,6 +341,10 @@ export const CHAT_MODEL_GROUPS: string[] = [...new Set(CHAT_MODELS.map((m) => m.
 
 /** Whether a model accepts the OpenRouter `reasoning` parameter. */
 export const modelSupportsReasoning = (id: string): boolean => Boolean(CHAT_MODEL_BY_ID[id]?.reasoning);
+
+/** Whether a model supports `response_format` / structured outputs. */
+export const modelSupportsStructuredOutput = (id: string): boolean =>
+  Boolean(CHAT_MODEL_BY_ID[id]?.structuredOutput);
 
 /** Default model a new conversation starts on. */
 export const DEFAULT_CHAT_MODEL = "anthropic/claude-sonnet-4.6";

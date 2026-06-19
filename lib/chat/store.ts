@@ -38,6 +38,10 @@ export interface ChatParams {
   top_p: number;
   /** Reasoning effort; sent only when not "off" and the model supports reasoning. */
   reasoningEffort: ReasoningEffort;
+  /** Forced output format; "text" omits response_format (the default behavior). */
+  outputFormat: "text" | "json_object" | "json_schema";
+  /** Raw JSON Schema text; only used when outputFormat === "json_schema". */
+  jsonSchema: string;
 }
 
 export interface Conversation {
@@ -59,6 +63,8 @@ export const DEFAULT_CHAT_PARAMS: ChatParams = {
   max_tokens: 4096,
   top_p: 1,
   reasoningEffort: "off",
+  outputFormat: "text",
+  jsonSchema: "",
 };
 
 const uid = (): string =>

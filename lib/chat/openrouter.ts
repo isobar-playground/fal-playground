@@ -4,7 +4,7 @@
 // these to a fetch against our /api/chat proxy.
 
 import type { ChatMessage, ChatParams, ChatUsage, Conversation } from "./store";
-import { modelSupportsReasoning } from "./models";
+import { modelSupportsReasoning, modelSupportsStructuredOutput } from "./models";
 
 /** A wire message in the OpenRouter chat-completions payload. */
 export interface WireMessage {
@@ -23,6 +23,10 @@ export interface ChatRequestBody {
   usage: { include: true };
   /** Reasoning effort; present only for reasoning-capable models with effort != off. */
   reasoning?: { effort: "low" | "medium" | "high" };
+  /** Forced output format; present only when the user picks JSON object/schema. */
+  response_format?:
+    | { type: "json_object" }
+    | { type: "json_schema"; json_schema: { name: string; strict: true; schema: Record<string, unknown> } };
 }
 
 /**
@@ -59,6 +63,31 @@ export function buildChatBody(
   const effort = conversation.params.reasoningEffort;
   if (effort && effort !== "off" && modelSupportsReasoning(conversation.model)) {
     body.reasoning = { effort };
+  }
+  // Forced output format. Guarded on capability — belt-and-suspenders against a
+  // model that can't honor response_format (leave the body unchanged for those).
+  // NB: we deliberately do NOT pin `provider.require_parameters` — combined with a
+  // streaming + strict json_schema request it makes OpenRouter hard-fail ("No
+  // endpoints found") on models whose endpoints don't advertise that exact combo
+  // (e.g. Claude Opus). Normal routing still honors the schema via emulation.
+  if (modelSupportsStructuredOutput(conversation.model)) {
+    const fmt = conversation.params.outputFormat;
+    if (fmt === "json_object") {
+      body.response_format = { type: "json_object" };
+    } else if (fmt === "json_schema") {
+      // Defensive: a malformed/empty schema just omits response_format — never throw.
+      try {
+        const parsed: unknown = JSON.parse(conversation.params.jsonSchema);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          body.response_format = {
+            type: "json_schema",
+            json_schema: { name: "response", strict: true, schema: parsed as Record<string, unknown> },
+          };
+        }
+      } catch {
+        /* invalid JSON Schema: send plain (the UI flags it inline) */
+      }
+    }
   }
   return body;
 }
