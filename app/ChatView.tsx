@@ -19,6 +19,7 @@ import {
   modelSupportsStructuredOutput,
 } from "@/lib/chat/models";
 import { kindOf, type Attachment } from "@/lib/chat/attachments";
+import { useImageLightbox } from "./ImageLightbox";
 import type { GenerationRun, VideoRun } from "@/lib/types";
 import {
   appendMessage,
@@ -711,12 +712,16 @@ function AttachmentChip({ att, onRemove }: { att: Attachment; onRemove: () => vo
 function AttachmentThumb({ att }: { att: Attachment }) {
   const isImage = kindOf(att) === "image";
   const url = attUrl(att);
+  const lightbox = useImageLightbox();
   if (isImage && url) {
     return (
-      <a href={url} target="_blank" rel="noreferrer">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={url} alt={att.name} className="h-20 w-20 rounded-lg border border-amber-200 object-cover" />
-      </a>
+      <>
+        <button type="button" onClick={() => lightbox.open([url])} title={att.name}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={url} alt={att.name} className="h-20 w-20 rounded-lg border border-amber-200 object-cover" />
+        </button>
+        {lightbox.node}
+      </>
     );
   }
   return (

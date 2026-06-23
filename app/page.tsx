@@ -54,6 +54,7 @@ import {
 import { runVideoModel } from "@/lib/video/fal";
 // --- chat (separate code path; see lib/chat/* + ChatView) ---------------
 import ChatView from "./ChatView";
+import { useImageLightbox } from "./ImageLightbox";
 import type { Conversation } from "@/lib/chat/store";
 
 // Sub-dollar amounts keep up to 4 decimals (so $0.0398 isn't rounded to $0.04),
@@ -2702,6 +2703,7 @@ function VideoRunCard({
   status: Record<string, string>;
   onDelete: () => void;
 }) {
+  const lightbox = useImageLightbox();
   return (
     <article className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
       <div className="mb-3 flex items-start justify-between gap-3">
@@ -2745,19 +2747,21 @@ function VideoRunCard({
               <div className="mb-2 flex items-center gap-1.5">
                 <span className="shrink-0 text-[11px] text-neutral-400">frames:</span>
                 <div className="flex gap-1">
-                  {[item.startUrl, item.endUrl].filter(Boolean).map((u, i) => (
-                    <a
-                      key={i}
-                      href={u as string}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="block overflow-hidden rounded border border-neutral-200"
-                      title={i === 0 ? "Start frame" : "End frame"}
-                    >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={u as string} alt="frame" className="size-9 object-cover" />
-                    </a>
-                  ))}
+                  {(() => {
+                    const frames = [item.startUrl, item.endUrl].filter(Boolean) as string[];
+                    return frames.map((u, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => lightbox.open(frames, i)}
+                        className="block overflow-hidden rounded border border-neutral-200"
+                        title={i === 0 ? "Start frame" : "End frame"}
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={u} alt="frame" className="size-9 object-cover" />
+                      </button>
+                    ));
+                  })()}
                 </div>
               </div>
             )}
@@ -2801,6 +2805,7 @@ function VideoRunCard({
           </div>
         ))}
       </div>
+      {lightbox.node}
     </article>
   );
 }
