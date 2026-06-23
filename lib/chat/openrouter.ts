@@ -3,13 +3,15 @@
 // (see PRD "Testing Decisions"). The React layer calls streamChat() which wires
 // these to a fetch against our /api/chat proxy.
 
-import type { ChatMessage, ChatParams, ChatUsage, Conversation } from "./store";
+import type { ChatMessage, ChatUsage, Conversation } from "./store";
 import { modelSupportsReasoning, modelSupportsStructuredOutput } from "./models";
+import { buildUserContent, capsFor, type WireContent } from "./attachments";
 
-/** A wire message in the OpenRouter chat-completions payload. */
+/** A wire message in the OpenRouter chat-completions payload. `content` is a plain
+ *  string unless the turn carries attachments, which force the content-parts array. */
 export interface WireMessage {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: WireContent;
 }
 
 export interface ChatRequestBody {
@@ -43,10 +45,17 @@ export function buildChatBody(
   if (conversation.systemPrompt.trim()) {
     messages.push({ role: "system", content: conversation.systemPrompt });
   }
+  const caps = capsFor(conversation.model);
   for (const m of turns) {
     // Skip empty/errored placeholder assistant turns so we never send blank content.
     if (m.role === "assistant" && !m.content.trim()) continue;
-    messages.push({ role: m.role, content: m.content });
+    // Attachments force the content-parts form, gated on the current model's caps
+    // (a model switch silently drops what the new model can't ingest).
+    if (m.role === "user" && m.attachments?.length) {
+      messages.push({ role: "user", content: buildUserContent(m.content, m.attachments, caps).content });
+    } else {
+      messages.push({ role: m.role, content: m.content });
+    }
   }
   if (opts.extraUserMessage != null) {
     messages.push({ role: "user", content: opts.extraUserMessage });

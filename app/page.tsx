@@ -1235,6 +1235,8 @@ export default function Page() {
             setOrKey={setOrKey}
             conversations={conversations}
             setConversations={setConversations}
+            runs={runs}
+            videoRuns={videoRuns}
           />
         </div>
       )}

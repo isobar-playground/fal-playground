@@ -4,6 +4,7 @@
 // the store unit-testable at the module boundary (see PRD "Testing Decisions").
 
 import { DEFAULT_CHAT_MODEL } from "./models";
+import type { Attachment } from "./attachments";
 
 export interface ChatUsage {
   promptTokens: number;
@@ -16,6 +17,8 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  /** Files attached to a user turn (uploads as data URLs, generated refs as URLs). */
+  attachments?: Attachment[];
   /** Streamed reasoning / thinking text, when the model emits it (assistant turns). */
   reasoning?: string;
   /** Set on assistant messages once the stream's terminal usage arrives. */
@@ -72,10 +75,15 @@ const uid = (): string =>
     ? crypto.randomUUID()
     : Math.random().toString(36).slice(2);
 
-export const newMessage = (role: ChatMessage["role"], content: string): ChatMessage => ({
+export const newMessage = (
+  role: ChatMessage["role"],
+  content: string,
+  attachments?: Attachment[],
+): ChatMessage => ({
   id: uid(),
   role,
   content,
+  ...(attachments && attachments.length ? { attachments } : {}),
   ts: Date.now(),
 });
 

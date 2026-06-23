@@ -356,3 +356,19 @@ export const DEFAULT_CHAT_MODEL = "anthropic/claude-sonnet-4.6";
 export const AUTO_TITLE_MODEL = "anthropic/claude-haiku-4.5";
 
 export const chatModelLabel = (id: string): string => CHAT_MODEL_BY_ID[id]?.label ?? id;
+
+// ponytail: deny-list instead of a per-model `image`/`file` flag on all ~30 entries.
+// Every catalog model is vision+PDF capable EXCEPT the two legacy Haikus — the same
+// two that lack reasoning/structuredOutput (see header). Flip to per-model flags only
+// if the catalog ever gains a text-only model that isn't one of these.
+const TEXT_ONLY_MODELS = new Set(["anthropic/claude-3-haiku", "anthropic/claude-3.5-haiku"]);
+
+/** Whether a model accepts image input (vision) — gates the attach button. */
+export const modelSupportsImages = (id: string): boolean =>
+  CHAT_MODEL_BY_ID[id] != null && !TEXT_ONLY_MODELS.has(id);
+
+/** Whether a model accepts file (PDF) input. Same set as images in this catalog. */
+export const modelSupportsFiles = modelSupportsImages;
+
+/** Whether a model accepts any non-text input (image or file). */
+export const isMultimodal = modelSupportsImages;
