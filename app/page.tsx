@@ -56,6 +56,8 @@ import { runVideoModel } from "@/lib/video/fal";
 import ChatView from "./ChatView";
 import { useImageLightbox } from "./ImageLightbox";
 import type { Conversation } from "@/lib/chat/store";
+// --- maszynka (separate code path; see lib/maszynka/* + MaszynkaView) ---
+import MaszynkaView from "./MaszynkaView";
 
 // Sub-dollar amounts keep up to 4 decimals (so $0.0398 isn't rounded to $0.04),
 // trailing zeros trimmed but at least 2 shown; $1+ uses plain 2-decimal currency.
@@ -161,6 +163,7 @@ export default function Page() {
   const [mode, setMode] = useLocalStorage<AppMode>("fal:mode", "image");
   const isVideo = mode === "video";
   const isChat = mode === "chat";
+  const isMaszynka = mode === "maszynka";
 
   // Chat state lives in localStorage here (centralized) so it's covered by
   // "Reset all" and session export/import. The chat UI itself is isolated in
@@ -279,7 +282,12 @@ export default function Page() {
   // Step 3 — prompt + history
   // Image and video prompts are independent — keyed by `mode` so switching the
   // asset-type toggle never carries one mode's text into the other.
-  const [promptByMode, setPromptByMode] = useState<Record<AppMode, string>>({ image: "", video: "", chat: "" });
+  const [promptByMode, setPromptByMode] = useState<Record<AppMode, string>>({
+    image: "",
+    video: "",
+    chat: "",
+    maszynka: "",
+  });
   const prompt = promptByMode[mode];
   const setPrompt = useCallback(
     (next: string | ((p: string) => string)) =>
@@ -296,6 +304,7 @@ export default function Page() {
     image: null,
     video: null,
     chat: null,
+    maszynka: null,
   });
   const stashedPrompt = stashedPromptByMode[mode];
   const setStashedPrompt = useCallback(
@@ -1163,7 +1172,15 @@ export default function Page() {
   }
 
   return (
-    <div className={isChat ? "flex h-screen flex-col overflow-hidden px-4 pt-8" : "mx-auto max-w-3xl px-4 pb-44 pt-8"}>
+    <div
+      className={
+        isChat
+          ? "flex h-screen flex-col overflow-hidden px-4 pt-8"
+          : isMaszynka
+            ? "mx-auto max-w-3xl px-4 pb-16 pt-8"
+            : "mx-auto max-w-3xl px-4 pb-44 pt-8"
+      }
+    >
       <header className={`flex items-start justify-between gap-4 ${isChat ? "mx-auto mb-4 w-full max-w-5xl shrink-0" : "mb-8"}`}>
         <div>
           <h1 className="text-3xl font-bold tracking-tight">
@@ -1172,11 +1189,13 @@ export default function Page() {
           <p className="mt-1 text-sm text-neutral-500">
             {isChat
               ? "Chat with an LLM via OpenRouter (your own key). Everything stays in your browser."
-              : `Test prompts on Fal.ai ${isVideo ? "video" : "image"} models — no code. Everything stays in your browser.`}
+              : isMaszynka
+                ? "Maszynka — Content Factory test bench. Runs are recorded server-side and shared across operators."
+                : `Test prompts on Fal.ai ${isVideo ? "video" : "image"} models — no code. Everything stays in your browser.`}
           </p>
-          {/* Top-level mode toggle — Images | Video | Chat. Persisted across reloads. */}
+          {/* Top-level mode toggle — Images | Video | Chat | Maszynka. Persisted across reloads. */}
           <div className="mt-3 inline-flex overflow-hidden rounded-lg border border-neutral-300">
-            {(["image", "video", "chat"] as const).map((md) => (
+            {(["image", "video", "chat", "maszynka"] as const).map((md) => (
               <button
                 key={md}
                 type="button"
@@ -1185,7 +1204,7 @@ export default function Page() {
                   mode === md ? "bg-amber-400 text-amber-950" : "bg-white text-neutral-600 hover:bg-amber-50"
                 }`}
               >
-                {md === "image" ? "🖼 Images" : md === "video" ? "🎬 Video" : "💬 Chat"}
+                {md === "image" ? "🖼 Images" : md === "video" ? "🎬 Video" : md === "chat" ? "💬 Chat" : "🧪 Maszynka"}
               </button>
             ))}
           </div>
@@ -1242,8 +1261,11 @@ export default function Page() {
         </div>
       )}
 
-      {/* IMAGE / VIDEO WIZARD — unchanged; hidden in chat mode. */}
-      {!isChat && (
+      {/* MASZYNKA MODE — isolated panel (lib/maszynka/* + MaszynkaView). */}
+      {isMaszynka && <MaszynkaView apiKey={apiKey} setApiKey={setApiKey} prompt={prompt} setPrompt={setPrompt} />}
+
+      {/* IMAGE / VIDEO WIZARD — unchanged; hidden in chat/maszynka mode. */}
+      {!isChat && !isMaszynka && (
       <>
       {/* STEP 1 — API KEY */}
       <Section step={1} title="Fal.ai key" done={Boolean(apiKey)}>
