@@ -17,7 +17,8 @@
     "check:maszynka-prompt-improvement": "node lib/maszynka/promptImprovement.check.ts",
     "check:maszynka-recommend": "node lib/maszynka/recommend.check.ts",
     "check:maszynka-fal-mapper": "node lib/maszynka/falMapper.check.ts",
-    "check:maszynka-scoring": "node lib/maszynka/scoring.check.ts"
+    "check:maszynka-scoring": "node lib/maszynka/scoring.check.ts",
+    "check:maszynka-run-trace": "node lib/maszynka/runTrace.check.ts"
   },
   "dependencies": {
     "@fal-ai/client": "^1.10.1",

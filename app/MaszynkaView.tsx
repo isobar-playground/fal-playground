@@ -82,6 +82,8 @@ import type {
   PriorityLogicConfig,
   StyleConfig,
 } from "@/lib/maszynka/configSchemas";
+import type { Contract } from "@/lib/maszynka/contract";
+import { summarizeSelectedConfigs, type SelectedConfigKind } from "@/lib/maszynka/runTrace";
 import { useImageLightbox } from "./ImageLightbox";
 import MaszynkaConfigs from "./MaszynkaConfigs";
 
@@ -1505,7 +1507,6 @@ export default function MaszynkaView({
           )}
           <p className="mb-1 text-xs text-neutral-500">
             Model: <b>{currentRun.modelLabel}</b>
-            {currentRun.assets.length > 0 && ` · assets: ${currentRun.assets.map((a) => a.role).join(", ")}`}
           </p>
           {currentRun.recommendedModel && (
             <p className="mb-3 text-xs text-neutral-500">
@@ -1526,6 +1527,7 @@ export default function MaszynkaView({
           {currentRun.error && (
             <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{currentRun.error}</p>
           )}
+          <InputAssetsPanel assets={currentRun.assets} onOpen={(urls, i) => lightbox.open(urls, i)} />
           {currentRun.outputs.length > 0 && (
             <div className="mb-3 grid grid-cols-3 gap-2 sm:grid-cols-4">
               {currentRun.outputs.map((img, i) => (
@@ -1553,6 +1555,7 @@ export default function MaszynkaView({
             model={currentRun.assetAnalysisModel}
             results={(currentRun.assetAnalysisResults as AssetAnalysisRecord[] | undefined) ?? []}
           />
+          <SelectedConfigsPanel contract={currentRun.contract as Contract | null} />
           <PromptBuilderPanel
             model={currentRun.promptBuilderModel}
             attempts={(currentRun.promptBuilderAttempts as PromptBuilderAttemptRecord[] | undefined) ?? []}
@@ -1611,6 +1614,76 @@ export default function MaszynkaView({
       <MaszynkaConfigs />
 
       {lightbox.node}
+    </div>
+  );
+}
+
+/** Every uploaded input asset (issue #12 / PRD section 18 "assety wejściowe"), rendered as
+ *  thumbnails opening in the same lightbox as generated assets — reusing
+ *  `useImageLightbox` rather than a separate viewer, per the issue's instruction. Renders
+ *  nothing for a run with zero uploads (every field in the four role-specific upload slots
+ *  is optional — spec section 3), so this is safe to render unconditionally for any run. */
+function InputAssetsPanel({
+  assets,
+  onOpen,
+}: {
+  assets: RunAsset[];
+  onOpen: (urls: string[], index: number) => void;
+}) {
+  if (!assets.length) return null;
+  const urls = assets.map((a) => a.url);
+  return (
+    <div className="mb-3">
+      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">Input assets</p>
+      <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+        {assets.map((a, i) => (
+          <button
+            key={a.id}
+            type="button"
+            onClick={() => onOpen(urls, i)}
+            className="overflow-hidden rounded-lg border border-neutral-200 text-left"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={a.url} alt={a.role} className="aspect-square w-full object-cover" />
+            <span className="block truncate px-1.5 py-1 text-[10px] text-neutral-500">{a.role}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Human-readable "selected configs + versions" summary (issue #12 / PRD section 18
+ *  "wybrane configi" + "wersje configów"), built from the run's Contract snapshot via
+ *  lib/maszynka/runTrace.ts. Renders nothing for a run that never reached the Contract
+ *  stage (e.g. one stopped early at content safety, or one created before slice 3 added
+ *  the Contract at all) — see summarizeSelectedConfigs' module header. The Contract's raw
+ *  JSON (every snapshot in full, not just the label shown here) stays available in the
+ *  "Contract" DebugJson panel below this for debugging. */
+function SelectedConfigsPanel({ contract }: { contract: Contract | null }) {
+  const items = summarizeSelectedConfigs(contract);
+  if (!items.length) return null;
+  const KIND_LABEL: Record<SelectedConfigKind, string> = {
+    hook: "Hook",
+    style: "Style",
+    cameraSetting: "Camera setting",
+    globalRules: "Global rules",
+    priorityLogic: "Priority logic",
+    modelCapability: "Model capability",
+  };
+  return (
+    <div className="mb-3 rounded-lg bg-neutral-50 p-3">
+      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">Selected configs</p>
+      <ul className="space-y-1">
+        {items.map((item) => (
+          <li key={item.kind} className="flex flex-wrap items-baseline gap-x-1.5 text-xs">
+            <span className="font-medium text-neutral-500">{KIND_LABEL[item.kind]}:</span>
+            <span className={item.resolved ? "text-neutral-800" : "text-red-600"}>{item.label}</span>
+            {item.id && <span className="text-neutral-400">({item.id})</span>}
+            <span className="text-neutral-400">v{item.version}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
