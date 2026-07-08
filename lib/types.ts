@@ -55,7 +55,7 @@ export interface GenerationRun {
 // --- video (separate code path, parallel to the image types above) -------
 
 /** Top-level mode the wizard is in. Persisted; default "image". */
-export type AppMode = "image" | "video" | "chat";
+export type AppMode = "image" | "video" | "chat" | "maszynka";
 
 export interface ResultVideo {
   url: string;
