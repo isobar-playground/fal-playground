@@ -11,6 +11,9 @@ interface PatchRunBody {
   outputs?: { url: string; width?: number; height?: number }[];
   error?: string;
   contract?: unknown;
+  promptBuilderRequest?: unknown;
+  promptBuilderResponse?: unknown;
+  promptBuilderOutput?: unknown;
 }
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -73,6 +76,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     const falResponseJson = body.falResponse !== undefined ? JSON.stringify(body.falResponse) : null;
     const outputsJson = body.outputs !== undefined ? JSON.stringify(body.outputs) : null;
     const contractJson = body.contract !== undefined ? JSON.stringify(body.contract) : null;
+    const promptBuilderRequestJson = body.promptBuilderRequest !== undefined ? JSON.stringify(body.promptBuilderRequest) : null;
+    const promptBuilderResponseJson = body.promptBuilderResponse !== undefined ? JSON.stringify(body.promptBuilderResponse) : null;
+    const promptBuilderOutputJson = body.promptBuilderOutput !== undefined ? JSON.stringify(body.promptBuilderOutput) : null;
 
     const rows = await sql`
       UPDATE maszynka_runs SET
@@ -83,6 +89,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         outputs = COALESCE(${outputsJson}::jsonb, outputs),
         error = COALESCE(${body.error ?? null}, error),
         contract = COALESCE(${contractJson}::jsonb, contract),
+        prompt_builder_request = COALESCE(${promptBuilderRequestJson}::jsonb, prompt_builder_request),
+        prompt_builder_response = COALESCE(${promptBuilderResponseJson}::jsonb, prompt_builder_response),
+        prompt_builder_output = COALESCE(${promptBuilderOutputJson}::jsonb, prompt_builder_output),
         updated_at = now()
       WHERE id = ${id}
       RETURNING *

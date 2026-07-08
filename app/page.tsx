@@ -1262,7 +1262,9 @@ export default function Page() {
       )}
 
       {/* MASZYNKA MODE — isolated panel (lib/maszynka/* + MaszynkaView). */}
-      {isMaszynka && <MaszynkaView apiKey={apiKey} setApiKey={setApiKey} prompt={prompt} setPrompt={setPrompt} />}
+      {isMaszynka && (
+        <MaszynkaView apiKey={apiKey} setApiKey={setApiKey} orKey={orKey} setOrKey={setOrKey} prompt={prompt} setPrompt={setPrompt} />
+      )}
 
       {/* IMAGE / VIDEO WIZARD — unchanged; hidden in chat/maszynka mode. */}
       {!isChat && !isMaszynka && (

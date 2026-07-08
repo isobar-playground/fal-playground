@@ -9,6 +9,7 @@ interface CreateRunBody {
   modelId?: string;
   modelLabel?: string;
   packshotUrl?: string | null;
+  promptBuilderModel?: string | null;
 }
 
 export async function POST(req: Request) {
@@ -39,7 +40,7 @@ export async function POST(req: Request) {
     const firstEvent: MaszynkaStatusEvent = { status: "run_started", at: new Date().toISOString() };
     const rows = await sql`
       INSERT INTO maszynka_runs (
-        id, asset_type, status, status_history, user_prompt_raw, model_key, model_id, model_label, packshot_url
+        id, asset_type, status, status_history, user_prompt_raw, model_key, model_id, model_label, packshot_url, prompt_builder_model
       ) VALUES (
         ${id},
         ${body.assetType === "video" ? "video" : "image"},
@@ -49,7 +50,8 @@ export async function POST(req: Request) {
         ${body.modelKey},
         ${body.modelId},
         ${body.modelLabel},
-        ${body.packshotUrl ?? null}
+        ${body.packshotUrl ?? null},
+        ${body.promptBuilderModel ?? null}
       )
       RETURNING *
     `;

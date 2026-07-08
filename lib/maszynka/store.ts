@@ -29,6 +29,14 @@ export interface MaszynkaRun {
   outputs: { url: string; width?: number; height?: number }[];
   error: string | null;
   contract: unknown; // Prompt builder Contract snapshot (slice 3) — see lib/maszynka/contract.ts
+  // Prompt builder LLM stage (slice 4) — see lib/maszynka/promptBuilder.ts. The operator's
+  // chosen OpenRouter model, the raw request/response sent/received, and the parsed +
+  // schema-validated structured output (finalPrompt/negativePrompt/promptSummary/
+  // appliedRules/riskNotes) that then drives FAL generation.
+  promptBuilderModel: string | null;
+  promptBuilderRequest: unknown;
+  promptBuilderResponse: unknown;
+  promptBuilderOutput: unknown;
 }
 
 interface RunRow {
@@ -48,6 +56,10 @@ interface RunRow {
   outputs: MaszynkaRun["outputs"];
   error: string | null;
   contract: unknown;
+  prompt_builder_model: string | null;
+  prompt_builder_request: unknown;
+  prompt_builder_response: unknown;
+  prompt_builder_output: unknown;
 }
 
 export function rowToRun(row: RunRow): MaszynkaRun {
@@ -68,6 +80,10 @@ export function rowToRun(row: RunRow): MaszynkaRun {
     outputs: row.outputs ?? [],
     error: row.error,
     contract: row.contract ?? null,
+    promptBuilderModel: row.prompt_builder_model ?? null,
+    promptBuilderRequest: row.prompt_builder_request ?? null,
+    promptBuilderResponse: row.prompt_builder_response ?? null,
+    promptBuilderOutput: row.prompt_builder_output ?? null,
   };
 }
 
@@ -101,6 +117,11 @@ export function ensureSchema(sql: NeonQueryFunction<false, false>) {
     // needs its own idempotent statement — same "created on first write" story, just for
     // a column instead of the whole table.
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS contract jsonb`;
+    // Slice 4 adds the Prompt builder LLM stage — same idempotent-column story.
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS prompt_builder_model text`;
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS prompt_builder_request jsonb`;
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS prompt_builder_response jsonb`;
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS prompt_builder_output jsonb`;
   })()
     .then(() => undefined)
     .catch((e) => {

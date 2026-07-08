@@ -11,6 +11,15 @@ import { configureFal, runModel, uploadReference } from "@/lib/fal";
 import { createRun, getRun, listRuns, patchRun, type MaszynkaRun } from "@/lib/maszynka/api";
 import { classifyFalError } from "@/lib/maszynka/status";
 import { assembleContract, validateContract } from "@/lib/maszynka/contract";
+import {
+  DEFAULT_PROMPT_BUILDER_MODEL,
+  PROMPT_BUILDER_MODELS,
+  PROMPT_BUILDER_MODEL_GROUPS,
+  buildPromptBuilderRequestBody,
+  callPromptBuilder,
+  parsePromptBuilderContent,
+  type PromptBuilderOutput,
+} from "@/lib/maszynka/promptBuilder";
 import { listLatestConfigs, type MaszynkaConfigVersion } from "@/lib/maszynka/configApi";
 import type {
   CameraSettingConfig,
@@ -64,6 +73,8 @@ const STATUS_TONE: Record<string, string> = {
   run_started: "bg-neutral-100 text-neutral-600",
   prompt_builder_contract_created: "bg-amber-100 text-amber-800",
   prompt_builder_contract_validation_failed: "bg-red-100 text-red-700",
+  prompt_builder_completed: "bg-amber-100 text-amber-800",
+  prompt_builder_output_validation_failed: "bg-red-100 text-red-700",
   fal_generation_started: "bg-amber-100 text-amber-800",
   generation_completed: "bg-green-100 text-green-700",
   fal_generation_failed: "bg-red-100 text-red-700",
@@ -81,18 +92,28 @@ function StatusBadge({ status }: { status: string }) {
 export default function MaszynkaView({
   apiKey,
   setApiKey,
+  orKey,
+  setOrKey,
   prompt,
   setPrompt,
 }: {
   apiKey: string;
   setApiKey: Dispatch<SetStateAction<string>>;
+  /** OpenRouter BYOK key (same one Chat tab uses, "chat:orKey" in localStorage) — the
+   *  Prompt builder LLM stage (slice 4) calls OpenRouter through it. */
+  orKey: string;
+  setOrKey: Dispatch<SetStateAction<string>>;
   prompt: string;
   setPrompt: (next: string | ((p: string) => string)) => void;
 }) {
   const [showKey, setShowKey] = useState(false);
+  const [showOrKey, setShowOrKey] = useState(false);
   const [packshot, setPackshot] = useState<Packshot | null>(null);
   const [modelKey, setModelKey] = useState<string>("nano-banana");
   const model = MODEL_BY_KEY[modelKey] ?? MODELS[0];
+  // Prompt builder stage (slice 4): the operator's OpenRouter model for that stage,
+  // recorded on the run at creation — see lib/maszynka/promptBuilder.ts.
+  const [promptBuilderModel, setPromptBuilderModel] = useState<string>(DEFAULT_PROMPT_BUILDER_MODEL);
 
   const [running, setRunning] = useState(false);
   const [logLine, setLogLine] = useState<string>("");
@@ -185,6 +206,7 @@ export default function MaszynkaView({
   const packshotUploading = Boolean(packshot?.uploading);
   const canRun =
     Boolean(apiKey) &&
+    Boolean(orKey) &&
     prompt.trim().length > 0 &&
     !running &&
     !packshotUploading &&
@@ -214,6 +236,7 @@ export default function MaszynkaView({
         modelId: model.id,
         modelLabel: model.label,
         packshotUrl,
+        promptBuilderModel,
       });
       setCurrentRun(run);
       refreshHistory();
@@ -263,12 +286,48 @@ export default function MaszynkaView({
       const withContract = await patchRun(run.id, { status: "prompt_builder_contract_created", contract });
       setCurrentRun(withContract);
 
-      // No Prompt builder LLM stage yet (issue #4) — a valid contract falls through to
-      // the pre-LLM raw-prompt FAL path from slice 1, now honoring the operator's
-      // aspect ratio / variants count from the Creative config section.
+      // --- Prompt builder LLM stage (slice 4): OpenRouter, structured output. A Contract
+      // that fails the builder call or comes back schema-invalid ends the run here — see
+      // lib/maszynka/promptBuilder.ts and PRD section 9/14.
+      let builderOutput: PromptBuilderOutput;
+      try {
+        const builderRequest = buildPromptBuilderRequestBody(contract, promptBuilderModel);
+        const { raw: builderResponse, content } = await callPromptBuilder(orKey, builderRequest);
+        const { output, errors: builderErrors } = parsePromptBuilderContent(content);
+        if (!output) {
+          const failed = await patchRun(run.id, {
+            status: "prompt_builder_output_validation_failed",
+            promptBuilderRequest: builderRequest,
+            promptBuilderResponse: builderResponse,
+            detail: builderErrors.join("; "),
+            error: builderErrors.join("; "),
+          });
+          setCurrentRun(failed);
+          return; // invalid builder output must never reach FAL
+        }
+        builderOutput = output;
+        const withBuilder = await patchRun(run.id, {
+          status: "prompt_builder_completed",
+          promptBuilderRequest: builderRequest,
+          promptBuilderResponse: builderResponse,
+          promptBuilderOutput: output,
+        });
+        setCurrentRun(withBuilder);
+      } catch (e) {
+        const failed = await patchRun(run.id, {
+          status: "prompt_builder_output_validation_failed",
+          error: errMsg(e),
+          detail: errMsg(e),
+        });
+        setCurrentRun(failed);
+        return; // the builder call itself failed (network/auth/etc.) — never reach FAL
+      }
+
+      // finalPrompt (not the raw operator prompt) drives FAL generation from here on —
+      // see PRD section 14 and the "Generation now sends finalPrompt" acceptance criterion.
       const imageUrls = packshotUrl ? [packshotUrl] : [];
       const settings: ModelSettings = { ...DEFAULT_SETTINGS, numImages: variantsCount, aspectRatio };
-      const input = buildInput(model, promptText, imageUrls, settings);
+      const input = buildInput(model, builderOutput.finalPrompt, imageUrls, settings);
 
       const started = await patchRun(run.id, { status: "fal_generation_started", falRequest: input });
       setCurrentRun(started);
@@ -296,6 +355,7 @@ export default function MaszynkaView({
   }, [
     canRun,
     apiKey,
+    orKey,
     packshot,
     model,
     prompt,
@@ -310,6 +370,7 @@ export default function MaszynkaView({
     targetLanguage,
     aspectRatio,
     variantsCount,
+    promptBuilderModel,
   ]);
 
   const openRun = useCallback(async (id: string) => {
@@ -347,6 +408,29 @@ export default function MaszynkaView({
             {showKey ? "Hide" : "Show"}
           </button>
         </div>
+      </section>
+
+      <section className="mb-5 rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
+        <h2 className="mb-3 font-semibold">OpenRouter key</h2>
+        <div className="flex gap-2">
+          <input
+            type={showOrKey ? "text" : "password"}
+            value={orKey}
+            onChange={(e) => setOrKey(e.target.value)}
+            placeholder="sk-or-v1-…"
+            className="flex-1 rounded-lg border border-neutral-300 bg-white px-3 py-2 font-mono text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+          />
+          <button
+            type="button"
+            onClick={() => setShowOrKey((s) => !s)}
+            className="rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm hover:bg-neutral-50"
+          >
+            {showOrKey ? "Hide" : "Show"}
+          </button>
+        </div>
+        <p className="mt-2 text-xs text-neutral-400">
+          Shared with the Chat tab (stored in your browser). Used by the Prompt builder stage to call OpenRouter.
+        </p>
       </section>
 
       <section className="mb-5 rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
@@ -492,6 +576,25 @@ export default function MaszynkaView({
         )}
 
         <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
+          Prompt builder model (OpenRouter)
+        </label>
+        <select
+          value={promptBuilderModel}
+          onChange={(e) => setPromptBuilderModel(e.target.value)}
+          className="mb-4 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400"
+        >
+          {PROMPT_BUILDER_MODEL_GROUPS.map((group) => (
+            <optgroup key={group} label={group}>
+              {PROMPT_BUILDER_MODELS.filter((m) => m.group === group).map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+
+        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
           FAL model
         </label>
         <select
@@ -554,7 +657,13 @@ export default function MaszynkaView({
             </div>
           )}
           <StatusHistory events={currentRun.statusHistory} />
+          <PromptBuilderPanel
+            model={currentRun.promptBuilderModel}
+            output={currentRun.promptBuilderOutput as PromptBuilderOutput | null}
+          />
           <DebugJson label="Contract" value={currentRun.contract} />
+          <DebugJson label="Prompt builder request" value={currentRun.promptBuilderRequest} />
+          <DebugJson label="Prompt builder response" value={currentRun.promptBuilderResponse} />
           <DebugJson label="FAL request" value={currentRun.falRequest} />
           <DebugJson label="FAL response" value={currentRun.falResponse} />
         </section>
@@ -596,6 +705,43 @@ export default function MaszynkaView({
       <MaszynkaConfigs />
 
       {lightbox.node}
+    </div>
+  );
+}
+
+/** Human-readable view of the Prompt builder stage output — finalPrompt, negativePrompt,
+ *  appliedRules, riskNotes (PRD section 14 / issue #4 acceptance criteria). Raw
+ *  request/response stay in the collapsible DebugJson panels next to this. */
+function PromptBuilderPanel({ model, output }: { model: string | null; output: PromptBuilderOutput | null }) {
+  if (!output) return null;
+  return (
+    <div className="mb-3 rounded-lg bg-neutral-50 p-3">
+      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">
+        Prompt builder output{model && <span className="ml-1 font-normal normal-case text-neutral-400">· {model}</span>}
+      </p>
+      <p className="mb-2 whitespace-pre-wrap text-sm text-neutral-800">
+        <b>Final prompt:</b> {output.finalPrompt}
+      </p>
+      {output.negativePrompt && (
+        <p className="mb-2 whitespace-pre-wrap text-sm text-neutral-600">
+          <b>Negative prompt:</b> {output.negativePrompt}
+        </p>
+      )}
+      {output.promptSummary && (
+        <p className="mb-2 whitespace-pre-wrap text-xs text-neutral-500">
+          <b>Summary:</b> {output.promptSummary}
+        </p>
+      )}
+      {output.appliedRules.length > 0 && (
+        <p className="mb-2 text-xs text-neutral-600">
+          <b>Applied rules:</b> {output.appliedRules.join(", ")}
+        </p>
+      )}
+      {output.riskNotes.length > 0 && (
+        <p className="text-xs text-amber-700">
+          <b>Risk notes:</b> {output.riskNotes.join(", ")}
+        </p>
+      )}
     </div>
   );
 }
