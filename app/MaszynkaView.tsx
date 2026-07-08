@@ -11,6 +11,7 @@ import { configureFal, runModel, uploadReference } from "@/lib/fal";
 import { createRun, getRun, listRuns, patchRun, type MaszynkaRun } from "@/lib/maszynka/api";
 import { classifyFalError } from "@/lib/maszynka/status";
 import { useImageLightbox } from "./ImageLightbox";
+import MaszynkaConfigs from "./MaszynkaConfigs";
 
 // fal.ai's ApiError sets `message` from the response body's `.message` field, which
 // validation errors (422, `{ detail: [...] }`) don't have — so `e.message` is often
@@ -358,6 +359,8 @@ export default function MaszynkaView({
           ))}
         </ul>
       </section>
+
+      <MaszynkaConfigs />
 
       {lightbox.node}
     </div>
