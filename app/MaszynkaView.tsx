@@ -32,6 +32,16 @@ import {
   type AssetAnalysisRecord,
 } from "@/lib/maszynka/assetAnalysis";
 import {
+  DEFAULT_PROMPT_IMPROVEMENT_MODEL,
+  PROMPT_IMPROVEMENT_MODELS,
+  PROMPT_IMPROVEMENT_MODEL_GROUPS,
+  buildPromptImprovementRequestBody,
+  callPromptImprovement,
+  parsePromptImprovementContent,
+  resolveEffectivePrompt,
+  type PromptImprovementOutput,
+} from "@/lib/maszynka/promptImprovement";
+import {
   DEFAULT_PROMPT_BUILDER_MODEL,
   PROMPT_BUILDER_MODELS,
   PROMPT_BUILDER_MODEL_GROUPS,
@@ -105,6 +115,23 @@ interface AssetUpload {
   error?: string;
 }
 
+/** Prompt improvement (issue #8) client-side state — UI-driven, operator-triggered,
+ *  runs before a run exists (see lib/maszynka/promptImprovement.ts module header).
+ *  `sourcePromptRaw` is the exact raw prompt the proposal was generated from; if the
+ *  operator edits the raw prompt afterward, the proposal/acceptance no longer
+ *  corresponds to what will actually run — see `isImprovementLive` in the component.
+ *  "discarded" is a distinct terminal status from "idle": `promptImprovementUsed`
+ *  (spec: "was the feature used at all") must stay true after a discard — only
+ *  `promptImprovementAccepted` should flip back to false. Editing the raw prompt is the
+ *  only thing that resets all the way to "idle" (see `handleRawPromptChange`). */
+interface ImprovementState {
+  status: "idle" | "loading" | "proposed" | "discarded" | "error";
+  sourcePromptRaw?: string;
+  proposal?: PromptImprovementOutput;
+  accepted?: boolean;
+  error?: string;
+}
+
 /** The four upload fields, in the order the spec lists them (section 2/3). The role
  *  comes from which field an asset was dropped into, never from operator prose —
  *  CONTEXT.md "Asset role". */
@@ -173,6 +200,11 @@ export default function MaszynkaView({
   // Asset analysis stage (issue #6): the operator's OpenRouter model for that stage,
   // recorded on the run at creation — see lib/maszynka/assetAnalysis.ts.
   const [assetAnalysisModel, setAssetAnalysisModel] = useState<string>(DEFAULT_ASSET_ANALYSIS_MODEL);
+  // Prompt improvement stage (issue #8): the operator's OpenRouter model for that
+  // stage. Unlike every other stage model below, this one is never recorded on the run
+  // by itself — it's a UI-driven, operator-triggered stage that runs before a run
+  // exists (see lib/maszynka/promptImprovement.ts and the `improvement` state below).
+  const [promptImprovementModel, setPromptImprovementModel] = useState<string>(DEFAULT_PROMPT_IMPROVEMENT_MODEL);
   // Prompt builder stage (slice 4): the operator's OpenRouter model for that stage,
   // recorded on the run at creation — see lib/maszynka/promptBuilder.ts.
   const [promptBuilderModel, setPromptBuilderModel] = useState<string>(DEFAULT_PROMPT_BUILDER_MODEL);
@@ -303,12 +335,64 @@ export default function MaszynkaView({
     });
   }, []);
 
+  // --- Prompt improvement (issue #8): UI-driven, operator-triggered — the operator
+  // clicks "Improve prompt" before Run, reviews the proposal side-by-side with the raw
+  // prompt, and explicitly accepts or discards it. Nothing is sent to Neon here; only
+  // the outcome is recorded on the run at creation (see handleRun below).
+  const [improvement, setImprovement] = useState<ImprovementState>({ status: "idle" });
+
+  // Any edit to the raw prompt invalidates a proposal/acceptance generated from the
+  // previous text — the operator must click "Improve prompt" again for the new text.
+  const handleRawPromptChange = useCallback(
+    (next: string) => {
+      setPrompt(next);
+      setImprovement((s) => (s.status === "idle" ? s : { status: "idle" }));
+    },
+    [setPrompt],
+  );
+
+  const handleImprovePrompt = useCallback(async () => {
+    const raw = prompt.trim();
+    if (!raw || !orKey) return;
+    setImprovement({ status: "loading", sourcePromptRaw: raw });
+    try {
+      const reqBody = buildPromptImprovementRequestBody(raw, promptImprovementModel);
+      const { content } = await callPromptImprovement(orKey, reqBody);
+      const { output, errors } = parsePromptImprovementContent(content);
+      if (!output) {
+        setImprovement({ status: "error", sourcePromptRaw: raw, error: errors.join("; ") });
+        return;
+      }
+      setImprovement({ status: "proposed", sourcePromptRaw: raw, proposal: output, accepted: false });
+    } catch (e) {
+      setImprovement({ status: "error", sourcePromptRaw: raw, error: errMsg(e) });
+    }
+  }, [prompt, orKey, promptImprovementModel]);
+
+  const acceptImprovement = useCallback(() => {
+    setImprovement((s) => (s.status === "proposed" ? { ...s, accepted: true } : s));
+  }, []);
+  // Discard keeps `sourcePromptRaw` (so `promptImprovementUsed` below stays true for
+  // this run — the operator did use the feature, they just rejected the proposal) and
+  // drops the proposal itself so the side-by-side panel disappears.
+  const discardImprovement = useCallback(() => {
+    setImprovement((s) => ({ status: "discarded", sourcePromptRaw: s.sourcePromptRaw }));
+  }, []);
+
+  // "Live" = generated from the prompt exactly as it stands right now — a stale
+  // proposal/discard (raw prompt edited since) is never shown as usable, even if the
+  // state object hasn't been reset yet by the same-tick setImprovement above. This is a
+  // UI-rendering concern only; `resolveEffectivePrompt` (called in handleRun) is the
+  // single source of truth for the run-tracking fields themselves.
+  const isImprovementLive = improvement.sourcePromptRaw === prompt.trim();
+
   const anyAssetUploading = ASSET_ROLE_META.some(({ role }) => assetUploads[role]?.uploading);
   const canRun =
     Boolean(apiKey) &&
     Boolean(orKey) &&
     prompt.trim().length > 0 &&
     !running &&
+    improvement.status !== "loading" &&
     !anyAssetUploading &&
     configsState === "idle" &&
     Boolean(selectedHookId) &&
@@ -323,6 +407,13 @@ export default function MaszynkaView({
     setRunError(null);
     setLogLine("");
     const promptText = prompt.trim();
+    // Prompt improvement (issue #8): `userPromptRaw` below always stays exactly what the
+    // operator typed, regardless of accept/discard. `resolveEffectivePrompt` is the
+    // single source of truth for the three run-tracking fields and for `effectivePrompt`
+    // — what flows into content safety / asset analysis / the Contract from here on
+    // (spec section 8/9).
+    const { promptImprovementUsed, promptImprovementAccepted, userPromptImproved, effectivePrompt } =
+      resolveEffectivePrompt(prompt, improvement);
 
     try {
       configureFal(apiKey);
@@ -342,6 +433,9 @@ export default function MaszynkaView({
       const run = await createRun({
         assetType: "image",
         userPromptRaw: promptText,
+        promptImprovementUsed,
+        promptImprovementAccepted,
+        userPromptImproved,
         modelKey: model.key,
         modelId: model.id,
         modelLabel: model.label,
@@ -364,7 +458,7 @@ export default function MaszynkaView({
       // status in the PRD's four-way vocabulary, so it fails the gate closed as
       // `content_safety_blocked` rather than silently letting the run continue — see
       // lib/maszynka/contentSafety.ts module header.
-      const safetyRequest = buildContentSafetyRequestBody(promptText, runAssets, contentSafetyModel);
+      const safetyRequest = buildContentSafetyRequestBody(effectivePrompt, runAssets, contentSafetyModel);
       let safetyOutput: ContentSafetyOutput | null = null;
       let safetyResponse: unknown = null;
       let safetyFailureReason: string | null = null;
@@ -488,7 +582,7 @@ export default function MaszynkaView({
       // FAL call. A contract that fails validation ends the run right here — see PRD
       // section 9 and lib/maszynka/contract.ts.
       const contract = assembleContract({
-        userPromptRaw: promptText,
+        userPromptRaw: effectivePrompt,
         assets: contractAssets,
         safetyConstraints,
         hooks: { version: configs.hooks?.version ?? 0, body: hooks },
@@ -784,6 +878,7 @@ export default function MaszynkaView({
     assetAnalysisModel,
     promptBuilderModel,
     promptReviewerModel,
+    improvement,
   ]);
 
   const openRun = useCallback(async (id: string) => {
@@ -850,16 +945,108 @@ export default function MaszynkaView({
       <section className="mb-5 rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
         <h2 className="mb-3 font-semibold">Run</h2>
 
-        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
-          User prompt (raw)
-        </label>
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <label className="block text-xs font-semibold uppercase tracking-wide text-neutral-400">
+            User prompt (raw)
+          </label>
+          <button
+            type="button"
+            onClick={() => void handleImprovePrompt()}
+            disabled={!prompt.trim() || !orKey || improvement.status === "loading"}
+            className="rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:border-neutral-200 disabled:bg-neutral-50 disabled:text-neutral-400"
+          >
+            {improvement.status === "loading" ? "Improving…" : "Improve prompt"}
+          </button>
+        </div>
         <textarea
           value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
+          onChange={(e) => handleRawPromptChange(e.target.value)}
           rows={4}
           placeholder="Describe the creative intent for this test…"
-          className="mb-4 w-full resize-y rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+          className="w-full resize-y rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
         />
+
+        <label className="mb-1 mt-2 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
+          Prompt improvement model (OpenRouter)
+        </label>
+        <select
+          value={promptImprovementModel}
+          onChange={(e) => setPromptImprovementModel(e.target.value)}
+          className="mb-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400"
+        >
+          {PROMPT_IMPROVEMENT_MODEL_GROUPS.map((group) => (
+            <optgroup key={group} label={group}>
+              {PROMPT_IMPROVEMENT_MODELS.filter((m) => m.group === group).map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+
+        {isImprovementLive && improvement.status === "error" && (
+          <p className="mb-4 text-xs text-red-600">Prompt improvement failed: {improvement.error}</p>
+        )}
+
+        {/* Optional, operator-triggered stage (issue #8): nothing changes until the
+           operator explicitly accepts — the proposal sits side-by-side with the raw
+           prompt so both are visible at once. */}
+        {isImprovementLive && improvement.status === "proposed" && (
+          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-amber-700">
+              Prompt improvement proposal · {promptImprovementModel}
+            </p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">Raw prompt</p>
+                <p className="whitespace-pre-wrap rounded-lg border border-neutral-200 bg-white p-2 text-sm text-neutral-700">
+                  {improvement.sourcePromptRaw}
+                </p>
+              </div>
+              <div>
+                <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">
+                  Proposed improvement{improvement.accepted && <span className="ml-1 normal-case text-green-700">— accepted</span>}
+                </p>
+                <p className="whitespace-pre-wrap rounded-lg border border-amber-300 bg-white p-2 text-sm text-neutral-800">
+                  {improvement.proposal!.userPromptImproved}
+                </p>
+              </div>
+            </div>
+            {improvement.proposal!.rationale && (
+              <p className="mt-2 whitespace-pre-wrap text-xs text-neutral-500">
+                <b>Why:</b> {improvement.proposal!.rationale}
+              </p>
+            )}
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={acceptImprovement}
+                disabled={improvement.accepted === true}
+                className="rounded-lg bg-amber-400 px-3 py-1.5 text-xs font-semibold text-amber-950 hover:bg-amber-300 disabled:cursor-not-allowed disabled:bg-neutral-200 disabled:text-neutral-400"
+              >
+                {improvement.accepted ? "Accepted" : "Accept"}
+              </button>
+              <button
+                type="button"
+                onClick={discardImprovement}
+                className="rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-600 hover:bg-neutral-50"
+              >
+                Discard
+              </button>
+              {improvement.accepted && (
+                <span className="text-xs text-green-700">This run will use the improved prompt above.</span>
+              )}
+            </div>
+          </div>
+        )}
+        {isImprovementLive && improvement.status === "discarded" && (
+          <p className="mb-4 text-xs text-neutral-500">Prompt improvement discarded — this run will use the raw prompt.</p>
+        )}
+        {!(
+          isImprovementLive &&
+          (improvement.status === "proposed" || improvement.status === "error" || improvement.status === "discarded")
+        ) && <div className="mb-4" />}
 
         {ASSET_ROLE_META.map(({ role, label, hint }) => {
           const upload = assetUploads[role];
@@ -1119,7 +1306,23 @@ export default function MaszynkaView({
             <StatusBadge status={currentRun.status} />
             <span className="text-xs text-neutral-400">{new Date(currentRun.createdAt).toLocaleString()}</span>
           </div>
-          <p className="mb-3 whitespace-pre-wrap text-sm text-neutral-700">{currentRun.userPromptRaw}</p>
+          <p className="mb-1 whitespace-pre-wrap text-sm text-neutral-700">{currentRun.userPromptRaw}</p>
+          {currentRun.promptImprovementUsed && (
+            <p className="mb-2 text-xs text-neutral-500">
+              Prompt improvement:{" "}
+              {currentRun.promptImprovementAccepted ? (
+                <span className="text-green-700">accepted</span>
+              ) : (
+                <span className="text-neutral-500">discarded</span>
+              )}
+              {currentRun.promptImprovementAccepted && currentRun.userPromptImproved && (
+                <>
+                  {" — "}
+                  <span className="whitespace-pre-wrap text-neutral-700">{currentRun.userPromptImproved}</span>
+                </>
+              )}
+            </p>
+          )}
           <p className="mb-3 text-xs text-neutral-500">
             Model: <b>{currentRun.modelLabel}</b>
             {currentRun.assets.length > 0 && ` · assets: ${currentRun.assets.map((a) => a.role).join(", ")}`}

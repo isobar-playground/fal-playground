@@ -24,6 +24,13 @@ function apiError(data: unknown, fallback: string): string {
 export async function createRun(input: {
   assetType?: "image" | "video";
   userPromptRaw: string;
+  /** Prompt improvement (issue #8) — recorded once at creation, never patched; the
+   *  stage runs client-side before the run exists (see lib/maszynka/promptImprovement.ts).
+   *  `userPromptImproved` must be set whenever `promptImprovementAccepted` is true (the
+   *  API route enforces this). */
+  promptImprovementUsed?: boolean;
+  promptImprovementAccepted?: boolean;
+  userPromptImproved?: string | null;
   modelKey: string;
   modelId: string;
   modelLabel: string;

@@ -6,6 +6,12 @@ export const runtime = "nodejs";
 interface CreateRunBody {
   assetType?: "image" | "video";
   userPromptRaw?: string;
+  /** Prompt improvement (issue #8) — recorded once at creation, never patched (the
+   *  stage runs client-side before the run exists; see
+   *  lib/maszynka/promptImprovement.ts). */
+  promptImprovementUsed?: boolean;
+  promptImprovementAccepted?: boolean;
+  userPromptImproved?: string | null;
   modelKey?: string;
   modelId?: string;
   modelLabel?: string;
@@ -37,6 +43,16 @@ export async function POST(req: Request) {
       return Response.json({ error: "each asset must have an id, a url and a valid role" }, { status: 400 });
     }
   }
+  // Prompt improvement (issue #8): an accepted improvement must actually carry the
+  // accepted text — a bug in the client pipeline should fail loudly here rather than
+  // silently writing a run that claims acceptance with nothing to show for it.
+  const promptImprovementAccepted = body.promptImprovementAccepted === true;
+  if (promptImprovementAccepted && !body.userPromptImproved?.trim()) {
+    return Response.json(
+      { error: "userPromptImproved is required when promptImprovementAccepted is true" },
+      { status: 400 },
+    );
+  }
 
   const sql = getSql();
   if (!sql) {
@@ -52,13 +68,16 @@ export async function POST(req: Request) {
     const firstEvent: MaszynkaStatusEvent = { status: "run_started", at: new Date().toISOString() };
     const rows = await sql`
       INSERT INTO maszynka_runs (
-        id, asset_type, status, status_history, user_prompt_raw, model_key, model_id, model_label, assets, content_safety_model, asset_analysis_model, prompt_builder_model, prompt_reviewer_model
+        id, asset_type, status, status_history, user_prompt_raw, prompt_improvement_used, prompt_improvement_accepted, user_prompt_improved, model_key, model_id, model_label, assets, content_safety_model, asset_analysis_model, prompt_builder_model, prompt_reviewer_model
       ) VALUES (
         ${id},
         ${body.assetType === "video" ? "video" : "image"},
         'run_started',
         ${JSON.stringify([firstEvent])}::jsonb,
         ${userPromptRaw},
+        ${body.promptImprovementUsed === true},
+        ${promptImprovementAccepted},
+        ${promptImprovementAccepted ? body.userPromptImproved!.trim() : null},
         ${body.modelKey},
         ${body.modelId},
         ${body.modelLabel},

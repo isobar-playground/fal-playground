@@ -13,7 +13,8 @@
     "check:maszynka-prompt-builder": "node lib/maszynka/promptBuilder.check.ts",
     "check:maszynka-prompt-reviewer": "node lib/maszynka/promptReviewer.check.ts",
     "check:maszynka-asset-analysis": "node lib/maszynka/assetAnalysis.check.ts",
-    "check:maszynka-content-safety": "node lib/maszynka/contentSafety.check.ts"
+    "check:maszynka-content-safety": "node lib/maszynka/contentSafety.check.ts",
+    "check:maszynka-prompt-improvement": "node lib/maszynka/promptImprovement.check.ts"
   },
   "dependencies": {
     "@fal-ai/client": "^1.10.1",

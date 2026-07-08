@@ -32,6 +32,16 @@ export interface MaszynkaRun {
   status: RunStatus;
   statusHistory: MaszynkaStatusEvent[];
   userPromptRaw: string;
+  // Prompt improvement (issue #8) — a UI-driven, operator-triggered stage that runs
+  // client-side *before* a run exists (see lib/maszynka/promptImprovement.ts), so
+  // there's no request/response/status to persist for it, only its outcome: whether
+  // the operator used it at all, whether they accepted the proposal, and the accepted
+  // text. Recorded once at run creation, alongside `userPromptRaw` above — never
+  // patched afterward. `userPromptImproved` is null unless `promptImprovementAccepted`
+  // is true.
+  promptImprovementUsed: boolean;
+  promptImprovementAccepted: boolean;
+  userPromptImproved: string | null;
   modelKey: string;
   modelId: string;
   modelLabel: string;
@@ -94,6 +104,9 @@ interface RunRow {
   status: string;
   status_history: MaszynkaStatusEvent[];
   user_prompt_raw: string;
+  prompt_improvement_used: boolean;
+  prompt_improvement_accepted: boolean;
+  user_prompt_improved: string | null;
   model_key: string;
   model_id: string;
   model_label: string;
@@ -127,6 +140,9 @@ export function rowToRun(row: RunRow): MaszynkaRun {
     status: row.status as RunStatus,
     statusHistory: row.status_history ?? [],
     userPromptRaw: row.user_prompt_raw,
+    promptImprovementUsed: row.prompt_improvement_used ?? false,
+    promptImprovementAccepted: row.prompt_improvement_accepted ?? false,
+    userPromptImproved: row.user_prompt_improved ?? null,
     modelKey: row.model_key,
     modelId: row.model_id,
     modelLabel: row.model_label,
@@ -208,6 +224,13 @@ export function ensureSchema(sql: NeonQueryFunction<false, false>) {
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS content_safety_request jsonb`;
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS content_safety_response jsonb`;
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS content_safety_output jsonb`;
+    // Issue #8 adds the Prompt improvement stage's three tracking fields — same
+    // idempotent-column story. Written once at INSERT time (see the POST route), never
+    // patched — this stage has no run status of its own (see the MaszynkaRun field doc
+    // comment above and lib/maszynka/promptImprovement.ts module header).
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS prompt_improvement_used boolean NOT NULL DEFAULT false`;
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS prompt_improvement_accepted boolean NOT NULL DEFAULT false`;
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS user_prompt_improved text`;
   })()
     .then(() => undefined)
     .catch((e) => {
