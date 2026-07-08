@@ -80,6 +80,7 @@ function baseInput(overrides: Partial<AssembleContractInput> = {}): AssembleCont
   return {
     userPromptRaw: "a red shoe on a white background",
     assets: [PACKSHOT_ASSET],
+    safetyConstraints: [],
     hooks: { version: 3, body: HOOKS },
     selectedHookId: "h1",
     styles: { version: 1, body: STYLES },
@@ -161,6 +162,29 @@ assert.ok(
   validateContract(badModel).length,
   "a model missing from the capability matrix must fail validation — this is exactly the " +
     "prompt_builder_contract_validation_failed path the run status machine needs",
+);
+
+// --- issue #7: safetyConstraints flows from the Content safety pre-check into the
+// Contract as its own top-priority field, and must validate as a string array --------
+const withConstraints = assembleContract(
+  baseInput({ safetyConstraints: ["no visible alcohol branding on the generated asset"] }),
+);
+assert.deepEqual(withConstraints.safetyConstraints, ["no visible alcohol branding on the generated asset"]);
+assert.deepEqual(validateContract(withConstraints), []);
+
+const noConstraints = assembleContract(baseInput({ safetyConstraints: [] }));
+assert.deepEqual(noConstraints.safetyConstraints, [], "content_safety_passed runs carry an empty constraints array");
+assert.deepEqual(validateContract(noConstraints), []);
+
+assert.ok(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  validateContract(assembleContract(baseInput({ safetyConstraints: "not-an-array" as any }))).length,
+  "safetyConstraints must be an array",
+);
+assert.ok(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  validateContract(assembleContract(baseInput({ safetyConstraints: [1, 2] as any }))).length,
+  "safetyConstraints entries must be strings",
 );
 
 // --- malformed generation settings / user input fail validation too -------------------

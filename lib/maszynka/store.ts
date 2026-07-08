@@ -35,6 +35,17 @@ export interface MaszynkaRun {
   modelKey: string;
   modelId: string;
   modelLabel: string;
+  // Content safety pre-check LLM stage (issue #7) — see lib/maszynka/contentSafety.ts.
+  // Runs first, before Asset analysis. The operator's chosen OpenRouter model, the raw
+  // request/response, and the parsed structured output (status/reasons/constraints).
+  // Single call per run (no revise loop of its own — a `content_safety_revise_required`
+  // verdict means the operator must start a new run with a changed prompt/assets), so
+  // these are plain fields, not an append-only attempts array like the Prompt builder/
+  // reviewer pair.
+  contentSafetyModel: string | null;
+  contentSafetyRequest: unknown;
+  contentSafetyResponse: unknown;
+  contentSafetyOutput: unknown;
   // Every uploaded asset (any/all of packshot/style_reference/brand_reference/
   // campaign_reference, all optional — spec section 3), replacing the single
   // `packshotUrl` field from slice 1 (issue #6).
@@ -86,6 +97,10 @@ interface RunRow {
   model_key: string;
   model_id: string;
   model_label: string;
+  content_safety_model: string | null;
+  content_safety_request: unknown;
+  content_safety_response: unknown;
+  content_safety_output: unknown;
   assets: RunAsset[];
   asset_analysis_model: string | null;
   asset_analysis_results: unknown[];
@@ -115,6 +130,10 @@ export function rowToRun(row: RunRow): MaszynkaRun {
     modelKey: row.model_key,
     modelId: row.model_id,
     modelLabel: row.model_label,
+    contentSafetyModel: row.content_safety_model ?? null,
+    contentSafetyRequest: row.content_safety_request ?? null,
+    contentSafetyResponse: row.content_safety_response ?? null,
+    contentSafetyOutput: row.content_safety_output ?? null,
     assets: row.assets ?? [],
     assetAnalysisModel: row.asset_analysis_model ?? null,
     assetAnalysisResults: row.asset_analysis_results ?? [],
@@ -183,6 +202,12 @@ export function ensureSchema(sql: NeonQueryFunction<false, false>) {
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS assets jsonb NOT NULL DEFAULT '[]'::jsonb`;
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS asset_analysis_model text`;
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS asset_analysis_results jsonb NOT NULL DEFAULT '[]'::jsonb`;
+    // Issue #7 adds the Content safety pre-check stage — same idempotent-column story.
+    // Single call per run (no attempts array) — see the MaszynkaRun field doc comments.
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS content_safety_model text`;
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS content_safety_request jsonb`;
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS content_safety_response jsonb`;
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS content_safety_output jsonb`;
   })()
     .then(() => undefined)
     .catch((e) => {

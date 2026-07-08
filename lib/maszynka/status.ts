@@ -56,8 +56,28 @@ export type RunStatus =
 // completes trivially) or `asset_analysis_failed`. `asset_analysis_failed` is terminal —
 // a bad/unreadable asset ends the run right there, same shape as
 // `prompt_builder_contract_validation_failed`.
+//
+// Issue #7 inserts the Content safety pre-check stage in front of even that — it is now
+// the FIRST stage, running before Asset analysis and before any FAL cost is incurred
+// (PRD section 6 / CONTEXT.md priority logic: content safety ranks above product/brand
+// preservation, i.e. above everything else). `run_started -> asset_analysis_completed`
+// directly is therefore no longer legal either: every run must land on one of the four
+// `content_safety_*` statuses first (see lib/maszynka/contentSafety.ts). Only
+// `content_safety_passed` and `content_safety_allowed_with_constraints` may proceed to
+// Asset analysis; `content_safety_revise_required` and `content_safety_blocked` are
+// terminal — no further moves, same shape as `asset_analysis_failed` — because the whole
+// point of running this stage first is that a blocked/revise-required run must stop
+// before any FAL generation cost, and asset analysis' own vision calls aren't free
+// either, so it doesn't run for those two outcomes.
 export const ALLOWED_NEXT: Partial<Record<RunStatus, RunStatus[]>> = {
-  run_started: ["asset_analysis_completed", "asset_analysis_failed"],
+  run_started: [
+    "content_safety_passed",
+    "content_safety_allowed_with_constraints",
+    "content_safety_revise_required",
+    "content_safety_blocked",
+  ],
+  content_safety_passed: ["asset_analysis_completed", "asset_analysis_failed"],
+  content_safety_allowed_with_constraints: ["asset_analysis_completed", "asset_analysis_failed"],
   asset_analysis_completed: ["prompt_builder_contract_created", "prompt_builder_contract_validation_failed"],
   prompt_builder_contract_created: ["prompt_builder_completed", "prompt_builder_output_validation_failed"],
   prompt_builder_completed: ["prompt_reviewer_passed", "prompt_reviewer_revise_required", "prompt_build_failed"],

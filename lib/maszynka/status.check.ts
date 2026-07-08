@@ -8,8 +8,10 @@ import assert from "node:assert/strict";
 import { assertValidTransition, classifyFalError, isValidTransition } from "./status.ts";
 
 // --- status transitions ---------------------------------------------------
-assert.equal(isValidTransition("run_started", "asset_analysis_completed"), true);
-assert.equal(isValidTransition("run_started", "asset_analysis_failed"), true);
+assert.equal(isValidTransition("content_safety_passed", "asset_analysis_completed"), true);
+assert.equal(isValidTransition("content_safety_passed", "asset_analysis_failed"), true);
+assert.equal(isValidTransition("content_safety_allowed_with_constraints", "asset_analysis_completed"), true);
+assert.equal(isValidTransition("content_safety_allowed_with_constraints", "asset_analysis_failed"), true);
 assert.equal(isValidTransition("asset_analysis_completed", "prompt_builder_contract_created"), true);
 assert.equal(isValidTransition("asset_analysis_completed", "prompt_builder_contract_validation_failed"), true);
 assert.equal(isValidTransition("prompt_builder_contract_created", "prompt_builder_completed"), true);
@@ -19,11 +21,33 @@ assert.equal(isValidTransition("fal_generation_started", "generation_completed")
 assert.equal(isValidTransition("fal_generation_started", "fal_generation_failed"), true);
 assert.equal(isValidTransition("fal_generation_started", "provider_policy_blocked"), true);
 
+// --- issue #7: Content safety pre-check is now the FIRST stage --------------------
+// run_started can only land on one of the four content_safety_* statuses.
+assert.equal(isValidTransition("run_started", "content_safety_passed"), true);
+assert.equal(isValidTransition("run_started", "content_safety_allowed_with_constraints"), true);
+assert.equal(isValidTransition("run_started", "content_safety_revise_required"), true);
+assert.equal(isValidTransition("run_started", "content_safety_blocked"), true);
+// Skipping straight to Asset analysis (or anywhere else) is no longer legal — every run
+// must clear the safety pre-check first (before any FAL cost, and before the asset
+// analysis vision calls too).
+assert.equal(isValidTransition("run_started", "asset_analysis_completed"), false);
+assert.equal(isValidTransition("run_started", "asset_analysis_failed"), false);
+// content_safety_revise_required and content_safety_blocked are terminal — the whole
+// point is stopping the run before any further cost is incurred.
+assert.equal(isValidTransition("content_safety_revise_required", "asset_analysis_completed"), false);
+assert.equal(isValidTransition("content_safety_blocked", "asset_analysis_completed"), false);
+assert.equal(isValidTransition("content_safety_revise_required", "asset_analysis_failed"), false);
+assert.equal(isValidTransition("content_safety_blocked", "asset_analysis_failed"), false);
+assert.doesNotThrow(() => assertValidTransition("run_started", "content_safety_passed"));
+assert.doesNotThrow(() => assertValidTransition("content_safety_allowed_with_constraints", "asset_analysis_completed"));
+assert.throws(() => assertValidTransition("content_safety_blocked", "asset_analysis_completed"));
+assert.throws(() => assertValidTransition("content_safety_revise_required", "asset_analysis_completed"));
+
 // Issue #6: skipping the Asset analysis stage is no longer legal either — every run
 // must land on asset_analysis_completed/failed before a Contract can be assembled
 // (the Contract needs each asset's analysis output).
-assert.equal(isValidTransition("run_started", "prompt_builder_contract_created"), false);
-assert.equal(isValidTransition("run_started", "prompt_builder_contract_validation_failed"), false);
+assert.equal(isValidTransition("content_safety_passed", "prompt_builder_contract_created"), false);
+assert.equal(isValidTransition("content_safety_passed", "prompt_builder_contract_validation_failed"), false);
 // asset_analysis_failed is terminal — no further moves.
 assert.equal(isValidTransition("asset_analysis_failed", "prompt_builder_contract_created"), false);
 
@@ -44,7 +68,7 @@ assert.equal(isValidTransition("prompt_builder_output_validation_failed", "promp
 assert.throws(() => assertValidTransition("run_started", "generation_completed"));
 assert.throws(() => assertValidTransition("run_started", "fal_generation_started"));
 assert.throws(() => assertValidTransition("prompt_builder_contract_created", "fal_generation_started"));
-assert.doesNotThrow(() => assertValidTransition("run_started", "asset_analysis_completed"));
+assert.doesNotThrow(() => assertValidTransition("content_safety_passed", "asset_analysis_completed"));
 assert.doesNotThrow(() => assertValidTransition("asset_analysis_completed", "prompt_builder_contract_created"));
 assert.doesNotThrow(() => assertValidTransition("prompt_builder_contract_created", "prompt_builder_completed"));
 

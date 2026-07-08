@@ -14,6 +14,15 @@ import { createRun, getRun, listRuns, patchRun, type MaszynkaRun, type RunAsset 
 import { classifyFalError } from "@/lib/maszynka/status";
 import { assembleContract, validateContract, type AssetRole, type ContractAsset } from "@/lib/maszynka/contract";
 import {
+  CONTENT_SAFETY_MODELS,
+  CONTENT_SAFETY_MODEL_GROUPS,
+  DEFAULT_CONTENT_SAFETY_MODEL,
+  buildContentSafetyRequestBody,
+  callContentSafety,
+  parseContentSafetyContent,
+  type ContentSafetyOutput,
+} from "@/lib/maszynka/contentSafety";
+import {
   ASSET_ANALYSIS_MODELS,
   ASSET_ANALYSIS_MODEL_GROUPS,
   DEFAULT_ASSET_ANALYSIS_MODEL,
@@ -108,6 +117,10 @@ const ASSET_ROLE_META: { role: AssetRole; label: string; hint: string }[] = [
 
 const STATUS_TONE: Record<string, string> = {
   run_started: "bg-neutral-100 text-neutral-600",
+  content_safety_passed: "bg-green-100 text-green-700",
+  content_safety_allowed_with_constraints: "bg-amber-100 text-amber-800",
+  content_safety_revise_required: "bg-red-100 text-red-700",
+  content_safety_blocked: "bg-red-100 text-red-700",
   asset_analysis_completed: "bg-amber-100 text-amber-800",
   asset_analysis_failed: "bg-red-100 text-red-700",
   prompt_builder_contract_created: "bg-amber-100 text-amber-800",
@@ -153,6 +166,10 @@ export default function MaszynkaView({
   const [assetUploads, setAssetUploads] = useState<Partial<Record<AssetRole, AssetUpload>>>({});
   const [modelKey, setModelKey] = useState<string>("nano-banana");
   const model = MODEL_BY_KEY[modelKey] ?? MODELS[0];
+  // Content safety pre-check stage (issue #7): the operator's OpenRouter model for that
+  // stage, recorded on the run at creation — see lib/maszynka/contentSafety.ts. Runs
+  // first, before Asset analysis.
+  const [contentSafetyModel, setContentSafetyModel] = useState<string>(DEFAULT_CONTENT_SAFETY_MODEL);
   // Asset analysis stage (issue #6): the operator's OpenRouter model for that stage,
   // recorded on the run at creation — see lib/maszynka/assetAnalysis.ts.
   const [assetAnalysisModel, setAssetAnalysisModel] = useState<string>(DEFAULT_ASSET_ANALYSIS_MODEL);
@@ -329,12 +346,75 @@ export default function MaszynkaView({
         modelId: model.id,
         modelLabel: model.label,
         assets: runAssets,
+        contentSafetyModel,
         assetAnalysisModel,
         promptBuilderModel,
         promptReviewerModel,
       });
       setCurrentRun(run);
       refreshHistory();
+
+      // --- Content safety pre-check (issue #7): the FIRST pipeline stage — runs before
+      // Asset analysis and before any FAL cost is incurred (PRD section 6 / CONTEXT.md
+      // priority logic: content safety ranks above everything else). One vision LLM call
+      // covering the raw prompt plus every uploaded asset. Only `content_safety_passed`
+      // and `content_safety_allowed_with_constraints` may proceed; `revise_required` and
+      // `blocked` stop the run right here — see status.ts's ALLOWED_NEXT. A technical
+      // failure (network error, invalid/non-schema-conforming output) has no dedicated
+      // status in the PRD's four-way vocabulary, so it fails the gate closed as
+      // `content_safety_blocked` rather than silently letting the run continue — see
+      // lib/maszynka/contentSafety.ts module header.
+      const safetyRequest = buildContentSafetyRequestBody(promptText, runAssets, contentSafetyModel);
+      let safetyOutput: ContentSafetyOutput | null = null;
+      let safetyResponse: unknown = null;
+      let safetyFailureReason: string | null = null;
+      try {
+        const { raw, content } = await callContentSafety(orKey, safetyRequest);
+        safetyResponse = raw;
+        const { output, errors } = parseContentSafetyContent(content);
+        if (!output) {
+          safetyFailureReason = `Content safety pre-check returned an unusable response: ${errors.join("; ")}`;
+        } else {
+          safetyOutput = output;
+        }
+      } catch (e) {
+        safetyFailureReason = errMsg(e);
+      }
+
+      if (safetyFailureReason) {
+        const blocked = await patchRun(run.id, {
+          status: "content_safety_blocked",
+          contentSafetyRequest: safetyRequest,
+          contentSafetyResponse: safetyResponse,
+          contentSafetyOutput: null,
+          detail: `Content safety pre-check call failed — failing closed: ${safetyFailureReason}`,
+          error: `Content safety pre-check call failed — failing closed: ${safetyFailureReason}`,
+        });
+        setCurrentRun(blocked);
+        return; // fail-closed: never reach asset analysis or FAL on a broken safety check
+      }
+
+      const safety = safetyOutput!;
+      const safetyDetail = safety.status === "content_safety_allowed_with_constraints"
+        ? safety.constraints.join("; ") || safety.reasons.join("; ")
+        : safety.reasons.join("; ");
+      const safetyPatch = await patchRun(run.id, {
+        status: safety.status,
+        contentSafetyRequest: safetyRequest,
+        contentSafetyResponse: safetyResponse,
+        contentSafetyOutput: safety,
+        detail: safetyDetail || undefined,
+        ...(safety.status === "content_safety_revise_required" || safety.status === "content_safety_blocked"
+          ? { error: safety.reasons.join("; ") || `Content safety pre-check: ${safety.status}` }
+          : {}),
+      });
+      setCurrentRun(safetyPatch);
+
+      if (safety.status === "content_safety_revise_required" || safety.status === "content_safety_blocked") {
+        return; // stop before asset analysis / any FAL cost — see PRD acceptance criteria
+      }
+
+      const safetyConstraints = safety.status === "content_safety_allowed_with_constraints" ? safety.constraints : [];
 
       // --- Asset analysis stage (issue #6): one OpenRouter call per uploaded asset,
       // run before the Contract is assembled — the Contract needs every asset's
@@ -410,6 +490,7 @@ export default function MaszynkaView({
       const contract = assembleContract({
         userPromptRaw: promptText,
         assets: contractAssets,
+        safetyConstraints,
         hooks: { version: configs.hooks?.version ?? 0, body: hooks },
         selectedHookId,
         styles: { version: configs.styles?.version ?? 0, body: styles },
@@ -699,6 +780,7 @@ export default function MaszynkaView({
     targetLanguage,
     aspectRatio,
     variantsCount,
+    contentSafetyModel,
     assetAnalysisModel,
     promptBuilderModel,
     promptReviewerModel,
@@ -923,6 +1005,25 @@ export default function MaszynkaView({
         )}
 
         <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
+          Content safety model (OpenRouter)
+        </label>
+        <select
+          value={contentSafetyModel}
+          onChange={(e) => setContentSafetyModel(e.target.value)}
+          className="mb-4 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400"
+        >
+          {CONTENT_SAFETY_MODEL_GROUPS.map((group) => (
+            <optgroup key={group} label={group}>
+              {CONTENT_SAFETY_MODELS.filter((m) => m.group === group).map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+
+        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
           Asset analysis model (OpenRouter)
         </label>
         <select
@@ -1042,6 +1143,10 @@ export default function MaszynkaView({
             </div>
           )}
           <StatusHistory events={currentRun.statusHistory} />
+          <ContentSafetyPanel
+            model={currentRun.contentSafetyModel}
+            output={currentRun.contentSafetyOutput as ContentSafetyOutput | null}
+          />
           <AssetAnalysisPanel
             model={currentRun.assetAnalysisModel}
             results={(currentRun.assetAnalysisResults as AssetAnalysisRecord[] | undefined) ?? []}
@@ -1054,6 +1159,8 @@ export default function MaszynkaView({
             model={currentRun.promptReviewerModel}
             attempts={(currentRun.promptReviewerAttempts as PromptReviewerAttemptRecord[] | undefined) ?? []}
           />
+          <DebugJson label="Content safety request" value={currentRun.contentSafetyRequest} />
+          <DebugJson label="Content safety response" value={currentRun.contentSafetyResponse} />
           <DebugJson label="Assets" value={currentRun.assets} />
           <DebugJson label="Asset analysis results" value={currentRun.assetAnalysisResults} />
           <DebugJson label="Contract" value={currentRun.contract} />
@@ -1100,6 +1207,41 @@ export default function MaszynkaView({
       <MaszynkaConfigs />
 
       {lightbox.node}
+    </div>
+  );
+}
+
+/** Human-readable view of the Content safety pre-check's verdict (issue #7 acceptance
+ *  criteria: "its status and reasons are persisted and shown"). Runs first in the
+ *  pipeline, before Asset analysis — see lib/maszynka/contentSafety.ts. Raw request/
+ *  response stay in the "Content safety request"/"response" DebugJson panels next to
+ *  this. */
+function ContentSafetyPanel({ model, output }: { model: string | null; output: ContentSafetyOutput | null }) {
+  if (!output) return null;
+  const STATUS_COLOR: Record<string, string> = {
+    content_safety_passed: "text-green-700",
+    content_safety_allowed_with_constraints: "text-amber-700",
+    content_safety_revise_required: "text-red-700",
+    content_safety_blocked: "text-red-700",
+  };
+  return (
+    <div className="mb-3 rounded-lg bg-neutral-50 p-3">
+      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">
+        Content safety pre-check{model && <span className="ml-1 font-normal normal-case text-neutral-400">· {model}</span>}
+      </p>
+      <p className="mb-1 text-sm text-neutral-800">
+        <b>Status:</b> <span className={STATUS_COLOR[output.status] ?? "text-neutral-700"}>{output.status}</span>
+      </p>
+      {output.reasons.length > 0 && (
+        <p className="mb-1 whitespace-pre-wrap text-xs text-neutral-600">
+          <b>Reasons:</b> {output.reasons.join("; ")}
+        </p>
+      )}
+      {output.constraints.length > 0 && (
+        <p className="whitespace-pre-wrap text-xs text-amber-700">
+          <b>Constraints (fed into the Contract):</b> {output.constraints.join("; ")}
+        </p>
+      )}
     </div>
   );
 }

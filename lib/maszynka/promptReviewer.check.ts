@@ -35,6 +35,7 @@ const CONTRACT_WITH_PACKSHOT: Contract = {
       analysis: { description: "d", attributes: [], preserveElements: [] },
     },
   ],
+  safetyConstraints: [],
   hook: { id: "h1", version: 1, snapshot: { id: "h1", text: "Hook" } },
   style: { id: "s1", version: 1, snapshot: null },
   cameraSetting: { id: "c1", version: 1, snapshot: null },

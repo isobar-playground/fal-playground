@@ -6,6 +6,12 @@ export const runtime = "nodejs";
 interface PatchRunBody {
   status?: RunStatus;
   detail?: string;
+  /** The Content safety pre-check stage's request/response/parsed-output (issue #7) —
+   *  full replace (not append), same as promptBuilderRequest/Response/Output below,
+   *  since this stage makes exactly one call per run (see contentSafety.ts). */
+  contentSafetyRequest?: unknown;
+  contentSafetyResponse?: unknown;
+  contentSafetyOutput?: unknown;
   falRequest?: unknown;
   falResponse?: unknown;
   outputs?: { url: string; width?: number; height?: number }[];
@@ -82,6 +88,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       at: new Date().toISOString(),
       ...(body.detail ? { detail: body.detail } : {}),
     };
+    const contentSafetyRequestJson = body.contentSafetyRequest !== undefined ? JSON.stringify(body.contentSafetyRequest) : null;
+    const contentSafetyResponseJson = body.contentSafetyResponse !== undefined ? JSON.stringify(body.contentSafetyResponse) : null;
+    const contentSafetyOutputJson = body.contentSafetyOutput !== undefined ? JSON.stringify(body.contentSafetyOutput) : null;
     const falRequestJson = body.falRequest !== undefined ? JSON.stringify(body.falRequest) : null;
     const falResponseJson = body.falResponse !== undefined ? JSON.stringify(body.falResponse) : null;
     const outputsJson = body.outputs !== undefined ? JSON.stringify(body.outputs) : null;
@@ -104,6 +113,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       UPDATE maszynka_runs SET
         status = ${body.status},
         status_history = status_history || ${JSON.stringify([event])}::jsonb,
+        content_safety_request = COALESCE(${contentSafetyRequestJson}::jsonb, content_safety_request),
+        content_safety_response = COALESCE(${contentSafetyResponseJson}::jsonb, content_safety_response),
+        content_safety_output = COALESCE(${contentSafetyOutputJson}::jsonb, content_safety_output),
         fal_request = COALESCE(${falRequestJson}::jsonb, fal_request),
         fal_response = COALESCE(${falResponseJson}::jsonb, fal_response),
         outputs = COALESCE(${outputsJson}::jsonb, outputs),

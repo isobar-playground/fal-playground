@@ -12,6 +12,16 @@
 // is assembled — status.ts's ALLOWED_NEXT puts `asset_analysis_completed` between
 // `run_started` and `prompt_builder_contract_created` — so every asset here always
 // carries its analysis output already; `assembleContract` never calls an LLM itself.
+//
+// Issue #7 adds `safetyConstraints`: the Content safety pre-check stage (see
+// lib/maszynka/contentSafety.ts) now runs before even Asset analysis, and when its
+// verdict is `content_safety_allowed_with_constraints` it returns operator-facing
+// constraints the run must honor. Priority logic (CONTEXT.md) ranks content safety
+// above every other layer — product/brand preservation, hook, style, camera setting,
+// operator prompt — so these constraints are carried in the Contract as their own
+// top-priority field (not folded into globalRules) and the Prompt builder's system
+// prompt (see promptBuilder.ts) treats them as non-negotiable. An empty array means
+// either the run passed cleanly or simply has no constraints to apply.
 import type {
   CameraSettingConfig,
   GlobalRuleConfig,
@@ -48,6 +58,11 @@ export interface ContractConfigRef<T> {
 export interface Contract {
   userInput: { userPromptRaw: string };
   assets: ContractAsset[];
+  /** Operator-facing constraints from the Content safety pre-check (issue #7) when its
+   *  verdict was `content_safety_allowed_with_constraints`. Empty array otherwise. Rank
+   *  1 in the priority logic — the Prompt builder must honor these above everything
+   *  else, see promptBuilder.ts. */
+  safetyConstraints: string[];
   hook: ContractConfigRef<HookConfig>;
   style: ContractConfigRef<StyleConfig>;
   cameraSetting: ContractConfigRef<CameraSettingConfig>;
@@ -66,6 +81,10 @@ export interface AssembleContractInput {
   /** Every uploaded asset (any/all of the four roles, all optional per spec section 3),
    *  already analyzed by the Asset analysis stage (issue #6) before this is called. */
   assets: ContractAsset[];
+  /** The Content safety pre-check's constraints (issue #7) — empty array when the run
+   *  passed cleanly (`content_safety_passed`) or otherwise has nothing to add; populated
+   *  only after a `content_safety_allowed_with_constraints` verdict. */
+  safetyConstraints: string[];
   hooks: { version: number; body: HookConfig[] };
   selectedHookId: string;
   styles: { version: number; body: StyleConfig[] };
@@ -95,6 +114,7 @@ export function assembleContract(input: AssembleContractInput): Contract {
   return {
     userInput: { userPromptRaw: input.userPromptRaw },
     assets: input.assets,
+    safetyConstraints: input.safetyConstraints,
     hook: { id: input.selectedHookId, version: input.hooks.version, snapshot: hook },
     style: { id: input.selectedStyleId, version: input.styles.version, snapshot: style },
     cameraSetting: {
@@ -129,6 +149,9 @@ export function validateContract(contract: Contract): string[] {
 
   if (!isNonEmptyString(contract.userInput?.userPromptRaw)) {
     errors.push("userInput.userPromptRaw must be a non-empty string");
+  }
+  if (!Array.isArray(contract.safetyConstraints) || !contract.safetyConstraints.every((c) => typeof c === "string")) {
+    errors.push("safetyConstraints must be an array of strings");
   }
   if (!Array.isArray(contract.assets)) {
     errors.push("assets must be an array");

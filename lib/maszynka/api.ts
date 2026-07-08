@@ -30,6 +30,10 @@ export async function createRun(input: {
   /** Every uploaded asset (any/all of packshot/style_reference/brand_reference/
    *  campaign_reference — issue #6, replaces slice 1's single `packshotUrl`). */
   assets?: RunAsset[];
+  /** The operator's chosen OpenRouter model for the Content safety pre-check stage —
+   *  recorded on the run at creation, same reasoning as promptBuilderModel (see
+   *  contentSafety.ts). This stage runs first, before Asset analysis. */
+  contentSafetyModel?: string;
   /** The operator's chosen OpenRouter model for the Asset analysis stage — recorded on
    *  the run at creation, same reasoning as promptBuilderModel (see assetAnalysis.ts). */
   assetAnalysisModel?: string;
@@ -55,6 +59,11 @@ export async function patchRun(
   patch: {
     status: RunStatus;
     detail?: string;
+    /** The Content safety pre-check stage's request/response/parsed-output (issue #7) —
+     *  full replace, see api route / contentSafety.ts. */
+    contentSafetyRequest?: unknown;
+    contentSafetyResponse?: unknown;
+    contentSafetyOutput?: unknown;
     falRequest?: unknown;
     falResponse?: unknown;
     outputs?: { url: string; width?: number; height?: number }[];
