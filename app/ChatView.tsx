@@ -901,7 +901,7 @@ function JsonBlock({ title, value }: { title: string; value: unknown }) {
           {copied ? "copied" : "copy"}
         </button>
       </div>
-      <pre className="max-h-72 overflow-auto px-3 py-2 font-mono text-[11px] leading-relaxed text-neutral-700">
+      <pre className="max-h-72 overflow-y-auto overflow-x-hidden whitespace-pre-wrap px-3 py-2 font-mono text-[11px] leading-relaxed text-neutral-700 [overflow-wrap:anywhere]">
         {text}
       </pre>
     </div>

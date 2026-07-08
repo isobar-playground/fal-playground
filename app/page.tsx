@@ -1858,7 +1858,7 @@ function RequestBlock({
             aria-label={`Edit request JSON for ${modelLabel}`}
           />
         ) : (
-          <pre className="max-h-80 overflow-auto rounded-lg bg-neutral-50 px-3 py-2 font-mono text-xs text-neutral-700">
+          <pre className="max-h-80 overflow-y-auto overflow-x-hidden whitespace-pre-wrap rounded-lg bg-neutral-50 px-3 py-2 font-mono text-xs text-neutral-700 [overflow-wrap:anywhere]">
             {display}
           </pre>
         )}
@@ -2249,7 +2249,7 @@ function CollapsibleRequest({ input }: { input?: Record<string, unknown> }) {
       </button>
       {open && (
         <div className="mt-1">
-          <pre className="max-h-72 overflow-auto rounded-lg bg-neutral-50 px-3 py-2 font-mono text-[11px] text-neutral-700">
+          <pre className="max-h-72 overflow-y-auto overflow-x-hidden whitespace-pre-wrap rounded-lg bg-neutral-50 px-3 py-2 font-mono text-[11px] text-neutral-700 [overflow-wrap:anywhere]">
             {text}
           </pre>
           <button

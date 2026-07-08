@@ -2105,7 +2105,7 @@ function DebugJson({ label, value }: { label: string; value: unknown }) {
         {open ? "▾" : "▸"} {label}
       </button>
       {open && (
-        <pre className="mt-1 max-h-72 overflow-auto rounded-lg bg-neutral-50 px-3 py-2 font-mono text-[11px] text-neutral-700">
+        <pre className="mt-1 max-h-72 overflow-y-auto overflow-x-hidden whitespace-pre-wrap rounded-lg bg-neutral-50 px-3 py-2 font-mono text-[11px] text-neutral-700 [overflow-wrap:anywhere]">
           {text}
         </pre>
       )}
