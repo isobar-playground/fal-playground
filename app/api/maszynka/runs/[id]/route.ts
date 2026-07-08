@@ -10,6 +10,7 @@ interface PatchRunBody {
   falResponse?: unknown;
   outputs?: { url: string; width?: number; height?: number }[];
   error?: string;
+  contract?: unknown;
 }
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -71,6 +72,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     const falRequestJson = body.falRequest !== undefined ? JSON.stringify(body.falRequest) : null;
     const falResponseJson = body.falResponse !== undefined ? JSON.stringify(body.falResponse) : null;
     const outputsJson = body.outputs !== undefined ? JSON.stringify(body.outputs) : null;
+    const contractJson = body.contract !== undefined ? JSON.stringify(body.contract) : null;
 
     const rows = await sql`
       UPDATE maszynka_runs SET
@@ -80,6 +82,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         fal_response = COALESCE(${falResponseJson}::jsonb, fal_response),
         outputs = COALESCE(${outputsJson}::jsonb, outputs),
         error = COALESCE(${body.error ?? null}, error),
+        contract = COALESCE(${contractJson}::jsonb, contract),
         updated_at = now()
       WHERE id = ${id}
       RETURNING *

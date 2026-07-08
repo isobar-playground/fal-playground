@@ -40,6 +40,71 @@ export function isConfigKind(v: string): v is ConfigKind {
   return (CONFIG_KINDS as string[]).includes(v);
 }
 
+// --- body shapes --------------------------------------------------------------
+// Typed views of each kind's JSON body, for callers that need real field access
+// (dropdown labels, Contract assembly — see contract.ts) rather than just pass-through
+// JSON storage. Kept in sync with the validators below by hand; contract.check.ts and
+// config.check.ts both exercise the seed data against the validators, so a drift would
+// surface there.
+
+export interface HookConfig {
+  id: string;
+  text: string;
+  placementGuidance?: string;
+  toneGuidance?: string;
+}
+
+export interface StyleConfig {
+  styleId: string;
+  styleName: string;
+  visualIntent: string;
+  lighting: string;
+  colorDirection: string;
+  compositionBias: string;
+  typographyBehavior: string;
+  avoid: string[];
+  recommendedModels: string[];
+  scoringCriteria: string[];
+}
+
+export interface CameraSettingConfig {
+  cameraSettingId: string;
+  cameraSettingName: string;
+  cameraIntent: string;
+  shotType: string;
+  framing: string;
+  angle: string;
+  cameraDistance: string;
+  lensFeel: string;
+  motionIntensity: string;
+  stability: string;
+  imageTranslation: string;
+  avoid: string[];
+  recommendedModels: string[];
+  scoringCriteria: string[];
+}
+
+export interface GlobalRuleConfig {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface PriorityLogicConfig {
+  layers: { id: string; label: string }[];
+}
+
+export interface ModelCapabilityEntry {
+  modelKey: string;
+  modelId: string;
+  modelLabel: string;
+  supportsNegativePrompt: boolean;
+  supportsSeed: boolean;
+  maxInputImages: number;
+  supportsMultiImage: boolean;
+  notes?: string;
+}
+
 // --- shared field checks ----------------------------------------------------
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

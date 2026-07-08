@@ -48,6 +48,7 @@ export async function patchRun(
     falResponse?: unknown;
     outputs?: { url: string; width?: number; height?: number }[];
     error?: string;
+    contract?: unknown;
   },
 ): Promise<MaszynkaRun> {
   const res = await fetch(`/api/maszynka/runs/${id}`, {

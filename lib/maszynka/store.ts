@@ -28,6 +28,7 @@ export interface MaszynkaRun {
   falResponse: unknown;
   outputs: { url: string; width?: number; height?: number }[];
   error: string | null;
+  contract: unknown; // Prompt builder Contract snapshot (slice 3) — see lib/maszynka/contract.ts
 }
 
 interface RunRow {
@@ -46,6 +47,7 @@ interface RunRow {
   fal_response: unknown;
   outputs: MaszynkaRun["outputs"];
   error: string | null;
+  contract: unknown;
 }
 
 export function rowToRun(row: RunRow): MaszynkaRun {
@@ -65,6 +67,7 @@ export function rowToRun(row: RunRow): MaszynkaRun {
     falResponse: row.fal_response ?? null,
     outputs: row.outputs ?? [],
     error: row.error,
+    contract: row.contract ?? null,
   };
 }
 
@@ -73,25 +76,32 @@ export function rowToRun(row: RunRow): MaszynkaRun {
 // error doesn't permanently wedge every later query.
 let schemaReady: Promise<void> | null = null;
 export function ensureSchema(sql: NeonQueryFunction<false, false>) {
-  schemaReady ??= sql`
-    CREATE TABLE IF NOT EXISTS maszynka_runs (
-      id              text        PRIMARY KEY,
-      created_at      timestamptz NOT NULL DEFAULT now(),
-      updated_at      timestamptz NOT NULL DEFAULT now(),
-      asset_type      text        NOT NULL DEFAULT 'image',
-      status          text        NOT NULL,
-      status_history  jsonb       NOT NULL DEFAULT '[]'::jsonb,
-      user_prompt_raw text        NOT NULL,
-      model_key       text        NOT NULL,
-      model_id        text        NOT NULL,
-      model_label     text        NOT NULL,
-      packshot_url    text,
-      fal_request     jsonb,
-      fal_response    jsonb,
-      outputs         jsonb       NOT NULL DEFAULT '[]'::jsonb,
-      error           text
-    )
-  `
+  schemaReady ??= (async () => {
+    await sql`
+      CREATE TABLE IF NOT EXISTS maszynka_runs (
+        id              text        PRIMARY KEY,
+        created_at      timestamptz NOT NULL DEFAULT now(),
+        updated_at      timestamptz NOT NULL DEFAULT now(),
+        asset_type      text        NOT NULL DEFAULT 'image',
+        status          text        NOT NULL,
+        status_history  jsonb       NOT NULL DEFAULT '[]'::jsonb,
+        user_prompt_raw text        NOT NULL,
+        model_key       text        NOT NULL,
+        model_id        text        NOT NULL,
+        model_label     text        NOT NULL,
+        packshot_url    text,
+        fal_request     jsonb,
+        fal_response    jsonb,
+        outputs         jsonb       NOT NULL DEFAULT '[]'::jsonb,
+        error           text
+      )
+    `;
+    // Slice 3 adds the Prompt builder Contract. `CREATE TABLE IF NOT EXISTS` above is a
+    // no-op on a database that already has the table from slice 1/2, so the new column
+    // needs its own idempotent statement — same "created on first write" story, just for
+    // a column instead of the whole table.
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS contract jsonb`;
+  })()
     .then(() => undefined)
     .catch((e) => {
       schemaReady = null;

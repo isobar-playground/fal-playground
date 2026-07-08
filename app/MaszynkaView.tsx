@@ -6,12 +6,25 @@
 // browsers/operators. Later slices add hooks/presets/safety/prompt-builder/reviewer on
 // top of this same run — see docs/prd/0001-maszynka-test-bench.md.
 import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
-import { DEFAULT_SETTINGS, MODELS, MODEL_BY_KEY, MODEL_GROUPS, buildInput } from "@/lib/models";
+import { DEFAULT_SETTINGS, MODELS, MODEL_BY_KEY, MODEL_GROUPS, buildInput, type ModelSettings } from "@/lib/models";
 import { configureFal, runModel, uploadReference } from "@/lib/fal";
 import { createRun, getRun, listRuns, patchRun, type MaszynkaRun } from "@/lib/maszynka/api";
 import { classifyFalError } from "@/lib/maszynka/status";
+import { assembleContract, validateContract } from "@/lib/maszynka/contract";
+import { listLatestConfigs, type MaszynkaConfigVersion } from "@/lib/maszynka/configApi";
+import type {
+  CameraSettingConfig,
+  ConfigKind,
+  GlobalRuleConfig,
+  HookConfig,
+  ModelCapabilityEntry,
+  PriorityLogicConfig,
+  StyleConfig,
+} from "@/lib/maszynka/configSchemas";
 import { useImageLightbox } from "./ImageLightbox";
 import MaszynkaConfigs from "./MaszynkaConfigs";
+
+const ASPECT_RATIO_OPTIONS = ["1:1", "4:5", "9:16", "16:9", "3:4"];
 
 // fal.ai's ApiError sets `message` from the response body's `.message` field, which
 // validation errors (422, `{ detail: [...] }`) don't have — so `e.message` is often
@@ -49,6 +62,8 @@ interface Packshot {
 
 const STATUS_TONE: Record<string, string> = {
   run_started: "bg-neutral-100 text-neutral-600",
+  prompt_builder_contract_created: "bg-amber-100 text-amber-800",
+  prompt_builder_contract_validation_failed: "bg-red-100 text-red-700",
   fal_generation_started: "bg-amber-100 text-amber-800",
   generation_completed: "bg-green-100 text-green-700",
   fal_generation_failed: "bg-red-100 text-red-700",
@@ -99,6 +114,48 @@ export default function MaszynkaView({
   }, []);
   useEffect(() => refreshHistory(), [refreshHistory]);
 
+  // --- Creative config (slice 3): hook/style/camera setting/language/aspect/variants,
+  // fed from Neon config storage (never hardcoded) — see lib/maszynka/contract.ts.
+  const [configs, setConfigs] = useState<Partial<Record<ConfigKind, MaszynkaConfigVersion>>>({});
+  const [configsState, setConfigsState] = useState<"idle" | "loading" | "error">("loading");
+  const [configsError, setConfigsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setConfigsState("loading");
+    listLatestConfigs()
+      .then((list) => {
+        setConfigs(Object.fromEntries(list.map((c) => [c.kind, c])));
+        setConfigsState("idle");
+      })
+      .catch((e) => {
+        setConfigsState("error");
+        setConfigsError(errMsg(e));
+      });
+  }, []);
+
+  const hooks = (configs.hooks?.body as HookConfig[] | undefined) ?? [];
+  const styles = (configs.styles?.body as StyleConfig[] | undefined) ?? [];
+  const cameraSettings = (configs.camera_settings?.body as CameraSettingConfig[] | undefined) ?? [];
+
+  const [selectedHookId, setSelectedHookId] = useState("");
+  const [selectedStyleId, setSelectedStyleId] = useState("");
+  const [selectedCameraSettingId, setSelectedCameraSettingId] = useState("");
+  const [targetLanguage, setTargetLanguage] = useState("Polish");
+  const [aspectRatio, setAspectRatio] = useState(ASPECT_RATIO_OPTIONS[0]);
+  const [variantsCount, setVariantsCount] = useState(1);
+
+  // Default each dropdown to the first available option once its config loads, so a
+  // fresh Run is usable without the operator having to touch every field.
+  useEffect(() => {
+    if (!selectedHookId && hooks.length) setSelectedHookId(hooks[0].id);
+  }, [hooks, selectedHookId]);
+  useEffect(() => {
+    if (!selectedStyleId && styles.length) setSelectedStyleId(styles[0].styleId);
+  }, [styles, selectedStyleId]);
+  useEffect(() => {
+    if (!selectedCameraSettingId && cameraSettings.length) setSelectedCameraSettingId(cameraSettings[0].cameraSettingId);
+  }, [cameraSettings, selectedCameraSettingId]);
+
   // Eager-upload the packshot as soon as it's picked, mirroring the Images-tab reference
   // pattern (upload cost is paid once, not on every Run click).
   useEffect(() => {
@@ -126,7 +183,17 @@ export default function MaszynkaView({
   }, []);
 
   const packshotUploading = Boolean(packshot?.uploading);
-  const canRun = Boolean(apiKey) && prompt.trim().length > 0 && !running && !packshotUploading;
+  const canRun =
+    Boolean(apiKey) &&
+    prompt.trim().length > 0 &&
+    !running &&
+    !packshotUploading &&
+    configsState === "idle" &&
+    Boolean(selectedHookId) &&
+    Boolean(selectedStyleId) &&
+    Boolean(selectedCameraSettingId) &&
+    Boolean(targetLanguage.trim()) &&
+    Boolean(aspectRatio);
 
   const handleRun = useCallback(async () => {
     if (!canRun) return;
@@ -151,8 +218,57 @@ export default function MaszynkaView({
       setCurrentRun(run);
       refreshHistory();
 
+      // --- Prompt builder contract (slice 3): assemble + validate before any builder or
+      // FAL call. A contract that fails validation ends the run right here — see PRD
+      // section 9 and lib/maszynka/contract.ts.
+      const contract = assembleContract({
+        userPromptRaw: promptText,
+        packshotUrl,
+        hooks: { version: configs.hooks?.version ?? 0, body: hooks },
+        selectedHookId,
+        styles: { version: configs.styles?.version ?? 0, body: styles },
+        selectedStyleId,
+        cameraSettings: { version: configs.camera_settings?.version ?? 0, body: cameraSettings },
+        selectedCameraSettingId,
+        globalRules: {
+          version: configs.global_rules?.version ?? 0,
+          body: (configs.global_rules?.body as GlobalRuleConfig[] | undefined) ?? [],
+        },
+        priorityLogic: {
+          version: configs.priority_logic?.version ?? 0,
+          body: (configs.priority_logic?.body as PriorityLogicConfig | undefined) ?? { layers: [] },
+        },
+        modelCapabilityMatrix: {
+          version: configs.model_capability_matrix?.version ?? 0,
+          body: (configs.model_capability_matrix?.body as ModelCapabilityEntry[] | undefined) ?? [],
+        },
+        modelKey: model.key,
+        targetLanguage: targetLanguage.trim(),
+        aspectRatio,
+        variantsCount,
+      });
+      const contractErrors = validateContract(contract);
+
+      if (contractErrors.length) {
+        const failed = await patchRun(run.id, {
+          status: "prompt_builder_contract_validation_failed",
+          contract,
+          detail: contractErrors.join("; "),
+          error: contractErrors.join("; "),
+        });
+        setCurrentRun(failed);
+        return; // an invalid contract must never reach a builder or FAL call
+      }
+
+      const withContract = await patchRun(run.id, { status: "prompt_builder_contract_created", contract });
+      setCurrentRun(withContract);
+
+      // No Prompt builder LLM stage yet (issue #4) — a valid contract falls through to
+      // the pre-LLM raw-prompt FAL path from slice 1, now honoring the operator's
+      // aspect ratio / variants count from the Creative config section.
       const imageUrls = packshotUrl ? [packshotUrl] : [];
-      const input = buildInput(model, promptText, imageUrls, DEFAULT_SETTINGS);
+      const settings: ModelSettings = { ...DEFAULT_SETTINGS, numImages: variantsCount, aspectRatio };
+      const input = buildInput(model, promptText, imageUrls, settings);
 
       const started = await patchRun(run.id, { status: "fal_generation_started", falRequest: input });
       setCurrentRun(started);
@@ -177,7 +293,24 @@ export default function MaszynkaView({
       setLogLine("");
       refreshHistory();
     }
-  }, [canRun, apiKey, packshot, model, prompt, refreshHistory]);
+  }, [
+    canRun,
+    apiKey,
+    packshot,
+    model,
+    prompt,
+    refreshHistory,
+    configs,
+    hooks,
+    styles,
+    cameraSettings,
+    selectedHookId,
+    selectedStyleId,
+    selectedCameraSettingId,
+    targetLanguage,
+    aspectRatio,
+    variantsCount,
+  ]);
 
   const openRun = useCallback(async (id: string) => {
     try {
@@ -260,6 +393,105 @@ export default function MaszynkaView({
         )}
 
         <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
+          Hook
+        </label>
+        <select
+          value={selectedHookId}
+          onChange={(e) => setSelectedHookId(e.target.value)}
+          disabled={configsState !== "idle"}
+          className="mb-4 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 disabled:bg-neutral-50 disabled:text-neutral-400"
+        >
+          {hooks.length === 0 && <option value="">— none available —</option>}
+          {hooks.map((h) => (
+            <option key={h.id} value={h.id}>
+              {h.text}
+            </option>
+          ))}
+        </select>
+
+        <div className="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
+              Style
+            </label>
+            <select
+              value={selectedStyleId}
+              onChange={(e) => setSelectedStyleId(e.target.value)}
+              disabled={configsState !== "idle"}
+              className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 disabled:bg-neutral-50 disabled:text-neutral-400"
+            >
+              {styles.length === 0 && <option value="">— none available —</option>}
+              {styles.map((s) => (
+                <option key={s.styleId} value={s.styleId}>
+                  {s.styleName}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
+              Camera setting
+            </label>
+            <select
+              value={selectedCameraSettingId}
+              onChange={(e) => setSelectedCameraSettingId(e.target.value)}
+              disabled={configsState !== "idle"}
+              className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 disabled:bg-neutral-50 disabled:text-neutral-400"
+            >
+              {cameraSettings.length === 0 && <option value="">— none available —</option>}
+              {cameraSettings.map((c) => (
+                <option key={c.cameraSettingId} value={c.cameraSettingId}>
+                  {c.cameraSettingName}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
+              Target language
+            </label>
+            <input
+              value={targetLanguage}
+              onChange={(e) => setTargetLanguage(e.target.value)}
+              placeholder="e.g. Polish"
+              className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
+              Aspect ratio
+            </label>
+            <select
+              value={aspectRatio}
+              onChange={(e) => setAspectRatio(e.target.value)}
+              className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400"
+            >
+              {ASPECT_RATIO_OPTIONS.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
+              Variants
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={4}
+              value={variantsCount}
+              onChange={(e) => setVariantsCount(Math.min(4, Math.max(1, Number.parseInt(e.target.value, 10) || 1)))}
+              className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+            />
+          </div>
+        </div>
+        {configsState === "error" && (
+          <p className="mb-4 text-xs text-red-600">Couldn't load configs: {configsError}</p>
+        )}
+
+        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
           FAL model
         </label>
         <select
@@ -322,6 +554,7 @@ export default function MaszynkaView({
             </div>
           )}
           <StatusHistory events={currentRun.statusHistory} />
+          <DebugJson label="Contract" value={currentRun.contract} />
           <DebugJson label="FAL request" value={currentRun.falRequest} />
           <DebugJson label="FAL response" value={currentRun.falResponse} />
         </section>

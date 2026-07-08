@@ -8,17 +8,24 @@ import assert from "node:assert/strict";
 import { assertValidTransition, classifyFalError, isValidTransition } from "./status.ts";
 
 // --- status transitions ---------------------------------------------------
-assert.equal(isValidTransition("run_started", "fal_generation_started"), true);
+assert.equal(isValidTransition("run_started", "prompt_builder_contract_created"), true);
+assert.equal(isValidTransition("run_started", "prompt_builder_contract_validation_failed"), true);
+assert.equal(isValidTransition("prompt_builder_contract_created", "fal_generation_started"), true);
 assert.equal(isValidTransition("fal_generation_started", "generation_completed"), true);
 assert.equal(isValidTransition("fal_generation_started", "fal_generation_failed"), true);
 assert.equal(isValidTransition("fal_generation_started", "provider_policy_blocked"), true);
 
+// Skipping the Contract stage (slice 3) is no longer legal — every run must produce a
+// contract, valid or not, before it may reach FAL generation.
+assert.equal(isValidTransition("run_started", "fal_generation_started"), false);
 // Skipping a stage (e.g. run_started -> generation_completed) is invalid.
 assert.equal(isValidTransition("run_started", "generation_completed"), false);
-// A terminal status has no further moves in this slice.
+// Terminal statuses have no further moves in this slice — a failed contract ends the run.
 assert.equal(isValidTransition("generation_completed", "run_completed"), false);
+assert.equal(isValidTransition("prompt_builder_contract_validation_failed", "fal_generation_started"), false);
 assert.throws(() => assertValidTransition("run_started", "generation_completed"));
-assert.doesNotThrow(() => assertValidTransition("run_started", "fal_generation_started"));
+assert.throws(() => assertValidTransition("run_started", "fal_generation_started"));
+assert.doesNotThrow(() => assertValidTransition("run_started", "prompt_builder_contract_created"));
 
 // --- FAL error classification ---------------------------------------------
 assert.equal(

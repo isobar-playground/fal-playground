@@ -26,13 +26,18 @@ export type RunStatus =
   | "manual_scoring_completed"
   | "run_completed";
 
-// This slice (walking skeleton: prompt + packshot straight to FAL, no LLM stages) only
-// drives three transitions. Encoded explicitly — rather than trusting every caller to
-// send a sane `status` — so a bug in the client pipeline fails loudly (400 from the API
-// route) instead of silently writing a run history that looks legit but lies about what
-// happened. Extend this map, not around it, when later slices add real stages.
+// Slice 3 inserts the Prompt builder Contract stage between run creation and FAL
+// generation: every run must produce a contract (valid or not) before it may reach
+// `fal_generation_started` — `run_started -> fal_generation_started` directly is no
+// longer legal. There is still no Prompt builder LLM stage (issue #4) — a *valid*
+// contract falls straight through to the pre-LLM FAL path from slice 1. Encoded
+// explicitly — rather than trusting every caller to send a sane `status` — so a bug in
+// the client pipeline fails loudly (400 from the API route) instead of silently writing
+// a run history that looks legit but lies about what happened. Extend this map, not
+// around it, when later slices add real stages.
 export const ALLOWED_NEXT: Partial<Record<RunStatus, RunStatus[]>> = {
-  run_started: ["fal_generation_started"],
+  run_started: ["prompt_builder_contract_created", "prompt_builder_contract_validation_failed"],
+  prompt_builder_contract_created: ["fal_generation_started"],
   fal_generation_started: ["generation_completed", "fal_generation_failed", "provider_policy_blocked"],
 };
 
