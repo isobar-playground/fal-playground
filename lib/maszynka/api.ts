@@ -34,6 +34,12 @@ export async function createRun(input: {
   modelKey: string;
   modelId: string;
   modelLabel: string;
+  /** Model recommendation (issue #9) — recorded once at creation, never patched; see
+   *  lib/maszynka/recommend.ts. Image runs only — omit (or pass null) for video runs. */
+  recommendedModel?: string | null;
+  operatorSelectedModel?: string | null;
+  modelOverrideUsed?: boolean;
+  modelRecommendationReason?: string | null;
   /** Every uploaded asset (any/all of packshot/style_reference/brand_reference/
    *  campaign_reference — issue #6, replaces slice 1's single `packshotUrl`). */
   assets?: RunAsset[];

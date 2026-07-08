@@ -45,6 +45,17 @@ export interface MaszynkaRun {
   modelKey: string;
   modelId: string;
   modelLabel: string;
+  // Model recommendation (issue #9 / PRD section 12 "Model recommendation") — recorded
+  // once at creation, never patched. Image runs only: video runs (assetType: "video")
+  // leave all four fields null (no video recommendation rules yet — see
+  // lib/maszynka/recommend.ts module header). `recommendedModel` and
+  // `operatorSelectedModel` are lib/models.ts catalog keys, same representation as
+  // `modelKey` above (which `operatorSelectedModel` always equals — the PRD lists it as
+  // its own tracked field regardless).
+  recommendedModel: string | null;
+  operatorSelectedModel: string | null;
+  modelOverrideUsed: boolean;
+  modelRecommendationReason: string | null;
   // Content safety pre-check LLM stage (issue #7) — see lib/maszynka/contentSafety.ts.
   // Runs first, before Asset analysis. The operator's chosen OpenRouter model, the raw
   // request/response, and the parsed structured output (status/reasons/constraints).
@@ -110,6 +121,10 @@ interface RunRow {
   model_key: string;
   model_id: string;
   model_label: string;
+  recommended_model: string | null;
+  operator_selected_model: string | null;
+  model_override_used: boolean;
+  model_recommendation_reason: string | null;
   content_safety_model: string | null;
   content_safety_request: unknown;
   content_safety_response: unknown;
@@ -146,6 +161,10 @@ export function rowToRun(row: RunRow): MaszynkaRun {
     modelKey: row.model_key,
     modelId: row.model_id,
     modelLabel: row.model_label,
+    recommendedModel: row.recommended_model ?? null,
+    operatorSelectedModel: row.operator_selected_model ?? null,
+    modelOverrideUsed: row.model_override_used ?? false,
+    modelRecommendationReason: row.model_recommendation_reason ?? null,
     contentSafetyModel: row.content_safety_model ?? null,
     contentSafetyRequest: row.content_safety_request ?? null,
     contentSafetyResponse: row.content_safety_response ?? null,
@@ -231,6 +250,15 @@ export function ensureSchema(sql: NeonQueryFunction<false, false>) {
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS prompt_improvement_used boolean NOT NULL DEFAULT false`;
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS prompt_improvement_accepted boolean NOT NULL DEFAULT false`;
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS user_prompt_improved text`;
+    // Issue #9 adds Model recommendation's four tracking fields (PRD section 12) — same
+    // idempotent-column story. Written once at INSERT time (see the POST route), never
+    // patched — the recommendation is computed client-side before the run exists (same
+    // shape as the Prompt improvement fields above), and the operator's actual model
+    // choice never changes after creation either.
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS recommended_model text`;
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS operator_selected_model text`;
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS model_override_used boolean NOT NULL DEFAULT false`;
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS model_recommendation_reason text`;
   })()
     .then(() => undefined)
     .catch((e) => {

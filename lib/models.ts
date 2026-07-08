@@ -20,7 +20,9 @@ export type ModelFamily =
   | "flux-2-dev"
   | "flux-2-flex"
   | "flux-2-pro"
-  | "flux-2-max";
+  | "flux-2-max"
+  | "ideogram-v4"
+  | "grok-imagine-image";
 
 export interface FieldOption {
   value: string;
@@ -161,6 +163,22 @@ const TOLERANCE5_OPTS: FieldOption[] = [
 // FLUX.2 edit can match the input size ("auto", its default) or force an enum size.
 const FLUX2_EDIT_SIZE_OPTS: FieldOption[] = [{ value: "auto", label: "Auto (match input)" }, ...FLUX_SIZE_OPTS];
 
+// Ideogram V4's `resolution` field (0.5K/1K/2K/4K-style tiers, Maszynka slice 9) — only
+// two tiers, unlike Nano Banana 2/Pro's four (fal.ai/models/xai/grok-imagine-image/api).
+const GROK_RES_OPTS: FieldOption[] = [
+  { value: "1k", label: "1K" },
+  { value: "2k", label: "2K" },
+];
+// Grok Imagine Image's `aspect_ratio` enum is wider than the app's shared ASPECT_OPTS
+// (extra ultra-wide/tall ratios) — fal.ai/models/xai/grok-imagine-image/api.
+const GROK_ASPECT_OPTS: FieldOption[] = [
+  { value: "", label: "Default (1:1)" },
+  ...["2:1", "20:9", "19.5:9", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "9:19.5", "9:20", "1:2"].map((r) => ({
+    value: r,
+    label: r,
+  })),
+];
+
 // field shorthands
 const images: Field = { kind: "images" };
 const seed: Field = { kind: "seed" };
@@ -177,6 +195,7 @@ const fluxAspect: Field = { kind: "select", key: "aspectRatio", label: "Aspect",
 const fluxFormat: Field = { kind: "select", key: "outputFormat", label: "Format", options: FLUX_FORMAT_OPTS };
 const tolerance5: Field = { kind: "select", key: "safetyTolerance", label: "Safety", options: TOLERANCE5_OPTS };
 const flux2EditSize: Field = { kind: "select", key: "size", label: "Size", options: FLUX2_EDIT_SIZE_OPTS };
+const grokAspect: Field = { kind: "select", key: "aspectRatio", label: "Aspect", options: GROK_ASPECT_OPTS };
 const steps = (placeholder: string): Field => ({ kind: "number", key: "steps", label: "Steps", placeholder, min: 1, max: 50 });
 const guidance = (placeholder: string): Field => ({ kind: "number", key: "guidance", label: "Guidance", placeholder, min: 0, max: 20, step: 0.5 });
 
@@ -198,12 +217,19 @@ const GPT2_PRICE: Record<string, Record<GptQuality, number>> = {
 };
 const NB2_PRICE: Record<string, number> = { "0.5K": 0.06, "1K": 0.08, "2K": 0.12, "4K": 0.16 };
 const NBP_PRICE: Record<string, number> = { "1K": 0.15, "2K": 0.15, "4K": 0.3 };
+// Ideogram V4's `quality` control drives its `rendering_speed` enum — $/MP at ~1MP
+// (square_hd, the model's default `image_size`) verified against fal.ai/models/ideogram/v4
+// (June 2026): TURBO $0.0075/MP, BALANCED $0.015/MP, QUALITY $0.025/MP.
+const IDEOGRAM_PRICE: Record<GptQuality, number> = { low: 0.0075, medium: 0.015, high: 0.025 };
+const IDEOGRAM_RENDERING_SPEED: Record<GptQuality, string> = { low: "TURBO", medium: "BALANCED", high: "QUALITY" };
 
 // --- catalog ------------------------------------------------------------
 
 const GOOGLE = "Google · Nano Banana";
 const OPENAI = "OpenAI · GPT Image";
 const FLUX = "Black Forest Labs · FLUX";
+const IDEOGRAM = "Ideogram";
+const GROK = "xAI · Grok Imagine";
 
 export const MODELS: ModelDef[] = [
   {
@@ -450,6 +476,39 @@ export const MODELS: ModelDef[] = [
     blurb: "Top-tier prompt-based image editing.",
     fields: [images, fluxAspect, guidance("3.5"), seed, tolerance, fluxFormat],
   },
+  // --- Ideogram (typography / poster-focused) — Maszynka slice 9 (model recommendation
+  // rule table, spec section 12) recommends this for text-heavy / poster-layout assets
+  // and as the no-packshot default. Verified endpoint id + input schema + pricing
+  // against fal.ai/models/ideogram/v4 and fal.ai/models/ideogram/v4/api (June 2026); no
+  // /edit variant is offered (the model is text-to-image only), so this catalog only
+  // gets a "generate" entry.
+  {
+    key: "ideogram-v4",
+    id: "ideogram/v4",
+    label: "Ideogram V4",
+    group: IDEOGRAM,
+    family: "ideogram-v4",
+    mode: "generate",
+    needsReferences: false,
+    blurb: "Sharp on-image typography and poster layouts, native 2K.",
+    fields: [images, fluxSize, quality, seed, fluxFormat],
+  },
+  // --- xAI Grok Imagine (social-native / UGC-focused) — recommended by the same rule
+  // table for a social-native/UGC look with no packshot. Verified endpoint id + input
+  // schema + pricing against fal.ai/models/xai/grok-imagine-image and
+  // fal.ai/models/xai/grok-imagine-image/api (June 2026); an /edit variant exists too
+  // but the recommendation rules never call for it, so only "generate" is cataloged.
+  {
+    key: "grok-imagine-image",
+    id: "xai/grok-imagine-image",
+    label: "Grok Imagine",
+    group: GROK,
+    family: "grok-imagine-image",
+    mode: "generate",
+    needsReferences: false,
+    blurb: "xAI's social-native, UGC-style image model.",
+    fields: [images, resolution(GROK_RES_OPTS), grokAspect, format],
+  },
 ];
 
 export const MODEL_BY_KEY: Record<string, ModelDef> = Object.fromEntries(MODELS.map((m) => [m.key, m]));
@@ -514,6 +573,14 @@ const LOCAL_BASE: Record<ModelFamily, number> = {
   "flux-2-flex": 0.05,
   "flux-2-pro": 0.03,
   "flux-2-max": 0.07,
+  // BALANCED mode (the model's default `rendering_speed`) at ~1MP (square_hd default).
+  "ideogram-v4": 0.015,
+  // Flat $0.02/image at the default 1k resolution (fal.ai/models/xai/grok-imagine-image).
+  // The 2k tier's price isn't published anywhere we could confirm — priceMultiplier
+  // below treats it as the same flat rate rather than guessing a differential; a human
+  // should double-check this against fal's live pricing before relying on it for cost
+  // estimates at 2k.
+  "grok-imagine-image": 0.02,
 };
 
 /** Price relative to the family's reference base (1.0 at the reference cell). */
@@ -529,6 +596,8 @@ function priceMultiplier(model: ModelDef, s: ModelSettings): number {
       return (GPT1_PRICE[effectiveSize(model, s)]?.[s.quality] ?? LOCAL_BASE["gpt-image-1"]) / LOCAL_BASE["gpt-image-1"];
     case "gpt-image-2":
       return (GPT2_PRICE[effectiveSize(model, s)]?.[s.quality] ?? LOCAL_BASE["gpt-image-2"]) / LOCAL_BASE["gpt-image-2"];
+    case "ideogram-v4":
+      return (IDEOGRAM_PRICE[s.quality] ?? LOCAL_BASE["ideogram-v4"]) / LOCAL_BASE["ideogram-v4"];
     // FLUX: flat per-image base, no resolution/quality tiering.
     case "flux-schnell":
     case "flux-dev":
@@ -540,6 +609,9 @@ function priceMultiplier(model: ModelDef, s: ModelSettings): number {
     case "flux-2-flex":
     case "flux-2-pro":
     case "flux-2-max":
+    // Grok Imagine Image: flat per-image base (no confirmed resolution tiering — see
+    // LOCAL_BASE comment above).
+    case "grok-imagine-image":
       return 1;
   }
 }
@@ -606,6 +678,13 @@ export function buildInput(
     case "flux-1.1-pro-ultra":
     case "flux-kontext-pro":
     case "flux-kontext-max":
+      break; // sized via aspect_ratio (optional field, handled below)
+    case "ideogram-v4":
+      input.image_size = effectiveSize(model, s); // same enum values as FLUX's image_size
+      input.rendering_speed = IDEOGRAM_RENDERING_SPEED[s.quality];
+      break;
+    case "grok-imagine-image":
+      input.resolution = effectiveResolution(model, s);
       break; // sized via aspect_ratio (optional field, handled below)
   }
 

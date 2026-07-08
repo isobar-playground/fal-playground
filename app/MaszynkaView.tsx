@@ -13,6 +13,7 @@ import { configureFal, runModel, uploadReference } from "@/lib/fal";
 import { createRun, getRun, listRuns, patchRun, type MaszynkaRun, type RunAsset } from "@/lib/maszynka/api";
 import { classifyFalError } from "@/lib/maszynka/status";
 import { assembleContract, validateContract, type AssetRole, type ContractAsset } from "@/lib/maszynka/contract";
+import { recommendModel } from "@/lib/maszynka/recommend";
 import {
   CONTENT_SAFETY_MODELS,
   CONTENT_SAFETY_MODEL_GROUPS,
@@ -262,6 +263,28 @@ export default function MaszynkaView({
   const [aspectRatio, setAspectRatio] = useState(ASPECT_RATIO_OPTIONS[0]);
   const [variantsCount, setVariantsCount] = useState(1);
 
+  // Model recommendation (issue #9 / PRD section 12): the two creative-config signals
+  // the six-rule table needs beyond packshot/reference presence — operator-set per run,
+  // same footing as target language/aspect ratio above (not a Neon config; per-run
+  // creative intent, not a versioned preset). See lib/maszynka/recommend.ts.
+  const [hasHeavyTextOrPoster, setHasHeavyTextOrPoster] = useState(false);
+  const [hasSocialNativeUgc, setHasSocialNativeUgc] = useState(false);
+
+  const hasPackshot = Boolean(assetUploads.packshot);
+  const referenceCount = ASSET_ROLE_META.filter(({ role }) => role !== "packshot" && assetUploads[role]).length;
+  const recommendation = useMemo(
+    () =>
+      recommendModel({
+        hasPackshot,
+        hasMultipleVisualReferences: referenceCount > 1,
+        hasHeavyTextOrPosterLayout: hasHeavyTextOrPoster,
+        hasSocialNativeUgcLook: hasSocialNativeUgc,
+      }),
+    [hasPackshot, referenceCount, hasHeavyTextOrPoster, hasSocialNativeUgc],
+  );
+  const recommendedModelDef = MODEL_BY_KEY[recommendation.recommendedModelKey];
+  const modelOverrideUsed = modelKey !== recommendation.recommendedModelKey;
+
   // Default each dropdown to the first available option once its config loads, so a
   // fresh Run is usable without the operator having to touch every field.
   useEffect(() => {
@@ -439,6 +462,10 @@ export default function MaszynkaView({
         modelKey: model.key,
         modelId: model.id,
         modelLabel: model.label,
+        recommendedModel: recommendation.recommendedModelKey,
+        operatorSelectedModel: model.key,
+        modelOverrideUsed,
+        modelRecommendationReason: recommendation.reason,
         assets: runAssets,
         contentSafetyModel,
         assetAnalysisModel,
@@ -879,6 +906,8 @@ export default function MaszynkaView({
     promptBuilderModel,
     promptReviewerModel,
     improvement,
+    recommendation,
+    modelOverrideUsed,
   ]);
 
   const openRun = useCallback(async (id: string) => {
@@ -1267,6 +1296,50 @@ export default function MaszynkaView({
           ))}
         </select>
 
+        <p className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
+          Creative config signals (model recommendation, PRD section 12)
+        </p>
+        <div className="mb-3 flex flex-col gap-1">
+          <label className="flex items-center gap-2 text-sm text-neutral-700">
+            <input
+              type="checkbox"
+              checked={hasHeavyTextOrPoster}
+              onChange={(e) => setHasHeavyTextOrPoster(e.target.checked)}
+              className="size-4 rounded border-neutral-300"
+            />
+            Heavy text / poster layout
+          </label>
+          <label className="flex items-center gap-2 text-sm text-neutral-700">
+            <input
+              type="checkbox"
+              checked={hasSocialNativeUgc}
+              onChange={(e) => setHasSocialNativeUgc(e.target.checked)}
+              className="size-4 rounded border-neutral-300"
+            />
+            Social-native / UGC look
+          </label>
+        </div>
+
+        <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+          <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-amber-700">
+            Recommended model: {recommendedModelDef?.label ?? recommendation.recommendedModelKey}
+          </p>
+          <p className="text-xs text-neutral-600">{recommendation.reason}</p>
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setModelKey(recommendation.recommendedModelKey)}
+              disabled={!modelOverrideUsed}
+              className="rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:border-neutral-200 disabled:text-neutral-400"
+            >
+              Use recommended
+            </button>
+            {modelOverrideUsed && (
+              <span className="text-xs font-medium text-neutral-500">Overridden — this run will record the override.</span>
+            )}
+          </div>
+        </div>
+
         <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
           FAL model
         </label>
@@ -1323,10 +1396,26 @@ export default function MaszynkaView({
               )}
             </p>
           )}
-          <p className="mb-3 text-xs text-neutral-500">
+          <p className="mb-1 text-xs text-neutral-500">
             Model: <b>{currentRun.modelLabel}</b>
             {currentRun.assets.length > 0 && ` · assets: ${currentRun.assets.map((a) => a.role).join(", ")}`}
           </p>
+          {currentRun.recommendedModel && (
+            <p className="mb-3 text-xs text-neutral-500">
+              Recommended: <b>{MODEL_BY_KEY[currentRun.recommendedModel]?.label ?? currentRun.recommendedModel}</b>
+              {currentRun.modelOverrideUsed ? (
+                <span className="ml-1 text-amber-700">
+                  — overridden to <b>{currentRun.operatorSelectedModel ?? currentRun.modelLabel}</b>
+                </span>
+              ) : (
+                <span className="ml-1 text-green-700">— used as recommended</span>
+              )}
+              {currentRun.modelRecommendationReason && (
+                <span className="block text-neutral-400">{currentRun.modelRecommendationReason}</span>
+              )}
+            </p>
+          )}
+          {!currentRun.recommendedModel && <div className="mb-3" />}
           {currentRun.error && (
             <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{currentRun.error}</p>
           )}

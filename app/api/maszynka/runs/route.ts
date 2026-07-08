@@ -15,6 +15,13 @@ interface CreateRunBody {
   modelKey?: string;
   modelId?: string;
   modelLabel?: string;
+  /** Model recommendation (issue #9) — recorded once at creation, never patched; the
+   *  recommendation is computed client-side (see lib/maszynka/recommend.ts) before the
+   *  run exists. Image runs only — video runs simply omit all four fields (null). */
+  recommendedModel?: string | null;
+  operatorSelectedModel?: string | null;
+  modelOverrideUsed?: boolean;
+  modelRecommendationReason?: string | null;
   /** Every uploaded asset (any/all of the four roles — issue #6, replaces slice 1's
    *  single `packshotUrl`). */
   assets?: RunAsset[];
@@ -68,7 +75,7 @@ export async function POST(req: Request) {
     const firstEvent: MaszynkaStatusEvent = { status: "run_started", at: new Date().toISOString() };
     const rows = await sql`
       INSERT INTO maszynka_runs (
-        id, asset_type, status, status_history, user_prompt_raw, prompt_improvement_used, prompt_improvement_accepted, user_prompt_improved, model_key, model_id, model_label, assets, content_safety_model, asset_analysis_model, prompt_builder_model, prompt_reviewer_model
+        id, asset_type, status, status_history, user_prompt_raw, prompt_improvement_used, prompt_improvement_accepted, user_prompt_improved, model_key, model_id, model_label, recommended_model, operator_selected_model, model_override_used, model_recommendation_reason, assets, content_safety_model, asset_analysis_model, prompt_builder_model, prompt_reviewer_model
       ) VALUES (
         ${id},
         ${body.assetType === "video" ? "video" : "image"},
@@ -81,6 +88,10 @@ export async function POST(req: Request) {
         ${body.modelKey},
         ${body.modelId},
         ${body.modelLabel},
+        ${body.recommendedModel ?? null},
+        ${body.operatorSelectedModel ?? null},
+        ${body.modelOverrideUsed === true},
+        ${body.modelRecommendationReason ?? null},
         ${JSON.stringify(assets)}::jsonb,
         ${body.contentSafetyModel ?? null},
         ${body.assetAnalysisModel ?? null},
