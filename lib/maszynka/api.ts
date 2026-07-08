@@ -77,6 +77,9 @@ export async function patchRun(
     contentSafetyRequest?: unknown;
     contentSafetyResponse?: unknown;
     contentSafetyOutput?: unknown;
+    /** The FAL request mapper's mappingNotes (issue #10) — full replace, see api route /
+     *  falMapper.ts. */
+    falMappingNotes?: unknown;
     falRequest?: unknown;
     falResponse?: unknown;
     outputs?: { url: string; width?: number; height?: number }[];

@@ -79,6 +79,12 @@ export interface MaszynkaRun {
   // parsed output or errors).
   assetAnalysisModel: string | null;
   assetAnalysisResults: unknown[];
+  // FAL request mapper (issue #10) — see lib/maszynka/falMapper.ts. `falRequest` below
+  // is now populated by the mapper's exact payload (never a hand-built ad-hoc input, see
+  // MaszynkaView's handleRun) rather than slice 1's straight `buildInput` call. Written
+  // once when the stage runs (no revise loop — a mapping failure ends the run at
+  // `fal_request_mapping_failed`), same shape as `contentSafetyOutput` etc.
+  falMappingNotes: string[];
   falRequest: unknown;
   falResponse: unknown;
   outputs: { url: string; width?: number; height?: number }[];
@@ -132,6 +138,7 @@ interface RunRow {
   assets: RunAsset[];
   asset_analysis_model: string | null;
   asset_analysis_results: unknown[];
+  fal_mapping_notes: string[];
   fal_request: unknown;
   fal_response: unknown;
   outputs: MaszynkaRun["outputs"];
@@ -172,6 +179,7 @@ export function rowToRun(row: RunRow): MaszynkaRun {
     assets: row.assets ?? [],
     assetAnalysisModel: row.asset_analysis_model ?? null,
     assetAnalysisResults: row.asset_analysis_results ?? [],
+    falMappingNotes: row.fal_mapping_notes ?? [],
     falRequest: row.fal_request ?? null,
     falResponse: row.fal_response ?? null,
     outputs: row.outputs ?? [],
@@ -259,6 +267,10 @@ export function ensureSchema(sql: NeonQueryFunction<false, false>) {
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS operator_selected_model text`;
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS model_override_used boolean NOT NULL DEFAULT false`;
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS model_recommendation_reason text`;
+    // Issue #10 adds the FAL request mapper's mappingNotes — same idempotent-column
+    // story. Written once per run (no revise loop for this stage), same pattern as
+    // content_safety_output above.
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS fal_mapping_notes jsonb NOT NULL DEFAULT '[]'::jsonb`;
   })()
     .then(() => undefined)
     .catch((e) => {

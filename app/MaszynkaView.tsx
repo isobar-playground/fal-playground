@@ -8,7 +8,7 @@
 // assembled. Every run is created and updated server-side in Neon (ADR 0001) so run
 // history is shared across browsers/operators — see docs/prd/0001-maszynka-test-bench.md.
 import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
-import { DEFAULT_SETTINGS, MODELS, MODEL_BY_KEY, MODEL_GROUPS, buildInput, type ModelSettings } from "@/lib/models";
+import { DEFAULT_SETTINGS, MODELS, MODEL_BY_KEY, MODEL_GROUPS, type ModelSettings } from "@/lib/models";
 import { configureFal, runModel, uploadReference } from "@/lib/fal";
 import { createRun, getRun, listRuns, patchRun, type MaszynkaRun, type RunAsset } from "@/lib/maszynka/api";
 import { classifyFalError } from "@/lib/maszynka/status";
@@ -62,6 +62,7 @@ import {
   type PromptReviewerAttemptRecord,
   type PromptReviewerOutput,
 } from "@/lib/maszynka/promptReviewer";
+import { mapContractToFalRequest } from "@/lib/maszynka/falMapper";
 import { listLatestConfigs, type MaszynkaConfigVersion } from "@/lib/maszynka/configApi";
 import type {
   CameraSettingConfig,
@@ -158,6 +159,8 @@ const STATUS_TONE: Record<string, string> = {
   prompt_reviewer_passed: "bg-amber-100 text-amber-800",
   prompt_reviewer_revise_required: "bg-amber-100 text-amber-800",
   prompt_build_failed: "bg-red-100 text-red-700",
+  fal_request_mapping_completed: "bg-amber-100 text-amber-800",
+  fal_request_mapping_failed: "bg-red-100 text-red-700",
   fal_generation_started: "bg-amber-100 text-amber-800",
   generation_completed: "bg-green-100 text-green-700",
   fal_generation_failed: "bg-red-100 text-red-700",
@@ -262,6 +265,11 @@ export default function MaszynkaView({
   const [targetLanguage, setTargetLanguage] = useState("Polish");
   const [aspectRatio, setAspectRatio] = useState(ASPECT_RATIO_OPTIONS[0]);
   const [variantsCount, setVariantsCount] = useState(1);
+  // FAL request mapper (issue #10): operator-provided seed text, same convention as the
+  // Images tab's seed field ("" = none/random). Digits only. Whether it actually reaches
+  // FAL is gated by the selected model's capability matrix entry, not this field alone —
+  // see lib/maszynka/falMapper.ts.
+  const [seed, setSeed] = useState("");
 
   // Model recommendation (issue #9 / PRD section 12): the two creative-config signals
   // the six-rule table needs beyond packshot/reference presence — operator-set per run,
@@ -850,17 +858,45 @@ export default function MaszynkaView({
         return;
       }
 
-      // finalPrompt (not the raw operator prompt) drives FAL generation from here on —
-      // see PRD section 14 and the "Generation now sends finalPrompt" acceptance
-      // criterion. The FAL request mapper (a later issue) will decide how to fold
-      // multiple assets in; for now, same as slice 1, only the packshot (if any) is
-      // sent as an image input — it's the one role that needs pixel-level preservation.
-      const packshotAsset = runAssets.find((a) => a.role === "packshot");
-      const imageUrls = packshotAsset ? [packshotAsset.url] : [];
+      // --- FAL request mapper (issue #10): fits the reviewed prompt to the selected
+      // model's capabilities (negative prompt support, seed, image count/multi-image),
+      // driven entirely by the Contract's modelCapability snapshot — never lib/models.ts's
+      // static catalog directly, so an operator's edit to the Model capability matrix
+      // config actually changes what gets sent. A mapping that can't produce a valid FAL
+      // request (e.g. an edit model with zero uploaded assets) ends the run right here —
+      // see lib/maszynka/falMapper.ts and status.ts's ALLOWED_NEXT.
+      const capability = contract.modelCapability.snapshot!; // Contract validation guarantees non-null
       const settings: ModelSettings = { ...DEFAULT_SETTINGS, numImages: variantsCount, aspectRatio };
-      const input = buildInput(model, finalBuilderOutput.finalPrompt, imageUrls, settings);
+      const mapped = mapContractToFalRequest({
+        finalPrompt: finalBuilderOutput.finalPrompt,
+        negativePrompt: finalBuilderOutput.negativePrompt,
+        seed,
+        assets: runAssets,
+        model,
+        capability,
+        settings,
+      });
 
-      const started = await patchRun(run.id, { status: "fal_generation_started", falRequest: input });
+      if (mapped.errors.length) {
+        const mappingFailed = await patchRun(run.id, {
+          status: "fal_request_mapping_failed",
+          falMappingNotes: mapped.mappingNotes,
+          detail: mapped.errors.join("; "),
+          error: mapped.errors.join("; "),
+        });
+        setCurrentRun(mappingFailed);
+        return; // a request that can't be mapped must never reach FAL
+      }
+
+      const input = mapped.falInput!;
+      const mappedRun = await patchRun(run.id, {
+        status: "fal_request_mapping_completed",
+        falMappingNotes: mapped.mappingNotes,
+        falRequest: input,
+      });
+      setCurrentRun(mappedRun);
+
+      const started = await patchRun(run.id, { status: "fal_generation_started" });
       setCurrentRun(started);
 
       try {
@@ -901,6 +937,7 @@ export default function MaszynkaView({
     targetLanguage,
     aspectRatio,
     variantsCount,
+    seed,
     contentSafetyModel,
     assetAnalysisModel,
     promptBuilderModel,
@@ -1215,6 +1252,23 @@ export default function MaszynkaView({
               className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
             />
           </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
+              Seed (optional)
+            </label>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={seed}
+              onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
+              placeholder="random"
+              className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+            />
+            <p className="mt-1 text-[11px] text-neutral-400">
+              Only sent to FAL if the selected model's capability matrix entry declares seed support — see the
+              FAL mapping panel below.
+            </p>
+          </div>
         </div>
         {configsState === "error" && (
           <p className="mb-4 text-xs text-red-600">Couldn't load configs: {configsError}</p>
@@ -1451,6 +1505,7 @@ export default function MaszynkaView({
             model={currentRun.promptReviewerModel}
             attempts={(currentRun.promptReviewerAttempts as PromptReviewerAttemptRecord[] | undefined) ?? []}
           />
+          <FalMappingPanel notes={currentRun.falMappingNotes} />
           <DebugJson label="Content safety request" value={currentRun.contentSafetyRequest} />
           <DebugJson label="Content safety response" value={currentRun.contentSafetyResponse} />
           <DebugJson label="Assets" value={currentRun.assets} />
@@ -1458,7 +1513,7 @@ export default function MaszynkaView({
           <DebugJson label="Contract" value={currentRun.contract} />
           <DebugJson label="Prompt builder attempts" value={currentRun.promptBuilderAttempts} />
           <DebugJson label="Prompt reviewer attempts" value={currentRun.promptReviewerAttempts} />
-          <DebugJson label="FAL request" value={currentRun.falRequest} />
+          <DebugJson label="FAL request (mapped payload)" value={currentRun.falRequest} />
           <DebugJson label="FAL response" value={currentRun.falResponse} />
         </section>
       )}
@@ -1672,6 +1727,27 @@ function PromptReviewerPanel({ model, attempts }: { model: string | null; attemp
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+/** Human-readable view of the FAL request mapper's mappingNotes (issue #10 acceptance
+ *  criteria: "the exact payload sent to FAL plus mappingNotes are visible in debug
+ *  preview and persisted"). Written once per run (no revise loop — a mapping failure
+ *  ends the run at `fal_request_mapping_failed`). The exact payload itself lives in the
+ *  "FAL request (mapped payload)" DebugJson panel next to this. */
+function FalMappingPanel({ notes }: { notes: string[] }) {
+  if (!notes.length) return null;
+  return (
+    <div className="mb-3 rounded-lg bg-neutral-50 p-3">
+      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">FAL request mapping</p>
+      <ul className="list-disc space-y-1 pl-4">
+        {notes.map((note, i) => (
+          <li key={i} className="whitespace-pre-wrap text-xs text-neutral-700">
+            {note}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

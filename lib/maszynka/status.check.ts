@@ -16,7 +16,8 @@ assert.equal(isValidTransition("asset_analysis_completed", "prompt_builder_contr
 assert.equal(isValidTransition("asset_analysis_completed", "prompt_builder_contract_validation_failed"), true);
 assert.equal(isValidTransition("prompt_builder_contract_created", "prompt_builder_completed"), true);
 assert.equal(isValidTransition("prompt_builder_contract_created", "prompt_builder_output_validation_failed"), true);
-assert.equal(isValidTransition("prompt_reviewer_passed", "fal_generation_started"), true);
+assert.equal(isValidTransition("prompt_reviewer_passed", "fal_request_mapping_completed"), true);
+assert.equal(isValidTransition("fal_request_mapping_completed", "fal_generation_started"), true);
 assert.equal(isValidTransition("fal_generation_started", "generation_completed"), true);
 assert.equal(isValidTransition("fal_generation_started", "fal_generation_failed"), true);
 assert.equal(isValidTransition("fal_generation_started", "provider_policy_blocked"), true);
@@ -92,7 +93,18 @@ assert.equal(isValidTransition("prompt_reviewer_revise_required", "prompt_build_
 assert.equal(isValidTransition("prompt_build_failed", "fal_generation_started"), false);
 assert.doesNotThrow(() => assertValidTransition("prompt_builder_completed", "prompt_reviewer_revise_required"));
 assert.doesNotThrow(() => assertValidTransition("prompt_reviewer_revise_required", "prompt_builder_completed"));
-assert.doesNotThrow(() => assertValidTransition("prompt_reviewer_passed", "fal_generation_started"));
+assert.doesNotThrow(() => assertValidTransition("prompt_reviewer_passed", "fal_request_mapping_completed"));
+
+// --- issue #10: FAL request mapper sits between the reviewer gate and FAL generation --
+// A reviewer `pass` can only land on one of the two mapper outcomes, never straight to
+// FAL generation anymore.
+assert.equal(isValidTransition("prompt_reviewer_passed", "fal_generation_started"), false);
+assert.equal(isValidTransition("prompt_reviewer_passed", "fal_request_mapping_failed"), true);
+// fal_request_mapping_failed is terminal — no further moves (same shape as
+// asset_analysis_failed / prompt_builder_contract_validation_failed).
+assert.equal(isValidTransition("fal_request_mapping_failed", "fal_generation_started"), false);
+assert.throws(() => assertValidTransition("prompt_reviewer_passed", "fal_generation_started"));
+assert.doesNotThrow(() => assertValidTransition("prompt_reviewer_passed", "fal_request_mapping_failed"));
 
 // --- FAL error classification ---------------------------------------------
 assert.equal(

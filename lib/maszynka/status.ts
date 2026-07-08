@@ -69,6 +69,16 @@ export type RunStatus =
 // point of running this stage first is that a blocked/revise-required run must stop
 // before any FAL generation cost, and asset analysis' own vision calls aren't free
 // either, so it doesn't run for those two outcomes.
+//
+// Issue #10 inserts the FAL request mapper between the Prompt reviewer gate and FAL
+// generation — a reviewer `pass` used to go straight to `fal_generation_started`; now it
+// must first produce a mapped FAL payload (see lib/maszynka/falMapper.ts).
+// `prompt_reviewer_passed -> fal_generation_started` directly is therefore no longer
+// legal either. `fal_request_mapping_failed` is terminal (no further moves), same shape
+// as `asset_analysis_failed`/`prompt_builder_contract_validation_failed` — it means the
+// Contract/reviewer output couldn't be mapped to any valid FAL request for the selected
+// model (e.g. an edit model with zero uploaded assets), so there is nothing sane FAL
+// generation could do with it.
 export const ALLOWED_NEXT: Partial<Record<RunStatus, RunStatus[]>> = {
   run_started: [
     "content_safety_passed",
@@ -82,7 +92,8 @@ export const ALLOWED_NEXT: Partial<Record<RunStatus, RunStatus[]>> = {
   prompt_builder_contract_created: ["prompt_builder_completed", "prompt_builder_output_validation_failed"],
   prompt_builder_completed: ["prompt_reviewer_passed", "prompt_reviewer_revise_required", "prompt_build_failed"],
   prompt_reviewer_revise_required: ["prompt_builder_completed", "prompt_builder_output_validation_failed"],
-  prompt_reviewer_passed: ["fal_generation_started"],
+  prompt_reviewer_passed: ["fal_request_mapping_completed", "fal_request_mapping_failed"],
+  fal_request_mapping_completed: ["fal_generation_started"],
   fal_generation_started: ["generation_completed", "fal_generation_failed", "provider_policy_blocked"],
 };
 
