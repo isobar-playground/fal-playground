@@ -10,6 +10,7 @@ interface CreateRunBody {
   modelLabel?: string;
   packshotUrl?: string | null;
   promptBuilderModel?: string | null;
+  promptReviewerModel?: string | null;
 }
 
 export async function POST(req: Request) {
@@ -40,7 +41,7 @@ export async function POST(req: Request) {
     const firstEvent: MaszynkaStatusEvent = { status: "run_started", at: new Date().toISOString() };
     const rows = await sql`
       INSERT INTO maszynka_runs (
-        id, asset_type, status, status_history, user_prompt_raw, model_key, model_id, model_label, packshot_url, prompt_builder_model
+        id, asset_type, status, status_history, user_prompt_raw, model_key, model_id, model_label, packshot_url, prompt_builder_model, prompt_reviewer_model
       ) VALUES (
         ${id},
         ${body.assetType === "video" ? "video" : "image"},
@@ -51,7 +52,8 @@ export async function POST(req: Request) {
         ${body.modelId},
         ${body.modelLabel},
         ${body.packshotUrl ?? null},
-        ${body.promptBuilderModel ?? null}
+        ${body.promptBuilderModel ?? null},
+        ${body.promptReviewerModel ?? null}
       )
       RETURNING *
     `;

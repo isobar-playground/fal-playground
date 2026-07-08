@@ -14,6 +14,12 @@ interface PatchRunBody {
   promptBuilderRequest?: unknown;
   promptBuilderResponse?: unknown;
   promptBuilderOutput?: unknown;
+  /** One Prompt builder attempt record — appended to `prompt_builder_attempts`, never
+   *  replacing the array (see lib/maszynka/store.ts / promptBuilder.ts). */
+  promptBuilderAttempt?: unknown;
+  /** One Prompt reviewer attempt record — appended to `prompt_reviewer_attempts`, never
+   *  replacing the array (see lib/maszynka/store.ts / promptReviewer.ts). */
+  promptReviewerAttempt?: unknown;
 }
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -79,6 +85,13 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     const promptBuilderRequestJson = body.promptBuilderRequest !== undefined ? JSON.stringify(body.promptBuilderRequest) : null;
     const promptBuilderResponseJson = body.promptBuilderResponse !== undefined ? JSON.stringify(body.promptBuilderResponse) : null;
     const promptBuilderOutputJson = body.promptBuilderOutput !== undefined ? JSON.stringify(body.promptBuilderOutput) : null;
+    // Attempt records are appended (never replace the array) — same pattern as
+    // status_history — so both Prompt builder attempts and every Prompt reviewer call
+    // survive the revise loop (see lib/maszynka/store.ts).
+    const promptBuilderAttemptJson =
+      body.promptBuilderAttempt !== undefined ? JSON.stringify([body.promptBuilderAttempt]) : null;
+    const promptReviewerAttemptJson =
+      body.promptReviewerAttempt !== undefined ? JSON.stringify([body.promptReviewerAttempt]) : null;
 
     const rows = await sql`
       UPDATE maszynka_runs SET
@@ -92,6 +105,10 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         prompt_builder_request = COALESCE(${promptBuilderRequestJson}::jsonb, prompt_builder_request),
         prompt_builder_response = COALESCE(${promptBuilderResponseJson}::jsonb, prompt_builder_response),
         prompt_builder_output = COALESCE(${promptBuilderOutputJson}::jsonb, prompt_builder_output),
+        prompt_builder_attempts = CASE WHEN ${promptBuilderAttemptJson}::jsonb IS NOT NULL
+          THEN prompt_builder_attempts || ${promptBuilderAttemptJson}::jsonb ELSE prompt_builder_attempts END,
+        prompt_reviewer_attempts = CASE WHEN ${promptReviewerAttemptJson}::jsonb IS NOT NULL
+          THEN prompt_reviewer_attempts || ${promptReviewerAttemptJson}::jsonb ELSE prompt_reviewer_attempts END,
         updated_at = now()
       WHERE id = ${id}
       RETURNING *

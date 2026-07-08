@@ -31,6 +31,9 @@ export async function createRun(input: {
   /** The operator's chosen OpenRouter model for the Prompt builder stage — recorded on
    *  the run at creation since it's picked in the same Run form (see promptBuilder.ts). */
   promptBuilderModel?: string;
+  /** The operator's chosen OpenRouter model for the Prompt reviewer stage — recorded on
+   *  the run at creation, same reasoning as promptBuilderModel (see promptReviewer.ts). */
+  promptReviewerModel?: string;
 }): Promise<MaszynkaRun> {
   const res = await fetch("/api/maszynka/runs", {
     method: "POST",
@@ -55,6 +58,10 @@ export async function patchRun(
     promptBuilderRequest?: unknown;
     promptBuilderResponse?: unknown;
     promptBuilderOutput?: unknown;
+    /** One Prompt builder attempt — appended to the run's attempt history, see api route. */
+    promptBuilderAttempt?: unknown;
+    /** One Prompt reviewer attempt — appended to the run's attempt history, see api route. */
+    promptReviewerAttempt?: unknown;
   },
 ): Promise<MaszynkaRun> {
   const res = await fetch(`/api/maszynka/runs/${id}`, {

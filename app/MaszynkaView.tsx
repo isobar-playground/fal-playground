@@ -18,8 +18,19 @@ import {
   buildPromptBuilderRequestBody,
   callPromptBuilder,
   parsePromptBuilderContent,
+  type PromptBuilderAttemptRecord,
   type PromptBuilderOutput,
 } from "@/lib/maszynka/promptBuilder";
+import {
+  DEFAULT_PROMPT_REVIEWER_MODEL,
+  PROMPT_REVIEWER_MODELS,
+  PROMPT_REVIEWER_MODEL_GROUPS,
+  buildPromptReviewerRequestBody,
+  callPromptReviewer,
+  parsePromptReviewerContent,
+  type PromptReviewerAttemptRecord,
+  type PromptReviewerOutput,
+} from "@/lib/maszynka/promptReviewer";
 import { listLatestConfigs, type MaszynkaConfigVersion } from "@/lib/maszynka/configApi";
 import type {
   CameraSettingConfig,
@@ -75,6 +86,9 @@ const STATUS_TONE: Record<string, string> = {
   prompt_builder_contract_validation_failed: "bg-red-100 text-red-700",
   prompt_builder_completed: "bg-amber-100 text-amber-800",
   prompt_builder_output_validation_failed: "bg-red-100 text-red-700",
+  prompt_reviewer_passed: "bg-amber-100 text-amber-800",
+  prompt_reviewer_revise_required: "bg-amber-100 text-amber-800",
+  prompt_build_failed: "bg-red-100 text-red-700",
   fal_generation_started: "bg-amber-100 text-amber-800",
   generation_completed: "bg-green-100 text-green-700",
   fal_generation_failed: "bg-red-100 text-red-700",
@@ -114,6 +128,9 @@ export default function MaszynkaView({
   // Prompt builder stage (slice 4): the operator's OpenRouter model for that stage,
   // recorded on the run at creation — see lib/maszynka/promptBuilder.ts.
   const [promptBuilderModel, setPromptBuilderModel] = useState<string>(DEFAULT_PROMPT_BUILDER_MODEL);
+  // Prompt reviewer stage (slice 5): the operator's OpenRouter model for that stage,
+  // recorded on the run at creation — see lib/maszynka/promptReviewer.ts.
+  const [promptReviewerModel, setPromptReviewerModel] = useState<string>(DEFAULT_PROMPT_REVIEWER_MODEL);
 
   const [running, setRunning] = useState(false);
   const [logLine, setLogLine] = useState<string>("");
@@ -237,6 +254,7 @@ export default function MaszynkaView({
         modelLabel: model.label,
         packshotUrl,
         promptBuilderModel,
+        promptReviewerModel,
       });
       setCurrentRun(run);
       refreshHistory();
@@ -286,48 +304,210 @@ export default function MaszynkaView({
       const withContract = await patchRun(run.id, { status: "prompt_builder_contract_created", contract });
       setCurrentRun(withContract);
 
-      // --- Prompt builder LLM stage (slice 4): OpenRouter, structured output. A Contract
-      // that fails the builder call or comes back schema-invalid ends the run here — see
-      // lib/maszynka/promptBuilder.ts and PRD section 9/14.
-      let builderOutput: PromptBuilderOutput;
-      try {
-        const builderRequest = buildPromptBuilderRequestBody(contract, promptBuilderModel);
-        const { raw: builderResponse, content } = await callPromptBuilder(orKey, builderRequest);
-        const { output, errors: builderErrors } = parsePromptBuilderContent(content);
-        if (!output) {
+      // --- Prompt builder LLM stage (slice 4) + Prompt reviewer gate (slice 5). A
+      // Contract that fails the builder call or comes back schema-invalid ends the run
+      // right here (prompt_builder_output_validation_failed). A builder output that
+      // clears the Contract must still clear the reviewer: `pass` proceeds to
+      // generation, `revise` triggers exactly one more builder attempt with the
+      // reviewer's issues + instruction folded in, and if that second attempt still
+      // doesn't pass, the run ends at `prompt_build_failed`. See
+      // lib/maszynka/promptBuilder.ts, lib/maszynka/promptReviewer.ts and PRD section
+      // 9/11/14.
+      const runBuilderAttempt = async (
+        attempt: 1 | 2,
+        revision?: Parameters<typeof buildPromptBuilderRequestBody>[2],
+      ): Promise<PromptBuilderOutput | null> => {
+        const builderRequest = buildPromptBuilderRequestBody(contract, promptBuilderModel, revision);
+        try {
+          const { raw: builderResponse, content } = await callPromptBuilder(orKey, builderRequest);
+          const { output, errors: builderErrors } = parsePromptBuilderContent(content);
+          const attemptRecord: PromptBuilderAttemptRecord = {
+            attempt,
+            request: builderRequest,
+            response: builderResponse,
+            output,
+            ...(output ? {} : { errors: builderErrors }),
+          };
+          if (!output) {
+            const failed = await patchRun(run.id, {
+              status: "prompt_builder_output_validation_failed",
+              promptBuilderRequest: builderRequest,
+              promptBuilderResponse: builderResponse,
+              promptBuilderAttempt: attemptRecord,
+              detail: builderErrors.join("; "),
+              error: builderErrors.join("; "),
+            });
+            setCurrentRun(failed);
+            return null; // invalid builder output must never reach the reviewer or FAL
+          }
+          const withBuilder = await patchRun(run.id, {
+            status: "prompt_builder_completed",
+            promptBuilderRequest: builderRequest,
+            promptBuilderResponse: builderResponse,
+            promptBuilderOutput: output,
+            promptBuilderAttempt: attemptRecord,
+          });
+          setCurrentRun(withBuilder);
+          return output;
+        } catch (e) {
+          const attemptRecord: PromptBuilderAttemptRecord = {
+            attempt,
+            request: builderRequest,
+            response: null,
+            output: null,
+            errors: [errMsg(e)],
+          };
           const failed = await patchRun(run.id, {
             status: "prompt_builder_output_validation_failed",
             promptBuilderRequest: builderRequest,
-            promptBuilderResponse: builderResponse,
-            detail: builderErrors.join("; "),
-            error: builderErrors.join("; "),
+            promptBuilderAttempt: attemptRecord,
+            error: errMsg(e),
+            detail: errMsg(e),
           });
           setCurrentRun(failed);
-          return; // invalid builder output must never reach FAL
+          return null; // the builder call itself failed (network/auth/etc.) — never reach FAL
         }
-        builderOutput = output;
-        const withBuilder = await patchRun(run.id, {
-          status: "prompt_builder_completed",
-          promptBuilderRequest: builderRequest,
-          promptBuilderResponse: builderResponse,
-          promptBuilderOutput: output,
+      };
+
+      // Runs the reviewer once. Returns null (and ends the run at prompt_build_failed
+      // itself) when the reviewer call/response is unusable — there's no verdict to act
+      // on in that case. Returns the parsed verdict otherwise so the caller — which
+      // knows the attempt number and hence the one-rebuild rule — decides what run
+      // status follows a `pass`/`revise`/`failed` verdict.
+      const runReviewerAttempt = async (
+        attempt: 1 | 2,
+        builderOutput: PromptBuilderOutput,
+      ): Promise<{ output: PromptReviewerOutput; request: unknown; response: unknown } | null> => {
+        const reviewerRequest = buildPromptReviewerRequestBody(contract, builderOutput, promptReviewerModel);
+        try {
+          const { raw: reviewerResponse, content } = await callPromptReviewer(orKey, reviewerRequest);
+          const { output, errors: reviewerErrors } = parsePromptReviewerContent(content);
+          if (!output) {
+            const attemptRecord: PromptReviewerAttemptRecord = {
+              attempt,
+              request: reviewerRequest,
+              response: reviewerResponse,
+              output: null,
+              errors: reviewerErrors,
+            };
+            const failed = await patchRun(run.id, {
+              status: "prompt_build_failed",
+              promptReviewerAttempt: attemptRecord,
+              detail: reviewerErrors.join("; "),
+              error: reviewerErrors.join("; "),
+            });
+            setCurrentRun(failed);
+            return null;
+          }
+          return { output, request: reviewerRequest, response: reviewerResponse };
+        } catch (e) {
+          const attemptRecord: PromptReviewerAttemptRecord = {
+            attempt,
+            request: reviewerRequest,
+            response: null,
+            output: null,
+            errors: [errMsg(e)],
+          };
+          const failed = await patchRun(run.id, {
+            status: "prompt_build_failed",
+            promptReviewerAttempt: attemptRecord,
+            error: errMsg(e),
+            detail: errMsg(e),
+          });
+          setCurrentRun(failed);
+          return null;
+        }
+      };
+
+      const attempt1Output = await runBuilderAttempt(1);
+      if (!attempt1Output) return;
+
+      const review1 = await runReviewerAttempt(1, attempt1Output);
+      if (!review1) return; // reviewer call itself failed — run already ended at prompt_build_failed
+
+      let finalBuilderOutput: PromptBuilderOutput;
+
+      if (review1.output.status === "pass") {
+        const attemptRecord: PromptReviewerAttemptRecord = {
+          attempt: 1,
+          request: review1.request,
+          response: review1.response,
+          output: review1.output,
+        };
+        const passed = await patchRun(run.id, { status: "prompt_reviewer_passed", promptReviewerAttempt: attemptRecord });
+        setCurrentRun(passed);
+        finalBuilderOutput = attempt1Output;
+      } else if (review1.output.status === "revise") {
+        const attemptRecord: PromptReviewerAttemptRecord = {
+          attempt: 1,
+          request: review1.request,
+          response: review1.response,
+          output: review1.output,
+        };
+        const revising = await patchRun(run.id, {
+          status: "prompt_reviewer_revise_required",
+          promptReviewerAttempt: attemptRecord,
+          detail: review1.output.revisionInstruction || review1.output.issues.join("; "),
         });
-        setCurrentRun(withBuilder);
-      } catch (e) {
+        setCurrentRun(revising);
+
+        const attempt2Output = await runBuilderAttempt(2, {
+          previousOutput: attempt1Output,
+          reviewerIssues: review1.output.issues,
+          revisionInstruction: review1.output.revisionInstruction,
+        });
+        if (!attempt2Output) return; // the one allowed rebuild itself failed — run already ended
+
+        const review2 = await runReviewerAttempt(2, attempt2Output);
+        if (!review2) return; // reviewer call itself failed on the retry — run already ended
+
+        const attempt2Record: PromptReviewerAttemptRecord = {
+          attempt: 2,
+          request: review2.request,
+          response: review2.response,
+          output: review2.output,
+        };
+        if (review2.output.status === "pass") {
+          const passed = await patchRun(run.id, { status: "prompt_reviewer_passed", promptReviewerAttempt: attempt2Record });
+          setCurrentRun(passed);
+          finalBuilderOutput = attempt2Output;
+        } else {
+          // The one allowed rebuild is spent — a second `revise` or `failed` verdict
+          // both end the run the same way; there is no third attempt (PRD section 11:
+          // "W MVP wystarczy maksymalnie jedna poprawka").
+          const failed = await patchRun(run.id, {
+            status: "prompt_build_failed",
+            promptReviewerAttempt: attempt2Record,
+            detail: review2.output.issues.join("; ") || "Prompt reviewer rejected the revised prompt.",
+            error: review2.output.issues.join("; ") || "Prompt reviewer rejected the revised prompt.",
+          });
+          setCurrentRun(failed);
+          return;
+        }
+      } else {
+        // status === "failed" on the very first attempt: the reviewer judged this
+        // unrecoverable (e.g. a safety violation) — no rebuild is worth spending.
+        const attemptRecord: PromptReviewerAttemptRecord = {
+          attempt: 1,
+          request: review1.request,
+          response: review1.response,
+          output: review1.output,
+        };
         const failed = await patchRun(run.id, {
-          status: "prompt_builder_output_validation_failed",
-          error: errMsg(e),
-          detail: errMsg(e),
+          status: "prompt_build_failed",
+          promptReviewerAttempt: attemptRecord,
+          detail: review1.output.issues.join("; ") || "Prompt reviewer rejected the prompt.",
+          error: review1.output.issues.join("; ") || "Prompt reviewer rejected the prompt.",
         });
         setCurrentRun(failed);
-        return; // the builder call itself failed (network/auth/etc.) — never reach FAL
+        return;
       }
 
       // finalPrompt (not the raw operator prompt) drives FAL generation from here on —
       // see PRD section 14 and the "Generation now sends finalPrompt" acceptance criterion.
       const imageUrls = packshotUrl ? [packshotUrl] : [];
       const settings: ModelSettings = { ...DEFAULT_SETTINGS, numImages: variantsCount, aspectRatio };
-      const input = buildInput(model, builderOutput.finalPrompt, imageUrls, settings);
+      const input = buildInput(model, finalBuilderOutput.finalPrompt, imageUrls, settings);
 
       const started = await patchRun(run.id, { status: "fal_generation_started", falRequest: input });
       setCurrentRun(started);
@@ -371,6 +551,7 @@ export default function MaszynkaView({
     aspectRatio,
     variantsCount,
     promptBuilderModel,
+    promptReviewerModel,
   ]);
 
   const openRun = useCallback(async (id: string) => {
@@ -595,6 +776,25 @@ export default function MaszynkaView({
         </select>
 
         <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
+          Prompt reviewer model (OpenRouter)
+        </label>
+        <select
+          value={promptReviewerModel}
+          onChange={(e) => setPromptReviewerModel(e.target.value)}
+          className="mb-4 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400"
+        >
+          {PROMPT_REVIEWER_MODEL_GROUPS.map((group) => (
+            <optgroup key={group} label={group}>
+              {PROMPT_REVIEWER_MODELS.filter((m) => m.group === group).map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+
+        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
           FAL model
         </label>
         <select
@@ -659,11 +859,15 @@ export default function MaszynkaView({
           <StatusHistory events={currentRun.statusHistory} />
           <PromptBuilderPanel
             model={currentRun.promptBuilderModel}
-            output={currentRun.promptBuilderOutput as PromptBuilderOutput | null}
+            attempts={(currentRun.promptBuilderAttempts as PromptBuilderAttemptRecord[] | undefined) ?? []}
+          />
+          <PromptReviewerPanel
+            model={currentRun.promptReviewerModel}
+            attempts={(currentRun.promptReviewerAttempts as PromptReviewerAttemptRecord[] | undefined) ?? []}
           />
           <DebugJson label="Contract" value={currentRun.contract} />
-          <DebugJson label="Prompt builder request" value={currentRun.promptBuilderRequest} />
-          <DebugJson label="Prompt builder response" value={currentRun.promptBuilderResponse} />
+          <DebugJson label="Prompt builder attempts" value={currentRun.promptBuilderAttempts} />
+          <DebugJson label="Prompt reviewer attempts" value={currentRun.promptReviewerAttempts} />
           <DebugJson label="FAL request" value={currentRun.falRequest} />
           <DebugJson label="FAL response" value={currentRun.falResponse} />
         </section>
@@ -709,39 +913,102 @@ export default function MaszynkaView({
   );
 }
 
-/** Human-readable view of the Prompt builder stage output — finalPrompt, negativePrompt,
- *  appliedRules, riskNotes (PRD section 14 / issue #4 acceptance criteria). Raw
- *  request/response stay in the collapsible DebugJson panels next to this. */
-function PromptBuilderPanel({ model, output }: { model: string | null; output: PromptBuilderOutput | null }) {
-  if (!output) return null;
+/** Human-readable view of every Prompt builder attempt — finalPrompt, negativePrompt,
+ *  appliedRules, riskNotes (PRD section 14 / issue #4 acceptance criteria). A revise
+ *  loop (issue #5) produces a second attempt; both are shown, oldest first, so the
+ *  operator can see exactly what changed between them. Raw request/response for every
+ *  attempt stay in the "Prompt builder attempts" DebugJson panel next to this. */
+function PromptBuilderPanel({ model, attempts }: { model: string | null; attempts: PromptBuilderAttemptRecord[] }) {
+  if (!attempts.length) return null;
   return (
     <div className="mb-3 rounded-lg bg-neutral-50 p-3">
       <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">
-        Prompt builder output{model && <span className="ml-1 font-normal normal-case text-neutral-400">· {model}</span>}
+        Prompt builder{model && <span className="ml-1 font-normal normal-case text-neutral-400">· {model}</span>}
       </p>
-      <p className="mb-2 whitespace-pre-wrap text-sm text-neutral-800">
-        <b>Final prompt:</b> {output.finalPrompt}
+      {attempts.map((a) => (
+        <div key={a.attempt} className={a.attempt > 1 ? "mt-3 border-t border-neutral-200 pt-3" : ""}>
+          <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">
+            Attempt {a.attempt}
+          </p>
+          {a.output ? (
+            <>
+              <p className="mb-2 whitespace-pre-wrap text-sm text-neutral-800">
+                <b>Final prompt:</b> {a.output.finalPrompt}
+              </p>
+              {a.output.negativePrompt && (
+                <p className="mb-2 whitespace-pre-wrap text-sm text-neutral-600">
+                  <b>Negative prompt:</b> {a.output.negativePrompt}
+                </p>
+              )}
+              {a.output.promptSummary && (
+                <p className="mb-2 whitespace-pre-wrap text-xs text-neutral-500">
+                  <b>Summary:</b> {a.output.promptSummary}
+                </p>
+              )}
+              {a.output.appliedRules.length > 0 && (
+                <p className="mb-2 text-xs text-neutral-600">
+                  <b>Applied rules:</b> {a.output.appliedRules.join(", ")}
+                </p>
+              )}
+              {a.output.riskNotes.length > 0 && (
+                <p className="text-xs text-amber-700">
+                  <b>Risk notes:</b> {a.output.riskNotes.join(", ")}
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="text-xs text-red-600">Failed: {a.errors?.join("; ") || "unknown error"}</p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Human-readable view of every Prompt reviewer verdict — status, issues, revision
+ *  instruction (issue #5 acceptance criteria: "Reviewer output ... visible in debug
+ *  preview"). A revise loop produces a second verdict on the rebuilt attempt; both are
+ *  shown, oldest first. Raw request/response for every call stay in the "Prompt
+ *  reviewer attempts" DebugJson panel next to this. */
+function PromptReviewerPanel({ model, attempts }: { model: string | null; attempts: PromptReviewerAttemptRecord[] }) {
+  if (!attempts.length) return null;
+  const STATUS_COLOR: Record<string, string> = {
+    pass: "text-green-700",
+    revise: "text-amber-700",
+    failed: "text-red-700",
+  };
+  return (
+    <div className="mb-3 rounded-lg bg-neutral-50 p-3">
+      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">
+        Prompt reviewer{model && <span className="ml-1 font-normal normal-case text-neutral-400">· {model}</span>}
       </p>
-      {output.negativePrompt && (
-        <p className="mb-2 whitespace-pre-wrap text-sm text-neutral-600">
-          <b>Negative prompt:</b> {output.negativePrompt}
-        </p>
-      )}
-      {output.promptSummary && (
-        <p className="mb-2 whitespace-pre-wrap text-xs text-neutral-500">
-          <b>Summary:</b> {output.promptSummary}
-        </p>
-      )}
-      {output.appliedRules.length > 0 && (
-        <p className="mb-2 text-xs text-neutral-600">
-          <b>Applied rules:</b> {output.appliedRules.join(", ")}
-        </p>
-      )}
-      {output.riskNotes.length > 0 && (
-        <p className="text-xs text-amber-700">
-          <b>Risk notes:</b> {output.riskNotes.join(", ")}
-        </p>
-      )}
+      {attempts.map((a) => (
+        <div key={a.attempt} className={a.attempt > 1 ? "mt-3 border-t border-neutral-200 pt-3" : ""}>
+          <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">
+            Attempt {a.attempt}
+          </p>
+          {a.output ? (
+            <>
+              <p className="mb-1 text-sm text-neutral-800">
+                <b>Status:</b>{" "}
+                <span className={STATUS_COLOR[a.output.status] ?? "text-neutral-700"}>{a.output.status}</span>
+              </p>
+              {a.output.issues.length > 0 && (
+                <p className="mb-1 whitespace-pre-wrap text-xs text-neutral-600">
+                  <b>Issues:</b> {a.output.issues.join("; ")}
+                </p>
+              )}
+              {a.output.revisionInstruction && (
+                <p className="whitespace-pre-wrap text-xs text-amber-700">
+                  <b>Revision instruction:</b> {a.output.revisionInstruction}
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="text-xs text-red-600">Failed: {a.errors?.join("; ") || "unknown error"}</p>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

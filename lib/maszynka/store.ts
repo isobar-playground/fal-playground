@@ -32,11 +32,24 @@ export interface MaszynkaRun {
   // Prompt builder LLM stage (slice 4) — see lib/maszynka/promptBuilder.ts. The operator's
   // chosen OpenRouter model, the raw request/response sent/received, and the parsed +
   // schema-validated structured output (finalPrompt/negativePrompt/promptSummary/
-  // appliedRules/riskNotes) that then drives FAL generation.
+  // appliedRules/riskNotes) that then drives FAL generation. These three columns always
+  // reflect the *latest* builder attempt (attempt 2's data if a revise loop happened);
+  // `promptBuilderAttempts` below is the append-only full history of every attempt.
   promptBuilderModel: string | null;
   promptBuilderRequest: unknown;
   promptBuilderResponse: unknown;
   promptBuilderOutput: unknown;
+  // Prompt reviewer LLM stage (slice 5) — see lib/maszynka/promptReviewer.ts. The
+  // operator's chosen OpenRouter model for the reviewer stage, and the append-only
+  // history of every reviewer call made on this run (max two: the first verdict, and —
+  // only if that verdict was `revise` — the verdict on the rebuilt attempt). Each entry
+  // is a `PromptReviewerAttemptRecord` (attempt number, request, response, parsed
+  // output or errors).
+  promptReviewerModel: string | null;
+  promptReviewerAttempts: unknown[];
+  // Append-only history of every Prompt builder call made on this run (max two — see
+  // promptReviewerAttempts above). Each entry is a `PromptBuilderAttemptRecord`.
+  promptBuilderAttempts: unknown[];
 }
 
 interface RunRow {
@@ -60,6 +73,9 @@ interface RunRow {
   prompt_builder_request: unknown;
   prompt_builder_response: unknown;
   prompt_builder_output: unknown;
+  prompt_reviewer_model: string | null;
+  prompt_reviewer_attempts: unknown[];
+  prompt_builder_attempts: unknown[];
 }
 
 export function rowToRun(row: RunRow): MaszynkaRun {
@@ -84,6 +100,9 @@ export function rowToRun(row: RunRow): MaszynkaRun {
     promptBuilderRequest: row.prompt_builder_request ?? null,
     promptBuilderResponse: row.prompt_builder_response ?? null,
     promptBuilderOutput: row.prompt_builder_output ?? null,
+    promptReviewerModel: row.prompt_reviewer_model ?? null,
+    promptReviewerAttempts: row.prompt_reviewer_attempts ?? [],
+    promptBuilderAttempts: row.prompt_builder_attempts ?? [],
   };
 }
 
@@ -122,6 +141,13 @@ export function ensureSchema(sql: NeonQueryFunction<false, false>) {
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS prompt_builder_request jsonb`;
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS prompt_builder_response jsonb`;
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS prompt_builder_output jsonb`;
+    // Slice 5 adds the Prompt reviewer stage + revise loop — same idempotent-column
+    // story. The two `_attempts` columns are append-only arrays (same pattern as
+    // status_history above) so both Prompt builder attempts and every reviewer call
+    // survive the revise loop instead of being overwritten by the second attempt.
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS prompt_reviewer_model text`;
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS prompt_reviewer_attempts jsonb NOT NULL DEFAULT '[]'::jsonb`;
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS prompt_builder_attempts jsonb NOT NULL DEFAULT '[]'::jsonb`;
   })()
     .then(() => undefined)
     .catch((e) => {

@@ -32,15 +32,26 @@ export type RunStatus =
 // longer legal. Slice 4 adds the real Prompt builder LLM stage: a valid contract now
 // goes to OpenRouter and must come back as schema-valid structured output before
 // generation may start — `prompt_builder_contract_created -> fal_generation_started`
-// directly is no longer legal either. Encoded explicitly — rather than trusting every
-// caller to send a sane `status` — so a bug in the client pipeline fails loudly (400
-// from the API route) instead of silently writing a run history that looks legit but
-// lies about what happened. Extend this map, not around it, when later slices add
-// real stages (safety pre-check, asset analysis, reviewer, FAL request mapper).
+// directly is no longer legal either. Slice 5 inserts the Prompt reviewer gate: a
+// completed builder output must now pass review before FAL generation —
+// `prompt_builder_completed -> fal_generation_started` directly is no longer legal
+// either. A `revise` verdict loops back through exactly one more builder attempt
+// (`prompt_reviewer_revise_required -> prompt_builder_completed`, or straight to
+// `prompt_builder_output_validation_failed` if that rebuild call itself fails); the
+// one-rebuild-only rule itself is an orchestrator invariant (see MaszynkaView's
+// handleRun), not something this graph can express — a second `revise` verdict is
+// still a structurally legal `prompt_builder_completed -> prompt_reviewer_revise_
+// required` edge, the caller just never takes it twice. Encoded explicitly — rather
+// than trusting every caller to send a sane `status` — so a bug in the client pipeline
+// fails loudly (400 from the API route) instead of silently writing a run history that
+// looks legit but lies about what happened. Extend this map, not around it, when later
+// slices add real stages (safety pre-check, asset analysis, FAL request mapper).
 export const ALLOWED_NEXT: Partial<Record<RunStatus, RunStatus[]>> = {
   run_started: ["prompt_builder_contract_created", "prompt_builder_contract_validation_failed"],
   prompt_builder_contract_created: ["prompt_builder_completed", "prompt_builder_output_validation_failed"],
-  prompt_builder_completed: ["fal_generation_started"],
+  prompt_builder_completed: ["prompt_reviewer_passed", "prompt_reviewer_revise_required", "prompt_build_failed"],
+  prompt_reviewer_revise_required: ["prompt_builder_completed", "prompt_builder_output_validation_failed"],
+  prompt_reviewer_passed: ["fal_generation_started"],
   fal_generation_started: ["generation_completed", "fal_generation_failed", "provider_policy_blocked"],
 };
 

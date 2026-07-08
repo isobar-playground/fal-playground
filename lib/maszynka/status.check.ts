@@ -12,7 +12,7 @@ assert.equal(isValidTransition("run_started", "prompt_builder_contract_created")
 assert.equal(isValidTransition("run_started", "prompt_builder_contract_validation_failed"), true);
 assert.equal(isValidTransition("prompt_builder_contract_created", "prompt_builder_completed"), true);
 assert.equal(isValidTransition("prompt_builder_contract_created", "prompt_builder_output_validation_failed"), true);
-assert.equal(isValidTransition("prompt_builder_completed", "fal_generation_started"), true);
+assert.equal(isValidTransition("prompt_reviewer_passed", "fal_generation_started"), true);
 assert.equal(isValidTransition("fal_generation_started", "generation_completed"), true);
 assert.equal(isValidTransition("fal_generation_started", "fal_generation_failed"), true);
 assert.equal(isValidTransition("fal_generation_started", "provider_policy_blocked"), true);
@@ -36,6 +36,28 @@ assert.throws(() => assertValidTransition("run_started", "fal_generation_started
 assert.throws(() => assertValidTransition("prompt_builder_contract_created", "fal_generation_started"));
 assert.doesNotThrow(() => assertValidTransition("run_started", "prompt_builder_contract_created"));
 assert.doesNotThrow(() => assertValidTransition("prompt_builder_contract_created", "prompt_builder_completed"));
+
+// --- slice 5: Prompt reviewer gate + revise loop ----------------------------
+// Skipping the Prompt reviewer gate (slice 5) is no longer legal — a completed builder
+// output must go through review before FAL generation.
+assert.equal(isValidTransition("prompt_builder_completed", "fal_generation_started"), false);
+// A completed builder output can only land on one of the three reviewer verdicts.
+assert.equal(isValidTransition("prompt_builder_completed", "prompt_reviewer_passed"), true);
+assert.equal(isValidTransition("prompt_builder_completed", "prompt_reviewer_revise_required"), true);
+assert.equal(isValidTransition("prompt_builder_completed", "prompt_build_failed"), true);
+// `revise` loops back through exactly one more builder attempt — either it succeeds
+// (back to prompt_builder_completed, to be reviewed again) or the rebuild call itself
+// fails validation/network (prompt_builder_output_validation_failed). It can never go
+// straight to FAL or straight to prompt_build_failed without another builder attempt.
+assert.equal(isValidTransition("prompt_reviewer_revise_required", "prompt_builder_completed"), true);
+assert.equal(isValidTransition("prompt_reviewer_revise_required", "prompt_builder_output_validation_failed"), true);
+assert.equal(isValidTransition("prompt_reviewer_revise_required", "fal_generation_started"), false);
+assert.equal(isValidTransition("prompt_reviewer_revise_required", "prompt_build_failed"), false);
+// Only a `pass` verdict may proceed to FAL generation.
+assert.equal(isValidTransition("prompt_build_failed", "fal_generation_started"), false);
+assert.doesNotThrow(() => assertValidTransition("prompt_builder_completed", "prompt_reviewer_revise_required"));
+assert.doesNotThrow(() => assertValidTransition("prompt_reviewer_revise_required", "prompt_builder_completed"));
+assert.doesNotThrow(() => assertValidTransition("prompt_reviewer_passed", "fal_generation_started"));
 
 // --- FAL error classification ---------------------------------------------
 assert.equal(

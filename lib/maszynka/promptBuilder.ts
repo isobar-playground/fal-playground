@@ -97,7 +97,7 @@ function contractUserText(contract: Contract): string {
 
 export interface PromptBuilderRequestBody {
   model: string;
-  messages: { role: "system" | "user"; content: string | WirePart[] }[];
+  messages: { role: "system" | "user" | "assistant"; content: string | WirePart[] }[];
   temperature: number;
   max_tokens: number;
   top_p: number;
@@ -105,11 +105,26 @@ export interface PromptBuilderRequestBody {
   response_format: { type: "json_schema"; json_schema: { name: string; strict: true; schema: Record<string, unknown> } };
 }
 
+/** Fed back into the builder for its one allowed rebuild (PRD section 11 / issue #5):
+ *  the Prompt reviewer's verdict on the first attempt, plus the attempt it rejected. */
+export interface PromptBuilderRevisionContext {
+  previousOutput: PromptBuilderOutput;
+  reviewerIssues: string[];
+  revisionInstruction: string;
+}
+
 /** Builds the exact OpenRouter chat-completions body for the builder stage. The
  *  packshot (if any) is attached as an image_url part so a vision model can look
  *  at it directly — there's no asset-analysis stage yet (a later slice) to turn it
- *  into text first. */
-export function buildPromptBuilderRequestBody(contract: Contract, model: string): PromptBuilderRequestBody {
+ *  into text first. When `revision` is set (the Prompt reviewer sent this Contract's
+ *  first attempt back with `revise`), the previous output and the reviewer's issues +
+ *  revision instruction are appended as extra turns so the model revises rather than
+ *  building from scratch — this is the run's one allowed rebuild, never a third call. */
+export function buildPromptBuilderRequestBody(
+  contract: Contract,
+  model: string,
+  revision?: PromptBuilderRevisionContext,
+): PromptBuilderRequestBody {
   const packshot = contract.assets.find((a) => a.role === "packshot");
   const text = contractUserText(contract);
   const userContent: string | WirePart[] = packshot
@@ -119,12 +134,25 @@ export function buildPromptBuilderRequestBody(contract: Contract, model: string)
       ]
     : text;
 
+  const messages: PromptBuilderRequestBody["messages"] = [
+    { role: "system", content: PROMPT_BUILDER_SYSTEM_PROMPT },
+    { role: "user", content: userContent },
+  ];
+  if (revision) {
+    messages.push({ role: "assistant", content: JSON.stringify(revision.previousOutput) });
+    messages.push({
+      role: "user",
+      content:
+        `The Prompt reviewer rejected this output. Issues: ${revision.reviewerIssues.join("; ") || "(none listed)"}. ` +
+        `Revision instruction: ${revision.revisionInstruction || "(none given — use the issues above)"}. ` +
+        `Produce a corrected JSON object (matching the same schema) that fixes these issues while still ` +
+        `respecting the Contract above. This is the only rebuild allowed — make it count.`,
+    });
+  }
+
   return {
     model,
-    messages: [
-      { role: "system", content: PROMPT_BUILDER_SYSTEM_PROMPT },
-      { role: "user", content: userContent },
-    ],
+    messages,
     temperature: 0.4,
     max_tokens: 2000,
     top_p: 1,
@@ -173,6 +201,21 @@ export function parsePromptBuilderContent(content: string): { output: PromptBuil
   const errors = validatePromptBuilderOutput(parsed);
   if (errors.length) return { output: null, errors };
   return { output: parsed as PromptBuilderOutput, errors: [] };
+}
+
+// --- attempt record (persisted shape) --------------------------------------------
+
+/** One builder call's full record — request/response/parsed-output — as persisted on
+ *  the run (see lib/maszynka/store.ts `promptBuilderAttempts`). Attempt 1 always runs;
+ *  attempt 2 only happens when the Prompt reviewer sent attempt 1 back with `revise`
+ *  (see promptReviewer.ts / issue #5). `output` is null and `errors` is set when the
+ *  call itself failed (network error / invalid JSON / schema violation). */
+export interface PromptBuilderAttemptRecord {
+  attempt: 1 | 2;
+  request: unknown;
+  response: unknown;
+  output: PromptBuilderOutput | null;
+  errors?: string[];
 }
 
 // --- network call (impure) ------------------------------------------------------
