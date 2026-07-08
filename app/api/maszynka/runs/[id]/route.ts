@@ -20,6 +20,10 @@ interface PatchRunBody {
   /** One Prompt reviewer attempt record — appended to `prompt_reviewer_attempts`, never
    *  replacing the array (see lib/maszynka/store.ts / promptReviewer.ts). */
   promptReviewerAttempt?: unknown;
+  /** The Asset analysis stage's full per-asset record set (issue #6) — written once, in
+   *  full, when the stage finishes; replaces (never appends to) `asset_analysis_results`
+   *  since there is no revise loop for this stage (see lib/maszynka/assetAnalysis.ts). */
+  assetAnalysisResults?: unknown;
 }
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -92,6 +96,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       body.promptBuilderAttempt !== undefined ? JSON.stringify([body.promptBuilderAttempt]) : null;
     const promptReviewerAttemptJson =
       body.promptReviewerAttempt !== undefined ? JSON.stringify([body.promptReviewerAttempt]) : null;
+    // Full replace (not append) — see the field's doc comment above.
+    const assetAnalysisResultsJson =
+      body.assetAnalysisResults !== undefined ? JSON.stringify(body.assetAnalysisResults) : null;
 
     const rows = await sql`
       UPDATE maszynka_runs SET
@@ -109,6 +116,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
           THEN prompt_builder_attempts || ${promptBuilderAttemptJson}::jsonb ELSE prompt_builder_attempts END,
         prompt_reviewer_attempts = CASE WHEN ${promptReviewerAttemptJson}::jsonb IS NOT NULL
           THEN prompt_reviewer_attempts || ${promptReviewerAttemptJson}::jsonb ELSE prompt_reviewer_attempts END,
+        asset_analysis_results = COALESCE(${assetAnalysisResultsJson}::jsonb, asset_analysis_results),
         updated_at = now()
       WHERE id = ${id}
       RETURNING *

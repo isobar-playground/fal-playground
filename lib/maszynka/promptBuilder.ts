@@ -76,9 +76,9 @@ export const PROMPT_BUILDER_OUTPUT_SCHEMA: Record<string, unknown> = {
 
 const PROMPT_BUILDER_SYSTEM_PROMPT = `You are the Prompt builder stage of the Maszynka Content Factory test bench.
 
-You receive a single JSON "Contract" object describing one test run: the operator's raw prompt, any uploaded assets (asset "role" is systemic — packshot/style_reference/brand_reference/campaign_reference — never inferred from prose), a selected Hook (short attention-grabbing marketing text to render on the asset), a selected Style preset, a selected Camera setting preset, a set of global rules that always apply, an ordered Priority logic (most important first: content safety > product/brand preservation > packshot analysis > hook > style > camera setting > operator prompt — on conflict, the higher layer wins), the target model's capabilities, and generation settings (target language, aspect ratio, variant count).
+You receive a single JSON "Contract" object describing one test run: the operator's raw prompt, any uploaded assets (asset "role" is systemic — packshot/style_reference/brand_reference/campaign_reference — never inferred from prose) each carrying an "analysis" object (the Asset analysis stage's structured description: "description", "attributes" as role-specific key/value facts, and "preserveElements" — packaging/color/proportions/logo/label/variant to preserve, populated only for the packshot), a selected Hook (short attention-grabbing marketing text to render on the asset), a selected Style preset, a selected Camera setting preset, a set of global rules that always apply, an ordered Priority logic (most important first: content safety > product/brand preservation > packshot analysis > hook > style > camera setting > operator prompt — on conflict, the higher layer wins), the target model's capabilities, and generation settings (target language, aspect ratio, variant count).
 
-If a packshot image is attached to this message, it is the product that MUST be preserved exactly: packaging, color, proportions, logo, label, variant. Never mutate it.
+Use each asset strictly within its role and its "analysis" output: the packshot (its "preserveElements" list is non-negotiable — packaging, color, proportions, logo, label, variant MUST be preserved exactly, never mutated) is the product to feature; a style_reference informs only look/mood/lighting/palette; a brand_reference informs only brand elements/palette/layout feel; a campaign_reference informs only the series' rhythm/consistency — never treat a reference asset as a preservation target, and never copy old marketing text from a campaign_reference verbatim. If a packshot image is attached to this message directly (in addition to its analysis text), cross-check it visually against "preserveElements".
 
 Your job: produce ONE JSON object (matching the required schema exactly) with:
 - finalPrompt: the complete prompt to send to the image generation model, combining the operator's intent with the hook, style, camera setting and global rules per the priority logic.
@@ -114,9 +114,12 @@ export interface PromptBuilderRevisionContext {
 }
 
 /** Builds the exact OpenRouter chat-completions body for the builder stage. The
- *  packshot (if any) is attached as an image_url part so a vision model can look
- *  at it directly — there's no asset-analysis stage yet (a later slice) to turn it
- *  into text first. When `revision` is set (the Prompt reviewer sent this Contract's
+ *  packshot (if any) is attached as an image_url part *in addition to* its Asset
+ *  analysis text (which rides along inside the serialized Contract below — see issue
+ *  #6 / assetAnalysis.ts) so a vision model can also look at the actual product
+ *  directly for exact preservation; reference assets rely on their analysis text alone
+ *  (no extra image parts) since their role only needs a scoped description, not pixel-
+ *  level preservation. When `revision` is set (the Prompt reviewer sent this Contract's
  *  first attempt back with `revise`), the previous output and the reviewer's issues +
  *  revision instruction are appended as extra turns so the model revises rather than
  *  building from scratch — this is the run's one allowed rebuild, never a third call. */

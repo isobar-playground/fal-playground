@@ -6,7 +6,7 @@
 // "Testing Decisions") — Node 22+ strips TS types natively, so this runs with no build
 // step and no dependency.
 import assert from "node:assert/strict";
-import { assembleContract, validateContract, type AssembleContractInput } from "./contract.ts";
+import { assembleContract, validateContract, type AssembleContractInput, type ContractAsset } from "./contract.ts";
 import type {
   CameraSettingConfig,
   GlobalRuleConfig,
@@ -15,6 +15,19 @@ import type {
   PriorityLogicConfig,
   StyleConfig,
 } from "./configSchemas.ts";
+import type { AssetAnalysisOutput } from "./assetAnalysis.ts";
+
+const ANALYSIS: AssetAnalysisOutput = {
+  description: "A red running shoe on a white background.",
+  attributes: [{ key: "color", value: "red" }],
+  preserveElements: ["packaging", "logo"],
+};
+const PACKSHOT_ASSET: ContractAsset = {
+  id: "asset-1",
+  role: "packshot",
+  url: "https://example.com/packshot.png",
+  analysis: ANALYSIS,
+};
 
 const HOOKS: HookConfig[] = [{ id: "h1", text: "Hook text" }];
 const STYLES: StyleConfig[] = [
@@ -66,7 +79,7 @@ const CAPABILITY: ModelCapabilityEntry[] = [
 function baseInput(overrides: Partial<AssembleContractInput> = {}): AssembleContractInput {
   return {
     userPromptRaw: "a red shoe on a white background",
-    packshotUrl: "https://example.com/packshot.png",
+    assets: [PACKSHOT_ASSET],
     hooks: { version: 3, body: HOOKS },
     selectedHookId: "h1",
     styles: { version: 1, body: STYLES },
@@ -92,11 +105,45 @@ assert.equal(good.hook.snapshot?.text, "Hook text", "contract must carry the con
 assert.equal(good.modelCapability.snapshot?.modelKey, "nano-banana");
 assert.equal(good.assets[0]?.role, "packshot");
 assert.equal(good.assets[0]?.url, "https://example.com/packshot.png");
+assert.equal(good.assets[0]?.analysis?.description, ANALYSIS.description, "contract must carry the asset's analysis output");
 
-// --- no packshot uploaded -> no packshot asset, contract is still otherwise valid -----
-const noPackshot = assembleContract(baseInput({ packshotUrl: null }));
-assert.deepEqual(noPackshot.assets, []);
-assert.deepEqual(validateContract(noPackshot), []);
+// --- no assets uploaded -> empty assets array, contract is still otherwise valid ------
+const noAssets = assembleContract(baseInput({ assets: [] }));
+assert.deepEqual(noAssets.assets, []);
+assert.deepEqual(validateContract(noAssets), []);
+
+// --- multiple roles, all optional per spec section 3 (packshot + every reference) -----
+const allRoles: ContractAsset[] = [
+  PACKSHOT_ASSET,
+  { id: "asset-2", role: "style_reference", url: "https://example.com/style.png", analysis: ANALYSIS },
+  { id: "asset-3", role: "brand_reference", url: "https://example.com/brand.png", analysis: ANALYSIS },
+  { id: "asset-4", role: "campaign_reference", url: "https://example.com/campaign.png", analysis: ANALYSIS },
+];
+const fullAssets = assembleContract(baseInput({ assets: allRoles }));
+assert.equal(fullAssets.assets.length, 4);
+assert.deepEqual(validateContract(fullAssets), []);
+
+// --- an asset missing its Asset analysis output fails validation (issue #6: the
+// Contract must never be assembled from raw uploads alone) ---------------------------
+const missingAnalysis = assembleContract(
+  baseInput({ assets: [{ ...PACKSHOT_ASSET, analysis: null }] }),
+);
+assert.ok(
+  validateContract(missingAnalysis).length,
+  "an asset with no Asset analysis output must fail Contract validation",
+);
+
+// --- a malformed asset (no id/url, or an unknown role) also fails validation ----------
+assert.ok(
+  validateContract(assembleContract(baseInput({ assets: [{ ...PACKSHOT_ASSET, id: "" }] }))).length,
+  "an asset with no id must fail validation",
+);
+assert.ok(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  validateContract(assembleContract(baseInput({ assets: [{ ...PACKSHOT_ASSET, role: "not-a-role" as any }] })))
+    .length,
+  "an asset with an unknown role must fail validation",
+);
 
 // --- an unresolvable selection produces a null snapshot, which fails validation -------
 const badHook = assembleContract(baseInput({ selectedHookId: "does-not-exist" }));

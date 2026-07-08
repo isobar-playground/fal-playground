@@ -45,9 +45,20 @@ export type RunStatus =
 // than trusting every caller to send a sane `status` — so a bug in the client pipeline
 // fails loudly (400 from the API route) instead of silently writing a run history that
 // looks legit but lies about what happened. Extend this map, not around it, when later
-// slices add real stages (safety pre-check, asset analysis, FAL request mapper).
+// slices add real stages (safety pre-check, FAL request mapper).
+//
+// Issue #6 inserts the Asset analysis stage right after run creation, before the
+// Contract is assembled — the Contract needs every asset's analysis output (see
+// contract.ts's `ContractAsset.analysis`), so it can no longer be built from just the
+// raw uploads. `run_started -> prompt_builder_contract_created` directly is therefore
+// no longer legal: every run must land on `asset_analysis_completed` first (even a run
+// with zero uploaded assets — there is simply nothing to analyze, so the stage
+// completes trivially) or `asset_analysis_failed`. `asset_analysis_failed` is terminal —
+// a bad/unreadable asset ends the run right there, same shape as
+// `prompt_builder_contract_validation_failed`.
 export const ALLOWED_NEXT: Partial<Record<RunStatus, RunStatus[]>> = {
-  run_started: ["prompt_builder_contract_created", "prompt_builder_contract_validation_failed"],
+  run_started: ["asset_analysis_completed", "asset_analysis_failed"],
+  asset_analysis_completed: ["prompt_builder_contract_created", "prompt_builder_contract_validation_failed"],
   prompt_builder_contract_created: ["prompt_builder_completed", "prompt_builder_output_validation_failed"],
   prompt_builder_completed: ["prompt_reviewer_passed", "prompt_reviewer_revise_required", "prompt_build_failed"],
   prompt_reviewer_revise_required: ["prompt_builder_completed", "prompt_builder_output_validation_failed"],

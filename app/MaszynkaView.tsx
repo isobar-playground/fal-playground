@@ -1,16 +1,27 @@
 "use client";
 
-// Maszynka — Content Factory test bench. Slice 1: the walking skeleton. A raw prompt +
-// one packshot upload go straight to a FAL model (no LLM stages yet); every run is
-// created and updated server-side in Neon (ADR 0001) so run history is shared across
-// browsers/operators. Later slices add hooks/presets/safety/prompt-builder/reviewer on
-// top of this same run — see docs/prd/0001-maszynka-test-bench.md.
+// Maszynka — Content Factory test bench. Slice 1 was the walking skeleton: a raw prompt
+// + one packshot upload went straight to a FAL model. Issue #6 replaces that single
+// upload with four role-specific fields (packshot/style_reference/brand_reference/
+// campaign_reference — spec section 3, CONTEXT.md "Asset role") and adds the Asset
+// analysis LLM stage that runs on every uploaded asset before the Contract is
+// assembled. Every run is created and updated server-side in Neon (ADR 0001) so run
+// history is shared across browsers/operators — see docs/prd/0001-maszynka-test-bench.md.
 import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { DEFAULT_SETTINGS, MODELS, MODEL_BY_KEY, MODEL_GROUPS, buildInput, type ModelSettings } from "@/lib/models";
 import { configureFal, runModel, uploadReference } from "@/lib/fal";
-import { createRun, getRun, listRuns, patchRun, type MaszynkaRun } from "@/lib/maszynka/api";
+import { createRun, getRun, listRuns, patchRun, type MaszynkaRun, type RunAsset } from "@/lib/maszynka/api";
 import { classifyFalError } from "@/lib/maszynka/status";
-import { assembleContract, validateContract } from "@/lib/maszynka/contract";
+import { assembleContract, validateContract, type AssetRole, type ContractAsset } from "@/lib/maszynka/contract";
+import {
+  ASSET_ANALYSIS_MODELS,
+  ASSET_ANALYSIS_MODEL_GROUPS,
+  DEFAULT_ASSET_ANALYSIS_MODEL,
+  buildAssetAnalysisRequestBody,
+  callAssetAnalysis,
+  parseAssetAnalysisContent,
+  type AssetAnalysisRecord,
+} from "@/lib/maszynka/assetAnalysis";
 import {
   DEFAULT_PROMPT_BUILDER_MODEL,
   PROMPT_BUILDER_MODELS,
@@ -72,7 +83,12 @@ function errMsg(e: unknown): string {
   return typeof e === "string" ? e : "Unknown error";
 }
 
-interface Packshot {
+/** One of the four role-specific upload fields' client-side state (issue #6). `id` is
+ *  generated once at file-selection time and carried through as the asset's stable id
+ *  on the run (see RunAsset / ContractAsset) — the analysis stage and debug preview both
+ *  key off it. */
+interface AssetUpload {
+  id: string;
   file: File;
   previewUrl: string;
   uploadedUrl?: string;
@@ -80,8 +96,20 @@ interface Packshot {
   error?: string;
 }
 
+/** The four upload fields, in the order the spec lists them (section 2/3). The role
+ *  comes from which field an asset was dropped into, never from operator prose —
+ *  CONTEXT.md "Asset role". */
+const ASSET_ROLE_META: { role: AssetRole; label: string; hint: string }[] = [
+  { role: "packshot", label: "Packshot", hint: "product to preserve — packaging, color, proportions, logo, label, variant" },
+  { role: "style_reference", label: "Style reference", hint: "optional — visual look, mood, lighting" },
+  { role: "brand_reference", label: "Brand reference", hint: "optional — brand elements, palette, key visual" },
+  { role: "campaign_reference", label: "Campaign reference", hint: "optional — series rhythm/consistency" },
+];
+
 const STATUS_TONE: Record<string, string> = {
   run_started: "bg-neutral-100 text-neutral-600",
+  asset_analysis_completed: "bg-amber-100 text-amber-800",
+  asset_analysis_failed: "bg-red-100 text-red-700",
   prompt_builder_contract_created: "bg-amber-100 text-amber-800",
   prompt_builder_contract_validation_failed: "bg-red-100 text-red-700",
   prompt_builder_completed: "bg-amber-100 text-amber-800",
@@ -122,9 +150,12 @@ export default function MaszynkaView({
 }) {
   const [showKey, setShowKey] = useState(false);
   const [showOrKey, setShowOrKey] = useState(false);
-  const [packshot, setPackshot] = useState<Packshot | null>(null);
+  const [assetUploads, setAssetUploads] = useState<Partial<Record<AssetRole, AssetUpload>>>({});
   const [modelKey, setModelKey] = useState<string>("nano-banana");
   const model = MODEL_BY_KEY[modelKey] ?? MODELS[0];
+  // Asset analysis stage (issue #6): the operator's OpenRouter model for that stage,
+  // recorded on the run at creation — see lib/maszynka/assetAnalysis.ts.
+  const [assetAnalysisModel, setAssetAnalysisModel] = useState<string>(DEFAULT_ASSET_ANALYSIS_MODEL);
   // Prompt builder stage (slice 4): the operator's OpenRouter model for that stage,
   // recorded on the run at creation — see lib/maszynka/promptBuilder.ts.
   const [promptBuilderModel, setPromptBuilderModel] = useState<string>(DEFAULT_PROMPT_BUILDER_MODEL);
@@ -194,39 +225,74 @@ export default function MaszynkaView({
     if (!selectedCameraSettingId && cameraSettings.length) setSelectedCameraSettingId(cameraSettings[0].cameraSettingId);
   }, [cameraSettings, selectedCameraSettingId]);
 
-  // Eager-upload the packshot as soon as it's picked, mirroring the Images-tab reference
-  // pattern (upload cost is paid once, not on every Run click).
+  // Eager-upload every asset as soon as it's picked, mirroring the Images-tab reference
+  // pattern (upload cost is paid once, not on every Run click) — generalized from
+  // slice 1's single packshot effect to all four role-specific fields (issue #6).
   useEffect(() => {
-    if (!apiKey || !packshot || packshot.uploadedUrl || packshot.uploading || packshot.error) return;
+    if (!apiKey) return;
+    const pending = ASSET_ROLE_META.filter(({ role }) => {
+      const u = assetUploads[role];
+      return u && !u.uploadedUrl && !u.uploading && !u.error;
+    });
+    if (!pending.length) return;
     configureFal(apiKey);
-    setPackshot((p) => (p ? { ...p, uploading: true } : p));
-    uploadReference(packshot.file)
-      .then((url) => setPackshot((p) => (p && p.file === packshot.file ? { ...p, uploadedUrl: url, uploading: false } : p)))
-      .catch((e) => setPackshot((p) => (p && p.file === packshot.file ? { ...p, uploading: false, error: errMsg(e) } : p)));
+    for (const { role } of pending) {
+      const upload = assetUploads[role]!;
+      setAssetUploads((prev) => {
+        const cur = prev[role];
+        if (!cur || cur.id !== upload.id) return prev;
+        return { ...prev, [role]: { ...cur, uploading: true } };
+      });
+      uploadReference(upload.file)
+        .then((url) =>
+          setAssetUploads((prev) => {
+            const cur = prev[role];
+            if (!cur || cur.id !== upload.id) return prev;
+            return { ...prev, [role]: { ...cur, uploadedUrl: url, uploading: false } };
+          }),
+        )
+        .catch((e) =>
+          setAssetUploads((prev) => {
+            const cur = prev[role];
+            if (!cur || cur.id !== upload.id) return prev;
+            return { ...prev, [role]: { ...cur, uploading: false, error: errMsg(e) } };
+          }),
+        );
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiKey, packshot?.file]);
+  }, [
+    apiKey,
+    assetUploads.packshot?.id,
+    assetUploads.style_reference?.id,
+    assetUploads.brand_reference?.id,
+    assetUploads.campaign_reference?.id,
+  ]);
 
-  const setPackshotFile = useCallback((file: File) => {
+  const setAssetFile = useCallback((role: AssetRole, file: File) => {
     if (!file.type.startsWith("image/")) return;
-    setPackshot((prev) => {
-      if (prev) URL.revokeObjectURL(prev.previewUrl);
-      return { file, previewUrl: URL.createObjectURL(file) };
+    setAssetUploads((prev) => {
+      const old = prev[role];
+      if (old) URL.revokeObjectURL(old.previewUrl);
+      return { ...prev, [role]: { id: crypto.randomUUID(), file, previewUrl: URL.createObjectURL(file) } };
     });
   }, []);
-  const clearPackshot = useCallback(() => {
-    setPackshot((prev) => {
-      if (prev) URL.revokeObjectURL(prev.previewUrl);
-      return null;
+  const clearAsset = useCallback((role: AssetRole) => {
+    setAssetUploads((prev) => {
+      const old = prev[role];
+      if (old) URL.revokeObjectURL(old.previewUrl);
+      const next = { ...prev };
+      delete next[role];
+      return next;
     });
   }, []);
 
-  const packshotUploading = Boolean(packshot?.uploading);
+  const anyAssetUploading = ASSET_ROLE_META.some(({ role }) => assetUploads[role]?.uploading);
   const canRun =
     Boolean(apiKey) &&
     Boolean(orKey) &&
     prompt.trim().length > 0 &&
     !running &&
-    !packshotUploading &&
+    !anyAssetUploading &&
     configsState === "idle" &&
     Boolean(selectedHookId) &&
     Boolean(selectedStyleId) &&
@@ -243,8 +309,18 @@ export default function MaszynkaView({
 
     try {
       configureFal(apiKey);
-      let packshotUrl = packshot?.uploadedUrl;
-      if (packshot && !packshotUrl) packshotUrl = await uploadReference(packshot.file);
+
+      // Resolve every uploaded asset's URL — eager-uploaded already, but this also
+      // covers the race where the operator clicks Run before the upload effect
+      // finishes. Issue #6 replaces slice 1's single packshot upload with these four
+      // role-specific, all-optional fields (spec section 3).
+      const runAssets: RunAsset[] = [];
+      for (const { role } of ASSET_ROLE_META) {
+        const upload = assetUploads[role];
+        if (!upload) continue;
+        const url = upload.uploadedUrl ?? (await uploadReference(upload.file));
+        runAssets.push({ id: upload.id, role, url });
+      }
 
       const run = await createRun({
         assetType: "image",
@@ -252,19 +328,88 @@ export default function MaszynkaView({
         modelKey: model.key,
         modelId: model.id,
         modelLabel: model.label,
-        packshotUrl,
+        assets: runAssets,
+        assetAnalysisModel,
         promptBuilderModel,
         promptReviewerModel,
       });
       setCurrentRun(run);
       refreshHistory();
 
+      // --- Asset analysis stage (issue #6): one OpenRouter call per uploaded asset,
+      // run before the Contract is assembled — the Contract needs every asset's
+      // analysis output (see lib/maszynka/contract.ts's `ContractAsset.analysis` and
+      // status.ts's ALLOWED_NEXT). A run with zero uploaded assets completes this
+      // stage trivially (there is simply nothing to analyze). Any single asset's
+      // analysis failing (network error, invalid JSON, schema violation) ends the
+      // whole run at `asset_analysis_failed` — there is no revise loop for this stage,
+      // unlike the Prompt builder/reviewer pair.
+      const assetAnalysisRecords: AssetAnalysisRecord[] = [];
+      let assetAnalysisFailure: string | null = null;
+      for (const asset of runAssets) {
+        const analysisRequest = buildAssetAnalysisRequestBody(asset, assetAnalysisModel);
+        try {
+          const { raw: analysisResponse, content } = await callAssetAnalysis(orKey, analysisRequest);
+          const { output, errors: analysisErrors } = parseAssetAnalysisContent(content);
+          assetAnalysisRecords.push({
+            assetId: asset.id,
+            role: asset.role,
+            url: asset.url,
+            request: analysisRequest,
+            response: analysisResponse,
+            output,
+            ...(output ? {} : { errors: analysisErrors }),
+          });
+          if (!output) {
+            assetAnalysisFailure = `${asset.role}: ${analysisErrors.join("; ")}`;
+            break; // one bad asset stops the whole stage — never reach the Contract
+          }
+        } catch (e) {
+          assetAnalysisRecords.push({
+            assetId: asset.id,
+            role: asset.role,
+            url: asset.url,
+            request: analysisRequest,
+            response: null,
+            output: null,
+            errors: [errMsg(e)],
+          });
+          assetAnalysisFailure = `${asset.role}: ${errMsg(e)}`;
+          break;
+        }
+      }
+
+      if (assetAnalysisFailure) {
+        const failed = await patchRun(run.id, {
+          status: "asset_analysis_failed",
+          assetAnalysisResults: assetAnalysisRecords,
+          detail: assetAnalysisFailure,
+          error: assetAnalysisFailure,
+        });
+        setCurrentRun(failed);
+        return; // a failed asset analysis must never reach the Contract or a builder call
+      }
+
+      const withAnalysis = await patchRun(run.id, {
+        status: "asset_analysis_completed",
+        assetAnalysisResults: assetAnalysisRecords,
+      });
+      setCurrentRun(withAnalysis);
+
+      const analysisByAssetId = new Map(assetAnalysisRecords.map((r) => [r.assetId, r.output]));
+      const contractAssets: ContractAsset[] = runAssets.map((a) => ({
+        id: a.id,
+        role: a.role,
+        url: a.url,
+        analysis: analysisByAssetId.get(a.id) ?? null,
+      }));
+
       // --- Prompt builder contract (slice 3): assemble + validate before any builder or
       // FAL call. A contract that fails validation ends the run right here — see PRD
       // section 9 and lib/maszynka/contract.ts.
       const contract = assembleContract({
         userPromptRaw: promptText,
-        packshotUrl,
+        assets: contractAssets,
         hooks: { version: configs.hooks?.version ?? 0, body: hooks },
         selectedHookId,
         styles: { version: configs.styles?.version ?? 0, body: styles },
@@ -504,8 +649,12 @@ export default function MaszynkaView({
       }
 
       // finalPrompt (not the raw operator prompt) drives FAL generation from here on —
-      // see PRD section 14 and the "Generation now sends finalPrompt" acceptance criterion.
-      const imageUrls = packshotUrl ? [packshotUrl] : [];
+      // see PRD section 14 and the "Generation now sends finalPrompt" acceptance
+      // criterion. The FAL request mapper (a later issue) will decide how to fold
+      // multiple assets in; for now, same as slice 1, only the packshot (if any) is
+      // sent as an image input — it's the one role that needs pixel-level preservation.
+      const packshotAsset = runAssets.find((a) => a.role === "packshot");
+      const imageUrls = packshotAsset ? [packshotAsset.url] : [];
       const settings: ModelSettings = { ...DEFAULT_SETTINGS, numImages: variantsCount, aspectRatio };
       const input = buildInput(model, finalBuilderOutput.finalPrompt, imageUrls, settings);
 
@@ -536,7 +685,7 @@ export default function MaszynkaView({
     canRun,
     apiKey,
     orKey,
-    packshot,
+    assetUploads,
     model,
     prompt,
     refreshHistory,
@@ -550,6 +699,7 @@ export default function MaszynkaView({
     targetLanguage,
     aspectRatio,
     variantsCount,
+    assetAnalysisModel,
     promptBuilderModel,
     promptReviewerModel,
   ]);
@@ -565,7 +715,7 @@ export default function MaszynkaView({
   }, []);
 
   const packshotNote =
-    packshot && model.mode !== "edit"
+    assetUploads.packshot && model.mode !== "edit"
       ? `“${model.label}” is a generate model — it won't use the packshot. Pick an edit model to preserve it.`
       : undefined;
 
@@ -610,7 +760,8 @@ export default function MaszynkaView({
           </button>
         </div>
         <p className="mt-2 text-xs text-neutral-400">
-          Shared with the Chat tab (stored in your browser). Used by the Prompt builder stage to call OpenRouter.
+          Shared with the Chat tab (stored in your browser). Used by the Asset analysis, Prompt builder and Prompt
+          reviewer stages to call OpenRouter.
         </p>
       </section>
 
@@ -628,34 +779,49 @@ export default function MaszynkaView({
           className="mb-4 w-full resize-y rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
         />
 
-        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
-          Packshot (optional in this slice — the product image to preserve)
-        </label>
-        {packshot ? (
-          <div className="mb-4 flex items-center gap-3">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={packshot.previewUrl} alt="packshot" className="size-16 rounded-lg border border-neutral-200 object-cover" />
-            <div className="text-xs text-neutral-500">
-              {packshot.uploading && <span className="text-amber-600">Uploading…</span>}
-              {packshot.uploadedUrl && <span className="text-green-600">Uploaded</span>}
-              {packshot.error && <span className="text-red-500">Upload failed: {packshot.error}</span>}
+        {ASSET_ROLE_META.map(({ role, label, hint }) => {
+          const upload = assetUploads[role];
+          return (
+            <div key={role} className="mb-4">
+              <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
+                {label} <span className="font-normal normal-case text-neutral-400">— {hint}</span>
+              </label>
+              {upload ? (
+                <div className="flex items-center gap-3">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={upload.previewUrl}
+                    alt={label}
+                    className="size-16 rounded-lg border border-neutral-200 object-cover"
+                  />
+                  <div className="text-xs text-neutral-500">
+                    {upload.uploading && <span className="text-amber-600">Uploading…</span>}
+                    {upload.uploadedUrl && <span className="text-green-600">Uploaded</span>}
+                    {upload.error && <span className="text-red-500">Upload failed: {upload.error}</span>}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => clearAsset(role)}
+                    className="ml-auto text-sm text-neutral-400 hover:text-red-500"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ) : (
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) setAssetFile(role, f);
+                    e.target.value = "";
+                  }}
+                  className="block w-full text-sm text-neutral-600 file:mr-3 file:rounded-lg file:border-0 file:bg-neutral-900 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white hover:file:bg-neutral-700"
+                />
+              )}
             </div>
-            <button type="button" onClick={clearPackshot} className="ml-auto text-sm text-neutral-400 hover:text-red-500">
-              Remove
-            </button>
-          </div>
-        ) : (
-          <input
-            type="file"
-            accept="image/*"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) setPackshotFile(f);
-              e.target.value = "";
-            }}
-            className="mb-4 block w-full text-sm text-neutral-600 file:mr-3 file:rounded-lg file:border-0 file:bg-neutral-900 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white hover:file:bg-neutral-700"
-          />
-        )}
+          );
+        })}
 
         <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
           Hook
@@ -757,6 +923,25 @@ export default function MaszynkaView({
         )}
 
         <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
+          Asset analysis model (OpenRouter)
+        </label>
+        <select
+          value={assetAnalysisModel}
+          onChange={(e) => setAssetAnalysisModel(e.target.value)}
+          className="mb-4 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400"
+        >
+          {ASSET_ANALYSIS_MODEL_GROUPS.map((group) => (
+            <optgroup key={group} label={group}>
+              {ASSET_ANALYSIS_MODELS.filter((m) => m.group === group).map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+
+        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
           Prompt builder model (OpenRouter)
         </label>
         <select
@@ -836,7 +1021,7 @@ export default function MaszynkaView({
           <p className="mb-3 whitespace-pre-wrap text-sm text-neutral-700">{currentRun.userPromptRaw}</p>
           <p className="mb-3 text-xs text-neutral-500">
             Model: <b>{currentRun.modelLabel}</b>
-            {currentRun.packshotUrl && " · packshot attached"}
+            {currentRun.assets.length > 0 && ` · assets: ${currentRun.assets.map((a) => a.role).join(", ")}`}
           </p>
           {currentRun.error && (
             <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{currentRun.error}</p>
@@ -857,6 +1042,10 @@ export default function MaszynkaView({
             </div>
           )}
           <StatusHistory events={currentRun.statusHistory} />
+          <AssetAnalysisPanel
+            model={currentRun.assetAnalysisModel}
+            results={(currentRun.assetAnalysisResults as AssetAnalysisRecord[] | undefined) ?? []}
+          />
           <PromptBuilderPanel
             model={currentRun.promptBuilderModel}
             attempts={(currentRun.promptBuilderAttempts as PromptBuilderAttemptRecord[] | undefined) ?? []}
@@ -865,6 +1054,8 @@ export default function MaszynkaView({
             model={currentRun.promptReviewerModel}
             attempts={(currentRun.promptReviewerAttempts as PromptReviewerAttemptRecord[] | undefined) ?? []}
           />
+          <DebugJson label="Assets" value={currentRun.assets} />
+          <DebugJson label="Asset analysis results" value={currentRun.assetAnalysisResults} />
           <DebugJson label="Contract" value={currentRun.contract} />
           <DebugJson label="Prompt builder attempts" value={currentRun.promptBuilderAttempts} />
           <DebugJson label="Prompt reviewer attempts" value={currentRun.promptReviewerAttempts} />
@@ -909,6 +1100,44 @@ export default function MaszynkaView({
       <MaszynkaConfigs />
 
       {lightbox.node}
+    </div>
+  );
+}
+
+/** Human-readable view of every uploaded asset's analysis (issue #6 acceptance
+ *  criteria: "Analysis output per asset is visible in debug preview"). Written once per
+ *  run (no revise loop, unlike the Prompt builder/reviewer pair below), so there is
+ *  always at most one record per uploaded asset. Raw request/response for every asset
+ *  stay in the "Asset analysis results" DebugJson panel next to this. */
+function AssetAnalysisPanel({ model, results }: { model: string | null; results: AssetAnalysisRecord[] }) {
+  if (!results.length) return null;
+  return (
+    <div className="mb-3 rounded-lg bg-neutral-50 p-3">
+      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">
+        Asset analysis{model && <span className="ml-1 font-normal normal-case text-neutral-400">· {model}</span>}
+      </p>
+      {results.map((r, i) => (
+        <div key={r.assetId} className={i > 0 ? "mt-3 border-t border-neutral-200 pt-3" : ""}>
+          <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">{r.role}</p>
+          {r.output ? (
+            <>
+              <p className="mb-1 whitespace-pre-wrap text-sm text-neutral-800">{r.output.description}</p>
+              {r.output.attributes.length > 0 && (
+                <p className="mb-1 text-xs text-neutral-600">
+                  {r.output.attributes.map((a) => `${a.key}: ${a.value}`).join(" · ")}
+                </p>
+              )}
+              {r.output.preserveElements.length > 0 && (
+                <p className="text-xs text-amber-700">
+                  <b>Preserve:</b> {r.output.preserveElements.join(", ")}
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="text-xs text-red-600">Failed: {r.errors?.join("; ") || "unknown error"}</p>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

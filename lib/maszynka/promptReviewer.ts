@@ -8,11 +8,10 @@
 // Checks per spec section 11: asset roles honored, product preservation present, style
 // and camera setting used, hook matches hook config, no stale copy carried over from the
 // operator's raw prompt, no content-safety violations, no fields unsupported by the
-// selected model. This repo doesn't yet have asset-role uploads beyond `packshot` or a
-// dedicated asset-analysis stage (asset roles / reference-copy detection is issue #6) —
-// the reviewer system prompt says so explicitly and only asks it to check what it can
-// actually see today (the packshot, if attached, plus the Contract and builder output)
-// rather than silently pretending to gate on inputs that don't exist yet.
+// selected model. Asset roles + the Asset analysis stage (issue #6, see
+// assetAnalysis.ts) are wired up now — every asset in the Contract carries its role and
+// analysis output, so the reviewer can check style/brand/campaign reference usage
+// against their analysis text, not just the packshot image.
 //
 // Same layering as promptBuilder.ts: pure request/response helpers plus one impure
 // network call (callPromptReviewer).
@@ -78,10 +77,10 @@ export const PROMPT_REVIEWER_OUTPUT_SCHEMA: Record<string, unknown> = {
 
 const PROMPT_REVIEWER_SYSTEM_PROMPT = `You are the Prompt reviewer stage of the Maszynka Content Factory test bench.
 
-You receive the same Contract the Prompt builder used (operator's raw prompt, uploaded assets and their systemic roles — today only "packshot" is wired up in this test bench, a selected Hook, Style and Camera setting, global rules, an ordered priority logic, the target model's capability entry, and generation settings) and the Prompt builder's output (finalPrompt, negativePrompt, promptSummary, appliedRules, riskNotes). Your job is to gate that output before it reaches FAL generation — never rewrite it yourself.
+You receive the same Contract the Prompt builder used (operator's raw prompt, uploaded assets with their systemic roles — packshot, style_reference, brand_reference, campaign_reference — and each asset's Asset analysis output, a selected Hook, Style and Camera setting, global rules, an ordered priority logic, the target model's capability entry, and generation settings) and the Prompt builder's output (finalPrompt, negativePrompt, promptSummary, appliedRules, riskNotes). Your job is to gate that output before it reaches FAL generation — never rewrite it yourself.
 
 Check, at minimum:
-1. Asset roles are honored — if a packshot is attached, finalPrompt must clearly treat it as the product to feature, not a generic/background reference. (Other asset roles — style/brand/campaign reference — aren't wired up in this test bench yet; skip that part of the check when no such asset is present.)
+1. Asset roles are honored — if a packshot is attached, finalPrompt must clearly treat it as the product to feature, not a generic/background reference. Any style/brand/campaign reference asset must only have influenced finalPrompt within its role's scope (look/mood for style, brand elements for brand, series rhythm for campaign) per its analysis output — never treated as a product to preserve, never a source of literal copy to reuse. Skip a role's check when no such asset is present.
 2. Product preservation is present — if a packshot is attached, finalPrompt must explicitly preserve the product's packaging, color, proportions, logo, label, variant. Compare the packshot image (attached below, if present) against finalPrompt's description.
 3. The selected Style and Camera setting are actually reflected in finalPrompt (their visual intent, lighting/framing/angle etc. — not ignored, not replaced with something unrelated).
 4. If the Contract carries a Hook, its exact text must appear (or be very clearly rendered) in finalPrompt — not dropped, not paraphrased into something different.

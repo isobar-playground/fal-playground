@@ -8,14 +8,24 @@ import assert from "node:assert/strict";
 import { assertValidTransition, classifyFalError, isValidTransition } from "./status.ts";
 
 // --- status transitions ---------------------------------------------------
-assert.equal(isValidTransition("run_started", "prompt_builder_contract_created"), true);
-assert.equal(isValidTransition("run_started", "prompt_builder_contract_validation_failed"), true);
+assert.equal(isValidTransition("run_started", "asset_analysis_completed"), true);
+assert.equal(isValidTransition("run_started", "asset_analysis_failed"), true);
+assert.equal(isValidTransition("asset_analysis_completed", "prompt_builder_contract_created"), true);
+assert.equal(isValidTransition("asset_analysis_completed", "prompt_builder_contract_validation_failed"), true);
 assert.equal(isValidTransition("prompt_builder_contract_created", "prompt_builder_completed"), true);
 assert.equal(isValidTransition("prompt_builder_contract_created", "prompt_builder_output_validation_failed"), true);
 assert.equal(isValidTransition("prompt_reviewer_passed", "fal_generation_started"), true);
 assert.equal(isValidTransition("fal_generation_started", "generation_completed"), true);
 assert.equal(isValidTransition("fal_generation_started", "fal_generation_failed"), true);
 assert.equal(isValidTransition("fal_generation_started", "provider_policy_blocked"), true);
+
+// Issue #6: skipping the Asset analysis stage is no longer legal either — every run
+// must land on asset_analysis_completed/failed before a Contract can be assembled
+// (the Contract needs each asset's analysis output).
+assert.equal(isValidTransition("run_started", "prompt_builder_contract_created"), false);
+assert.equal(isValidTransition("run_started", "prompt_builder_contract_validation_failed"), false);
+// asset_analysis_failed is terminal — no further moves.
+assert.equal(isValidTransition("asset_analysis_failed", "prompt_builder_contract_created"), false);
 
 // Skipping the Contract stage (slice 3) is no longer legal — every run must produce a
 // contract, valid or not, before it may reach FAL generation.
@@ -34,7 +44,8 @@ assert.equal(isValidTransition("prompt_builder_output_validation_failed", "promp
 assert.throws(() => assertValidTransition("run_started", "generation_completed"));
 assert.throws(() => assertValidTransition("run_started", "fal_generation_started"));
 assert.throws(() => assertValidTransition("prompt_builder_contract_created", "fal_generation_started"));
-assert.doesNotThrow(() => assertValidTransition("run_started", "prompt_builder_contract_created"));
+assert.doesNotThrow(() => assertValidTransition("run_started", "asset_analysis_completed"));
+assert.doesNotThrow(() => assertValidTransition("asset_analysis_completed", "prompt_builder_contract_created"));
 assert.doesNotThrow(() => assertValidTransition("prompt_builder_contract_created", "prompt_builder_completed"));
 
 // --- slice 5: Prompt reviewer gate + revise loop ----------------------------

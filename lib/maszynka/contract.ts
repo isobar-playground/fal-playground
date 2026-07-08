@@ -4,10 +4,14 @@
 // same layering as configSchemas.ts — the caller (MaszynkaView) fetches config versions
 // via configApi and passes them in already-typed.
 //
-// There is no Prompt builder LLM stage yet (that's issue #4, blocked by this one) — this
-// module only assembles the Contract and validates it as JSON. A Contract that fails
-// validation must end the run with `prompt_builder_contract_validation_failed` and never
-// reach a builder call; see docs/prd/0001-maszynka-test-bench.md section 9.
+// This module only assembles the Contract and validates it as JSON. A Contract that
+// fails validation must end the run with `prompt_builder_contract_validation_failed` and
+// never reach a builder call; see docs/prd/0001-maszynka-test-bench.md section 9.
+//
+// Asset analysis (issue #6, see lib/maszynka/assetAnalysis.ts) runs before the Contract
+// is assembled — status.ts's ALLOWED_NEXT puts `asset_analysis_completed` between
+// `run_started` and `prompt_builder_contract_created` — so every asset here always
+// carries its analysis output already; `assembleContract` never calls an LLM itself.
 import type {
   CameraSettingConfig,
   GlobalRuleConfig,
@@ -16,12 +20,20 @@ import type {
   PriorityLogicConfig,
   StyleConfig,
 } from "./configSchemas";
+import type { AssetAnalysisOutput } from "./assetAnalysis";
 
 export type AssetRole = "packshot" | "style_reference" | "brand_reference" | "campaign_reference";
+export const ASSET_ROLES: AssetRole[] = ["packshot", "style_reference", "brand_reference", "campaign_reference"];
 
 export interface ContractAsset {
+  id: string;
   role: AssetRole;
   url: string;
+  /** The Asset analysis stage's structured output for this asset (issue #6). `null`
+   *  would mean the analysis stage never ran on this asset — `validateContract` treats
+   *  that as a hard failure, since by the time a Contract is assembled every asset on
+   *  the run must already have passed analysis (see module header). */
+  analysis: AssetAnalysisOutput | null;
 }
 
 /** A selected config reference, carrying the exact version used and a snapshot of its
@@ -51,7 +63,9 @@ export interface Contract {
 
 export interface AssembleContractInput {
   userPromptRaw: string;
-  packshotUrl?: string | null;
+  /** Every uploaded asset (any/all of the four roles, all optional per spec section 3),
+   *  already analyzed by the Asset analysis stage (issue #6) before this is called. */
+  assets: ContractAsset[];
   hooks: { version: number; body: HookConfig[] };
   selectedHookId: string;
   styles: { version: number; body: StyleConfig[] };
@@ -78,11 +92,9 @@ export function assembleContract(input: AssembleContractInput): Contract {
     input.cameraSettings.body.find((c) => c.cameraSettingId === input.selectedCameraSettingId) ?? null;
   const modelCapability = input.modelCapabilityMatrix.body.find((m) => m.modelKey === input.modelKey) ?? null;
 
-  const assets: ContractAsset[] = input.packshotUrl ? [{ role: "packshot", url: input.packshotUrl }] : [];
-
   return {
     userInput: { userPromptRaw: input.userPromptRaw },
-    assets,
+    assets: input.assets,
     hook: { id: input.selectedHookId, version: input.hooks.version, snapshot: hook },
     style: { id: input.selectedStyleId, version: input.styles.version, snapshot: style },
     cameraSetting: {
@@ -120,6 +132,18 @@ export function validateContract(contract: Contract): string[] {
   }
   if (!Array.isArray(contract.assets)) {
     errors.push("assets must be an array");
+  } else {
+    contract.assets.forEach((asset, i) => {
+      if (!isNonEmptyString(asset?.id) || !isNonEmptyString(asset?.url)) {
+        errors.push(`assets[${i}] must have an id and a url`);
+      }
+      if (!ASSET_ROLES.includes(asset?.role)) {
+        errors.push(`assets[${i}].role must be one of: ${ASSET_ROLES.join(", ")}`);
+      }
+      if (asset?.analysis == null) {
+        errors.push(`assets[${i}] (role "${asset?.role}") is missing its Asset analysis output`);
+      }
+    });
   }
 
   const namedRefs: [string, ContractConfigRef<unknown> | undefined][] = [

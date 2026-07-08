@@ -26,7 +26,14 @@ assert.ok(
 // --- request building ---------------------------------------------------------
 const CONTRACT_WITH_PACKSHOT: Contract = {
   userInput: { userPromptRaw: "a red shoe on a white background" },
-  assets: [{ role: "packshot", url: "https://example.com/packshot.png" }],
+  assets: [
+    {
+      id: "asset-1",
+      role: "packshot",
+      url: "https://example.com/packshot.png",
+      analysis: { description: "d", attributes: [], preserveElements: [] },
+    },
+  ],
   hook: { id: "h1", version: 1, snapshot: { id: "h1", text: "Hook" } },
   style: { id: "s1", version: 1, snapshot: null },
   cameraSetting: { id: "c1", version: 1, snapshot: null },

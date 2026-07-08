@@ -3,6 +3,7 @@
 // Shared by both app/api/maszynka/runs route files so the schema/mapping lives once.
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 import type { RunStatus } from "./status";
+import type { AssetRole } from "./contract";
 
 export const runtime = "nodejs";
 
@@ -10,6 +11,17 @@ export interface MaszynkaStatusEvent {
   status: RunStatus;
   at: string; // ISO
   detail?: string;
+}
+
+/** One uploaded asset as stored on the run (issue #6): the role comes from which of the
+ *  four upload fields it was dropped into (see MaszynkaView.tsx), never from operator
+ *  description — see CONTEXT.md "Asset role". `id` lets the debug preview and the Asset
+ *  analysis stage's per-asset records (`assetAnalysisResults`) refer back to the exact
+ *  upload. */
+export interface RunAsset {
+  id: string;
+  role: AssetRole;
+  url: string;
 }
 
 export interface MaszynkaRun {
@@ -23,7 +35,18 @@ export interface MaszynkaRun {
   modelKey: string;
   modelId: string;
   modelLabel: string;
-  packshotUrl: string | null;
+  // Every uploaded asset (any/all of packshot/style_reference/brand_reference/
+  // campaign_reference, all optional — spec section 3), replacing the single
+  // `packshotUrl` field from slice 1 (issue #6).
+  assets: RunAsset[];
+  // Asset analysis LLM stage (issue #6) — see lib/maszynka/assetAnalysis.ts. The
+  // operator's chosen OpenRouter model for the stage, and the full per-asset analysis
+  // record set, written once when the stage finishes (no revise loop, unlike the Prompt
+  // builder — a single failed asset ends the whole run at `asset_analysis_failed`).
+  // Each entry is an `AssetAnalysisRecord` (assetId, role, url, request, response,
+  // parsed output or errors).
+  assetAnalysisModel: string | null;
+  assetAnalysisResults: unknown[];
   falRequest: unknown;
   falResponse: unknown;
   outputs: { url: string; width?: number; height?: number }[];
@@ -63,7 +86,9 @@ interface RunRow {
   model_key: string;
   model_id: string;
   model_label: string;
-  packshot_url: string | null;
+  assets: RunAsset[];
+  asset_analysis_model: string | null;
+  asset_analysis_results: unknown[];
   fal_request: unknown;
   fal_response: unknown;
   outputs: MaszynkaRun["outputs"];
@@ -90,7 +115,9 @@ export function rowToRun(row: RunRow): MaszynkaRun {
     modelKey: row.model_key,
     modelId: row.model_id,
     modelLabel: row.model_label,
-    packshotUrl: row.packshot_url,
+    assets: row.assets ?? [],
+    assetAnalysisModel: row.asset_analysis_model ?? null,
+    assetAnalysisResults: row.asset_analysis_results ?? [],
     falRequest: row.fal_request ?? null,
     falResponse: row.fal_response ?? null,
     outputs: row.outputs ?? [],
@@ -148,6 +175,14 @@ export function ensureSchema(sql: NeonQueryFunction<false, false>) {
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS prompt_reviewer_model text`;
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS prompt_reviewer_attempts jsonb NOT NULL DEFAULT '[]'::jsonb`;
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS prompt_builder_attempts jsonb NOT NULL DEFAULT '[]'::jsonb`;
+    // Issue #6 replaces the single `packshot_url` field with four role-specific upload
+    // fields + the Asset analysis stage — same idempotent-column story. `packshot_url`
+    // itself is left in place (harmless, unread from here on) rather than dropped —
+    // this repo has no DROP COLUMN precedent and dropping it buys nothing for a test
+    // bench with no production data to protect.
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS assets jsonb NOT NULL DEFAULT '[]'::jsonb`;
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS asset_analysis_model text`;
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS asset_analysis_results jsonb NOT NULL DEFAULT '[]'::jsonb`;
   })()
     .then(() => undefined)
     .catch((e) => {

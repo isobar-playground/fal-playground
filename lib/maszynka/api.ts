@@ -3,9 +3,9 @@
 // Thin fetch wrappers around app/api/maszynka/runs — the only way the browser talks to
 // the Neon-backed run store (ADR 0001: runs are server-side, not localStorage).
 import type { RunStatus } from "./status";
-import type { MaszynkaRun } from "./store";
+import type { MaszynkaRun, RunAsset } from "./store";
 
-export type { MaszynkaRun } from "./store";
+export type { MaszynkaRun, RunAsset } from "./store";
 
 async function asJson(res: Response): Promise<unknown> {
   try {
@@ -27,7 +27,12 @@ export async function createRun(input: {
   modelKey: string;
   modelId: string;
   modelLabel: string;
-  packshotUrl?: string;
+  /** Every uploaded asset (any/all of packshot/style_reference/brand_reference/
+   *  campaign_reference — issue #6, replaces slice 1's single `packshotUrl`). */
+  assets?: RunAsset[];
+  /** The operator's chosen OpenRouter model for the Asset analysis stage — recorded on
+   *  the run at creation, same reasoning as promptBuilderModel (see assetAnalysis.ts). */
+  assetAnalysisModel?: string;
   /** The operator's chosen OpenRouter model for the Prompt builder stage — recorded on
    *  the run at creation since it's picked in the same Run form (see promptBuilder.ts). */
   promptBuilderModel?: string;
@@ -62,6 +67,9 @@ export async function patchRun(
     promptBuilderAttempt?: unknown;
     /** One Prompt reviewer attempt — appended to the run's attempt history, see api route. */
     promptReviewerAttempt?: unknown;
+    /** The Asset analysis stage's full per-asset record set — replaces (never appends
+     *  to) the run's stored results, see api route / assetAnalysis.ts. */
+    assetAnalysisResults?: unknown;
   },
 ): Promise<MaszynkaRun> {
   const res = await fetch(`/api/maszynka/runs/${id}`, {
