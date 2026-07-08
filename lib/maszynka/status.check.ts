@@ -106,6 +106,22 @@ assert.equal(isValidTransition("fal_request_mapping_failed", "fal_generation_sta
 assert.throws(() => assertValidTransition("prompt_reviewer_passed", "fal_generation_started"));
 assert.doesNotThrow(() => assertValidTransition("prompt_reviewer_passed", "fal_request_mapping_failed"));
 
+// --- issue #11: Manual scoring closes the run in two sequential steps ---------------
+assert.equal(isValidTransition("generation_completed", "manual_scoring_completed"), true);
+assert.equal(isValidTransition("manual_scoring_completed", "run_completed"), true);
+// generation_completed can only move to manual_scoring_completed, never straight to
+// run_completed (scoring must happen first).
+assert.equal(isValidTransition("generation_completed", "run_completed"), false);
+// run_completed is genuinely terminal — no further moves at all.
+assert.equal(isValidTransition("run_completed", "manual_scoring_completed"), false);
+assert.equal(isValidTransition("run_completed", "generation_completed"), false);
+// manual_scoring_completed can't loop back to generation_completed.
+assert.equal(isValidTransition("manual_scoring_completed", "generation_completed"), false);
+assert.doesNotThrow(() => assertValidTransition("generation_completed", "manual_scoring_completed"));
+assert.doesNotThrow(() => assertValidTransition("manual_scoring_completed", "run_completed"));
+assert.throws(() => assertValidTransition("generation_completed", "run_completed"));
+assert.throws(() => assertValidTransition("run_completed", "manual_scoring_completed"));
+
 // --- FAL error classification ---------------------------------------------
 assert.equal(
   classifyFalError(new Error("Content flagged by our safety system")),

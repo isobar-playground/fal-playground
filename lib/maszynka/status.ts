@@ -79,6 +79,21 @@ export type RunStatus =
 // Contract/reviewer output couldn't be mapped to any valid FAL request for the selected
 // model (e.g. an edit model with zero uploaded assets), so there is nothing sane FAL
 // generation could do with it.
+//
+// Issue #11 adds Manual scoring (PRD section 17 / lib/maszynka/scoring.ts) as the two
+// remaining statuses from the spec section 16 list, sequential rather than either one
+// being terminal on its own: `generation_completed -> manual_scoring_completed` once
+// every generated asset has an operator score (`scoring.ts`'s `isRunFullyScored` gates
+// this — enforced both client-side, so the UI only offers the transition once it's true,
+// and server-side in the PATCH route, so a client bug can't fake completion), and then
+// `manual_scoring_completed -> run_completed` as a separate, explicit closing action the
+// operator takes (not automatic — see MaszynkaView's "Complete run" button). Re-scoring
+// an already-scored asset (issue #11 acceptance criteria) never changes the run's
+// status by itself — only reaching/staying at full coverage does — so most scoring PATCH
+// calls carry no `status` field at all; see the API route's now-optional `status`.
+// `run_completed` is genuinely terminal: ALLOWED_NEXT has no entry for it, matching
+// `fal_request_mapping_failed`'s "no further moves" shape, except this is a successful
+// close rather than a failure.
 export const ALLOWED_NEXT: Partial<Record<RunStatus, RunStatus[]>> = {
   run_started: [
     "content_safety_passed",
@@ -95,6 +110,8 @@ export const ALLOWED_NEXT: Partial<Record<RunStatus, RunStatus[]>> = {
   prompt_reviewer_passed: ["fal_request_mapping_completed", "fal_request_mapping_failed"],
   fal_request_mapping_completed: ["fal_generation_started"],
   fal_generation_started: ["generation_completed", "fal_generation_failed", "provider_policy_blocked"],
+  generation_completed: ["manual_scoring_completed"],
+  manual_scoring_completed: ["run_completed"],
 };
 
 export function isValidTransition(from: RunStatus, to: RunStatus): boolean {

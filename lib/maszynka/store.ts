@@ -4,6 +4,7 @@
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 import type { RunStatus } from "./status";
 import type { AssetRole } from "./contract";
+import type { ScoresByAsset } from "./scoring";
 
 export const runtime = "nodejs";
 
@@ -111,6 +112,14 @@ export interface MaszynkaRun {
   // Append-only history of every Prompt builder call made on this run (max two — see
   // promptReviewerAttempts above). Each entry is a `PromptBuilderAttemptRecord`.
   promptBuilderAttempts: unknown[];
+  // Manual scoring (issue #11) — see lib/maszynka/scoring.ts. Keyed by generated asset
+  // URL (`outputs[].url`), never a single scalar, so every asset can be scored
+  // independently and re-scored later without touching any other asset's verdict. The
+  // vocabularies (decision/blockerIssues/nextActions) are hardcoded in scoring.ts, not a
+  // config kind (explicit PRD decision). Written incrementally, one asset at a time, as
+  // the operator scores each result — unlike assetAnalysisResults above, this is a merge
+  // (upsert one key) rather than a full replace; see the PATCH route.
+  manualScores: ScoresByAsset;
 }
 
 interface RunRow {
@@ -151,6 +160,7 @@ interface RunRow {
   prompt_reviewer_model: string | null;
   prompt_reviewer_attempts: unknown[];
   prompt_builder_attempts: unknown[];
+  manual_scores: ScoresByAsset;
 }
 
 export function rowToRun(row: RunRow): MaszynkaRun {
@@ -192,6 +202,7 @@ export function rowToRun(row: RunRow): MaszynkaRun {
     promptReviewerModel: row.prompt_reviewer_model ?? null,
     promptReviewerAttempts: row.prompt_reviewer_attempts ?? [],
     promptBuilderAttempts: row.prompt_builder_attempts ?? [],
+    manualScores: row.manual_scores ?? {},
   };
 }
 
@@ -271,6 +282,11 @@ export function ensureSchema(sql: NeonQueryFunction<false, false>) {
     // story. Written once per run (no revise loop for this stage), same pattern as
     // content_safety_output above.
     await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS fal_mapping_notes jsonb NOT NULL DEFAULT '[]'::jsonb`;
+    // Issue #11 adds Manual scoring — same idempotent-column story. A jsonb map keyed by
+    // generated asset URL (see lib/maszynka/scoring.ts), not a scalar, so each asset's
+    // score is merged (upserted) independently rather than the whole column being
+    // replaced on every scoring call.
+    await sql`ALTER TABLE maszynka_runs ADD COLUMN IF NOT EXISTS manual_scores jsonb NOT NULL DEFAULT '{}'::jsonb`;
   })()
     .then(() => undefined)
     .catch((e) => {

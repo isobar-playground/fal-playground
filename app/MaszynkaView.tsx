@@ -63,6 +63,15 @@ import {
   type PromptReviewerOutput,
 } from "@/lib/maszynka/promptReviewer";
 import { mapContractToFalRequest } from "@/lib/maszynka/falMapper";
+import {
+  BLOCKER_ISSUES,
+  NEXT_ACTIONS,
+  SCORE_DECISIONS,
+  isRunFullyScored,
+  type BlockerIssue,
+  type NextAction,
+  type ScoreDecision,
+} from "@/lib/maszynka/scoring";
 import { listLatestConfigs, type MaszynkaConfigVersion } from "@/lib/maszynka/configApi";
 import type {
   CameraSettingConfig,
@@ -165,6 +174,8 @@ const STATUS_TONE: Record<string, string> = {
   generation_completed: "bg-green-100 text-green-700",
   fal_generation_failed: "bg-red-100 text-red-700",
   provider_policy_blocked: "bg-red-100 text-red-700",
+  manual_scoring_completed: "bg-amber-100 text-amber-800",
+  run_completed: "bg-green-100 text-green-700",
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -957,6 +968,48 @@ export default function MaszynkaView({
     }
   }, []);
 
+  // Manual scoring (issue #11 / PRD section 17): one asset's verdict per call, upserted
+  // server-side into `manual_scores` keyed by assetUrl — re-scoring an already-scored
+  // asset (acceptance criteria) is just calling this again with the same assetUrl. Once
+  // the score that completes coverage of every generated asset lands, the run advances
+  // itself to `manual_scoring_completed` (see lib/maszynka/scoring.ts's
+  // isRunFullyScored / status.ts's ALLOWED_NEXT) — no separate operator click for that
+  // step; `run_completed` afterward IS a separate, explicit closing action
+  // (handleCompleteRun below), per the PRD's "final closing action" framing.
+  const handleScoreAsset = useCallback(
+    async (score: { assetUrl: string; decision: ScoreDecision; blockerIssues: BlockerIssue[]; comment: string; nextActions: NextAction[] }) => {
+      if (!currentRun) return;
+      const updated = await patchRun(currentRun.id, { assetScore: score });
+      setCurrentRun(updated);
+      refreshHistory();
+      if (updated.status === "generation_completed" && isRunFullyScored(updated.outputs, updated.manualScores)) {
+        try {
+          const completed = await patchRun(currentRun.id, { status: "manual_scoring_completed" });
+          setCurrentRun(completed);
+          refreshHistory();
+        } catch (e) {
+          // The score itself already saved successfully — don't surface this as a
+          // scoring failure to the operator; just leave the run at
+          // generation_completed, since the completeness check will retry on the next
+          // score save (or the operator can just re-save any asset's score to retry).
+          console.error("[maszynka] auto-transition to manual_scoring_completed failed:", e);
+        }
+      }
+    },
+    [currentRun, refreshHistory],
+  );
+
+  const handleCompleteRun = useCallback(async () => {
+    if (!currentRun) return;
+    try {
+      const completed = await patchRun(currentRun.id, { status: "run_completed" });
+      setCurrentRun(completed);
+      refreshHistory();
+    } catch (e) {
+      alert("Failed to complete run:\n" + errMsg(e));
+    }
+  }, [currentRun, refreshHistory]);
+
   const packshotNote =
     assetUploads.packshot && model.mode !== "edit"
       ? `“${model.label}” is a generate model — it won't use the packshot. Pick an edit model to preserve it.`
@@ -1488,6 +1541,9 @@ export default function MaszynkaView({
               ))}
             </div>
           )}
+          {currentRun.outputs.length > 0 && (
+            <ScoringPanel run={currentRun} onScoreAsset={handleScoreAsset} onCompleteRun={handleCompleteRun} />
+          )}
           <StatusHistory events={currentRun.statusHistory} />
           <ContentSafetyPanel
             model={currentRun.contentSafetyModel}
@@ -1515,6 +1571,7 @@ export default function MaszynkaView({
           <DebugJson label="Prompt reviewer attempts" value={currentRun.promptReviewerAttempts} />
           <DebugJson label="FAL request (mapped payload)" value={currentRun.falRequest} />
           <DebugJson label="FAL response" value={currentRun.falResponse} />
+          <DebugJson label="Manual scores" value={currentRun.manualScores} />
         </section>
       )}
 
@@ -1748,6 +1805,201 @@ function FalMappingPanel({ notes }: { notes: string[] }) {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/** One generated asset's scoring form (issue #11 / PRD section 17). Decision + blocker
+ *  issues + next actions are all drawn from the fixed vocabularies in
+ *  lib/maszynka/scoring.ts (checkboxes/radios only — never free text for those three
+ *  fields, since comparability across runs depends on the vocabulary staying stable).
+ *  Local edit state is seeded from the run's stored score (if any) and re-synced
+ *  whenever it changes underneath (e.g. reopening a run from history), so re-scoring an
+ *  already-scored asset starts from what was last saved rather than blank defaults. */
+function AssetScoreForm({
+  assetUrl,
+  index,
+  existing,
+  disabled,
+  onSave,
+}: {
+  assetUrl: string;
+  index: number;
+  existing?: { decision: ScoreDecision; blockerIssues: BlockerIssue[]; comment: string; nextActions: NextAction[]; scoredAt: string };
+  disabled: boolean;
+  onSave: (score: { assetUrl: string; decision: ScoreDecision; blockerIssues: BlockerIssue[]; comment: string; nextActions: NextAction[] }) => Promise<void>;
+}) {
+  const [decision, setDecision] = useState<ScoreDecision>(existing?.decision ?? "accept");
+  const [blockerIssues, setBlockerIssues] = useState<BlockerIssue[]>(existing?.blockerIssues ?? []);
+  const [comment, setComment] = useState(existing?.comment ?? "");
+  const [nextActions, setNextActions] = useState<NextAction[]>(existing?.nextActions ?? []);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDecision(existing?.decision ?? "accept");
+    setBlockerIssues(existing?.blockerIssues ?? []);
+    setComment(existing?.comment ?? "");
+    setNextActions(existing?.nextActions ?? []);
+  }, [existing]);
+
+  function toggleBlocker(id: BlockerIssue) {
+    setBlockerIssues((prev) => (prev.includes(id) ? prev.filter((b) => b !== id) : [...prev, id]));
+  }
+  function toggleNextAction(id: NextAction) {
+    setNextActions((prev) => (prev.includes(id) ? prev.filter((a) => a !== id) : [...prev, id]));
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave({ assetUrl, decision, blockerIssues, comment, nextActions });
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-neutral-200 bg-white p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <p className="text-xs font-semibold text-neutral-500">Asset {index + 1}</p>
+        {existing && <span className="text-[11px] text-neutral-400">last scored {new Date(existing.scoredAt).toLocaleString()}</span>}
+      </div>
+
+      <div className="mb-2 flex gap-1">
+        {SCORE_DECISIONS.map((d) => (
+          <button
+            key={d}
+            type="button"
+            disabled={disabled}
+            onClick={() => setDecision(d)}
+            className={`rounded-full px-3 py-1 text-xs font-medium capitalize disabled:cursor-not-allowed disabled:opacity-50 ${
+              decision === d
+                ? d === "accept"
+                  ? "bg-green-100 text-green-700"
+                  : d === "reject"
+                    ? "bg-red-100 text-red-700"
+                    : "bg-amber-100 text-amber-800"
+                : "bg-neutral-100 text-neutral-500 hover:bg-neutral-200"
+            }`}
+          >
+            {d}
+          </button>
+        ))}
+      </div>
+
+      <details className="mb-2">
+        <summary className="cursor-pointer text-xs font-medium text-neutral-500 hover:text-amber-700">
+          Blocker issues{blockerIssues.length > 0 ? ` (${blockerIssues.length})` : ""}
+        </summary>
+        <div className="mt-1 grid grid-cols-1 gap-1 sm:grid-cols-2">
+          {BLOCKER_ISSUES.map((b) => (
+            <label key={b.id} className="flex items-start gap-1.5 text-xs text-neutral-600">
+              <input
+                type="checkbox"
+                disabled={disabled}
+                checked={blockerIssues.includes(b.id)}
+                onChange={() => toggleBlocker(b.id)}
+                className="mt-0.5"
+              />
+              <span>{b.label}</span>
+            </label>
+          ))}
+        </div>
+      </details>
+
+      <details className="mb-2">
+        <summary className="cursor-pointer text-xs font-medium text-neutral-500 hover:text-amber-700">
+          Next actions{nextActions.length > 0 ? ` (${nextActions.length})` : ""}
+        </summary>
+        <div className="mt-1 grid grid-cols-1 gap-1 sm:grid-cols-2">
+          {NEXT_ACTIONS.map((a) => (
+            <label key={a.id} className="flex items-start gap-1.5 text-xs text-neutral-600">
+              <input
+                type="checkbox"
+                disabled={disabled}
+                checked={nextActions.includes(a.id)}
+                onChange={() => toggleNextAction(a.id)}
+                className="mt-0.5"
+              />
+              <span>{a.label}</span>
+            </label>
+          ))}
+        </div>
+      </details>
+
+      <textarea
+        value={comment}
+        disabled={disabled}
+        onChange={(e) => setComment(e.target.value)}
+        placeholder="Comment (optional)"
+        rows={2}
+        className="mb-2 w-full rounded-lg border border-neutral-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-amber-400 disabled:bg-neutral-50"
+      />
+
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={disabled || saving}
+          onClick={() => void handleSave()}
+          className="rounded-lg bg-amber-400 px-3 py-1.5 text-xs font-semibold text-amber-950 hover:bg-amber-300 disabled:cursor-not-allowed disabled:bg-neutral-200 disabled:text-neutral-400"
+        >
+          {saving ? "Saving…" : existing ? "Re-score" : "Save score"}
+        </button>
+        {error && <span className="text-xs text-red-600">{error}</span>}
+      </div>
+    </div>
+  );
+}
+
+/** Manual scoring panel (issue #11 acceptance criteria: every generated asset scored
+ *  independently, re-scorable; final statuses set once fully scored / closed). One
+ *  `AssetScoreForm` per generated asset (`run.outputs`), keyed by its URL — the same key
+ *  `run.manualScores` uses server-side. Scoring is disabled once the run is
+ *  `run_completed` (closed); the `manual_scoring_completed -> run_completed` step itself
+ *  is a separate, explicit operator action (`onCompleteRun`), not automatic. */
+function ScoringPanel({
+  run,
+  onScoreAsset,
+  onCompleteRun,
+}: {
+  run: MaszynkaRun;
+  onScoreAsset: (score: { assetUrl: string; decision: ScoreDecision; blockerIssues: BlockerIssue[]; comment: string; nextActions: NextAction[] }) => Promise<void>;
+  onCompleteRun: () => Promise<void>;
+}) {
+  const fullyScored = isRunFullyScored(run.outputs, run.manualScores);
+  const closed = run.status === "run_completed";
+  return (
+    <div className="mb-3 rounded-lg bg-neutral-50 p-3">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-neutral-400">Manual scoring</p>
+        {fullyScored && !closed && <span className="text-xs text-green-700">Every asset scored</span>}
+        {closed && <span className="text-xs text-green-700">Run completed — scoring is locked</span>}
+      </div>
+      <div className="space-y-2">
+        {run.outputs.map((o, i) => (
+          <AssetScoreForm
+            key={o.url}
+            assetUrl={o.url}
+            index={i}
+            existing={run.manualScores[o.url]}
+            disabled={closed}
+            onSave={onScoreAsset}
+          />
+        ))}
+      </div>
+      {run.status === "manual_scoring_completed" && (
+        <button
+          type="button"
+          onClick={() => void onCompleteRun()}
+          className="mt-3 rounded-xl bg-amber-400 px-4 py-2 text-sm font-semibold text-amber-950 shadow-sm hover:bg-amber-300"
+        >
+          Complete run
+        </button>
+      )}
     </div>
   );
 }

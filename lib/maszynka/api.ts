@@ -4,6 +4,7 @@
 // the Neon-backed run store (ADR 0001: runs are server-side, not localStorage).
 import type { RunStatus } from "./status";
 import type { MaszynkaRun, RunAsset } from "./store";
+import type { BlockerIssue, NextAction, ScoreDecision } from "./scoring";
 
 export type { MaszynkaRun, RunAsset } from "./store";
 
@@ -70,8 +71,21 @@ export async function createRun(input: {
 export async function patchRun(
   id: string,
   patch: {
-    status: RunStatus;
+    // Optional as of issue #11: a scoring-only PATCH (see `assetScore` below) never
+    // changes the run's status by itself.
+    status?: RunStatus;
     detail?: string;
+    /** Manual scoring (issue #11) — one asset's verdict; the server upserts it into the
+     *  run's `manualScores` map keyed by `assetUrl`, so re-sending the same `assetUrl`
+     *  re-scores it without touching any other asset's score. See lib/maszynka/scoring.ts
+     *  for the fixed vocabularies. */
+    assetScore?: {
+      assetUrl: string;
+      decision: ScoreDecision;
+      blockerIssues?: BlockerIssue[];
+      comment?: string;
+      nextActions?: NextAction[];
+    };
     /** The Content safety pre-check stage's request/response/parsed-output (issue #7) —
      *  full replace, see api route / contentSafety.ts. */
     contentSafetyRequest?: unknown;
