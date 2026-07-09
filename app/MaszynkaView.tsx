@@ -7,7 +7,7 @@
 // analysis LLM stage that runs on every uploaded asset before the Contract is
 // assembled. Every run is created and updated server-side in Neon (ADR 0001) so run
 // history is shared across browsers/operators — see docs/prd/0001-maszynka-test-bench.md.
-import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { DEFAULT_SETTINGS, MODELS, MODEL_BY_KEY, MODEL_GROUPS, type ModelSettings } from "@/lib/models";
 import { configureFal, runModel, uploadReference } from "@/lib/fal";
 import { createRun, getRun, listRuns, patchRun, type MaszynkaRun, type RunAsset } from "@/lib/maszynka/api";
@@ -88,6 +88,29 @@ import { useImageLightbox } from "./ImageLightbox";
 import MaszynkaConfigs from "./MaszynkaConfigs";
 
 const ASPECT_RATIO_OPTIONS = ["1:1", "4:5", "9:16", "16:9", "3:4"];
+
+// Stable id-accessors for the three Config-backed dropdowns below — module-scope so
+// they're the same function reference on every render (only the `items`/`selectedId`
+// args of useConfigSelectionFallback need to vary).
+const hookId = (h: HookConfig) => h.id;
+const styleId = (s: StyleConfig) => s.styleId;
+const cameraSettingId = (c: CameraSettingConfig) => c.cameraSettingId;
+
+/** Shared "keep the operator's selection if it still exists after a Config refetch,
+ *  otherwise fall back to the first still-available item, or to none if the kind is now
+ *  empty" rule (issue #17) — one hook instead of three copy-pasted effects for the
+ *  Hook/Style/Camera setting dropdowns, which only differ in which field carries the
+ *  item's id. */
+function useConfigSelectionFallback<T>(items: T[], selectedId: string, idOf: (item: T) => string, setSelectedId: (id: string) => void) {
+  useEffect(() => {
+    if (!items.length) {
+      if (selectedId) setSelectedId("");
+      return;
+    }
+    if (!items.some((item) => idOf(item) === selectedId)) setSelectedId(idOf(items[0]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, selectedId]);
+}
 
 // fal.ai's ApiError sets `message` from the response body's `.message` field, which
 // validation errors (422, `{ detail: [...] }`) don't have — so `e.message` is often
@@ -255,18 +278,30 @@ export default function MaszynkaView({
   const [configsState, setConfigsState] = useState<"idle" | "loading" | "error">("loading");
   const [configsError, setConfigsError] = useState<string | null>(null);
 
-  useEffect(() => {
+  // Issue #17: pulled out of the mount-only effect so MaszynkaConfigs can trigger the
+  // same refetch after a successful Config save — Run dropdowns and Contract-assembly
+  // snapshots (assembleContract below reads straight off `configs`) then pick up the
+  // just-saved version without a manual refresh button. Unlike the mount-only original,
+  // this can now fire more than once in a session (once per save, possibly for
+  // different Config kinds in quick succession) — `configsRequestIdRef` makes sure an
+  // in-flight request that resolves out of order never clobbers a newer one's result.
+  const configsRequestIdRef = useRef(0);
+  const refreshConfigs = useCallback(() => {
+    const requestId = ++configsRequestIdRef.current;
     setConfigsState("loading");
     listLatestConfigs()
       .then((list) => {
+        if (configsRequestIdRef.current !== requestId) return; // superseded by a newer refresh
         setConfigs(Object.fromEntries(list.map((c) => [c.kind, c])));
         setConfigsState("idle");
       })
       .catch((e) => {
+        if (configsRequestIdRef.current !== requestId) return;
         setConfigsState("error");
         setConfigsError(errMsg(e));
       });
   }, []);
+  useEffect(() => refreshConfigs(), [refreshConfigs]);
 
   const hooks = (configs.hooks?.body as HookConfig[] | undefined) ?? [];
   const styles = (configs.styles?.body as StyleConfig[] | undefined) ?? [];
@@ -307,16 +342,15 @@ export default function MaszynkaView({
   const modelOverrideUsed = modelKey !== recommendation.recommendedModelKey;
 
   // Default each dropdown to the first available option once its config loads, so a
-  // fresh Run is usable without the operator having to touch every field.
-  useEffect(() => {
-    if (!selectedHookId && hooks.length) setSelectedHookId(hooks[0].id);
-  }, [hooks, selectedHookId]);
-  useEffect(() => {
-    if (!selectedStyleId && styles.length) setSelectedStyleId(styles[0].styleId);
-  }, [styles, selectedStyleId]);
-  useEffect(() => {
-    if (!selectedCameraSettingId && cameraSettings.length) setSelectedCameraSettingId(cameraSettings[0].cameraSettingId);
-  }, [cameraSettings, selectedCameraSettingId]);
+  // fresh Run is usable without the operator having to touch every field. Also re-run
+  // after a Config save refetches `configs` (issue #17): a selection whose id still
+  // exists in the new body is left alone (preserved); one that no longer exists (the
+  // operator deleted/renamed that item) falls back to the first still-available item,
+  // or to "none selected" if the kind is now empty — same predictable rule for all
+  // three dropdowns, factored into one hook below rather than copy-pasted per kind.
+  useConfigSelectionFallback(hooks, selectedHookId, hookId, setSelectedHookId);
+  useConfigSelectionFallback(styles, selectedStyleId, styleId, setSelectedStyleId);
+  useConfigSelectionFallback(cameraSettings, selectedCameraSettingId, cameraSettingId, setSelectedCameraSettingId);
 
   // Eager-upload every asset as soon as it's picked, mirroring the Images-tab reference
   // pattern (upload cost is paid once, not on every Run click) — generalized from
@@ -1063,6 +1097,13 @@ export default function MaszynkaView({
         </p>
       </section>
 
+      {/* Issue #17: Configs moves above Run (third top-level section, after the API key
+         sections) — the operator tunes Configs before starting a Run, not after
+         scrolling past Run history to find them. `onSaved` re-triggers the fetch that
+         feeds this Run form's dropdowns and Contract snapshots below, so a save here is
+         reflected immediately without a manual refresh. */}
+      <MaszynkaConfigs onSaved={refreshConfigs} />
+
       <section className="mb-5 rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
         <h2 className="mb-3 font-semibold">Run</h2>
 
@@ -1326,7 +1367,12 @@ export default function MaszynkaView({
           </div>
         </div>
         {configsState === "error" && (
-          <p className="mb-4 text-xs text-red-600">Couldn't load configs: {configsError}</p>
+          <p className="mb-4 text-xs text-red-600">
+            Couldn't load configs: {configsError}{" "}
+            <button type="button" onClick={refreshConfigs} className="font-medium underline hover:text-red-800">
+              Retry
+            </button>
+          </p>
         )}
 
         <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
@@ -1610,8 +1656,6 @@ export default function MaszynkaView({
           ))}
         </ul>
       </section>
-
-      <MaszynkaConfigs />
 
       {lightbox.node}
     </div>

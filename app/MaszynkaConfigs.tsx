@@ -20,7 +20,7 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : "Unknown error";
 }
 
-export default function MaszynkaConfigs() {
+export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
   const [overview, setOverview] = useState<Partial<Record<ConfigKind, MaszynkaConfigVersion>>>({});
   const [overviewState, setOverviewState] = useState<"idle" | "loading" | "error">("loading");
   const [overviewError, setOverviewError] = useState<string | null>(null);
@@ -100,12 +100,16 @@ export default function MaszynkaConfigs() {
       setVersions((prev) => [...prev, saved]);
       setOverview((prev) => ({ ...prev, [openKind]: saved }));
       openVersion(saved);
+      // Issue #17: the Run form keeps its own copy of "latest configs" (dropdowns +
+      // Contract snapshots at Run time) — tell it a version just landed so it refetches
+      // rather than the operator having to hit a manual refresh button.
+      onSaved?.();
     } catch (e) {
       setSaveError(errMsg(e));
     } finally {
       setSaving(false);
     }
-  }, [openKind, draftText, openVersion]);
+  }, [openKind, draftText, openVersion, onSaved]);
 
   const latestVersionNumber = versions.length ? versions[versions.length - 1].version : null;
   const isEditingLatest = viewingVersion === latestVersionNumber;
