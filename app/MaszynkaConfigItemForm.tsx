@@ -13,9 +13,12 @@ import { useState } from "react";
 import type { ConfigFieldDef, ConfigItemFormDef } from "@/lib/maszynka/configFormDefs";
 import { addListEntry, moveConfigItem, removeListEntry, updateListEntry, type ConfigItem } from "@/lib/maszynka/configItemCrud";
 
-const FIELD_CLASS =
+// Exported so app/MaszynkaStagePromptsForm.tsx (issue #23 — a dedicated form component,
+// not a `ConfigItemFormDef`/CONFIG_FORM_DEFS registration; see that file's header) can
+// match this shell's field styling exactly instead of duplicating the literal classes.
+export const FIELD_CLASS =
   "w-full rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100";
-const LABEL_CLASS = "mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400";
+export const LABEL_CLASS = "mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400";
 const LIST_ICON_BUTTON_CLASS =
   "shrink-0 rounded-lg border border-neutral-300 px-1.5 py-1 text-xs font-medium text-neutral-500 hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-40";
 

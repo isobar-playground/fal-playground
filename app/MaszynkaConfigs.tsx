@@ -12,13 +12,21 @@
 // wired exactly one, `hooks`, end to end as the shell's concrete proof; #21 added styles/
 // camera_settings; #22 adds global_rules, priority_logic (full CRUD incl. reordering
 // layers, via `formDef.reorderable` + `handleMoveItem` below), and model_capability_matrix
-// (boolean/number fields). `stage_prompts` — a non-item-list body — still falls back to
-// the raw JSON editor until its own slice (#23). Raw JSON remains one click away as the
-// "Advanced" path for every kind, using the exact same validateConfigBody +
-// saveConfigVersion (append-only) flow either mode ends on. `extractFormItems`/
-// `buildFormBody` (configFormDefs.ts) translate between a kind's raw Config body and the
-// plain item array this shell operates on — identity for array-body kinds, priority_
-// logic's `{ layers: [...] }` unwrap/rewrap for that one kind.
+// (boolean/number fields). Raw JSON remains one click away as the "Advanced" path for
+// every kind, using the exact same validateConfigBody + saveConfigVersion (append-only)
+// flow either mode ends on. `extractFormItems`/`buildFormBody` (configFormDefs.ts)
+// translate between a kind's raw Config body and the plain item array this shell
+// operates on — identity for array-body kinds, priority_logic's `{ layers: [...] }`
+// unwrap/rewrap for that one kind.
+//
+// Issue #23 (the PRD's last slice) adds `stage_prompts` as a form-editable kind too, but
+// NOT through `ConfigItemFormDef`/`CONFIG_FORM_DEFS` — its body is a single fixed-shape
+// record, not an item array (see MaszynkaStagePromptsForm.tsx's header for why that model
+// doesn't fit). It gets its own `stagePromptsDraft` state (parallel to `items`) and its
+// own dedicated form component, gated by the `isStagePrompts` flag below wherever the
+// generic item-array logic (`formDef`-driven) would otherwise run — but still shares the
+// same version list, form/raw-JSON toggle (`mode`), and validateConfigBody + Save flow as
+// every other kind.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   listConfigVersions,
@@ -27,7 +35,7 @@ import {
   type ConfigKind,
   type MaszynkaConfigVersion,
 } from "@/lib/maszynka/configApi";
-import { CONFIG_KINDS, CONFIG_KIND_LABELS, validateConfigBody } from "@/lib/maszynka/configSchemas";
+import { CONFIG_KINDS, CONFIG_KIND_LABELS, validateConfigBody, type StagePromptsConfig } from "@/lib/maszynka/configSchemas";
 import { buildFormBody, CONFIG_FORM_DEFS, extractFormItems } from "@/lib/maszynka/configFormDefs";
 import {
   addConfigItem,
@@ -39,7 +47,9 @@ import {
   updateConfigItem,
   type ConfigItem,
 } from "@/lib/maszynka/configItemCrud";
+import { parseValidStagePromptsBody, shouldWarnOnContentSafetySave } from "@/lib/maszynka/stagePromptRestore";
 import ConfigItemForm from "./MaszynkaConfigItemForm";
+import StagePromptsForm from "./MaszynkaStagePromptsForm";
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : "Unknown error";
@@ -77,6 +87,12 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
   // every keystroke-adjacent action just to keep an unused string in sync.
   const [draftText, setDraftText] = useState("");
   const [items, setItems] = useState<ConfigItem[]>([]);
+  // `stage_prompts` (issue #23) isn't an item array at all — a single fixed-shape record
+  // (see MaszynkaStagePromptsForm.tsx's header) — so it gets its own draft slot alongside
+  // `items` rather than being shoehorned into the item-array model the rest of this shell
+  // uses. Only one of `items`/`stagePromptsDraft` is ever "live" at a time, gated by
+  // `isStagePrompts` below, same as `items` vs `draftText` are gated by `mode`.
+  const [stagePromptsDraft, setStagePromptsDraft] = useState<StagePromptsConfig | null>(null);
   const [mode, setMode] = useState<"form" | "json">("json");
 
   const [parseError, setParseError] = useState<string | null>(null);
@@ -90,6 +106,7 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
   const [itemError, setItemError] = useState<string | null>(null);
 
   const formDef = openKind ? CONFIG_FORM_DEFS[openKind] : undefined;
+  const isStagePrompts = openKind === "stage_prompts";
 
   // Tracks which kind's version-list fetch is the "current" one, so a slow response for a
   // kind the operator has since closed (or swapped for another) can't land after the
@@ -126,6 +143,18 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
       setParseError(null);
       setSaveError(null);
       resetItemEditing();
+
+      // stage_prompts (issue #23) has no `ConfigItemFormDef`/item array — its own
+      // dedicated form component takes the validated body directly. Same re-validate-
+      // before-trusting-the-form defense in depth as the item-array path below.
+      if (v.kind === "stage_prompts") {
+        setItems([]);
+        const parsedBody = parseValidStagePromptsBody(v.body);
+        setStagePromptsDraft(parsedBody);
+        setMode(parsedBody ? "form" : "json");
+        return;
+      }
+
       // Re-validate a loaded version's body against its kind's schema before trusting it
       // to the structured form — mirrors switchToForm's validate-before-extract below.
       // The save endpoint (app/api/maszynka/configs/[kind]/route.ts) already rejects a
@@ -143,9 +172,11 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
           ? extractFormItems(activeFormDef, v.body)
           : null;
       if (activeFormDef && extracted) {
+        setStagePromptsDraft(null);
         setItems(extracted);
         setMode("form");
       } else {
+        setStagePromptsDraft(null);
         setItems([]);
         setMode("json");
       }
@@ -167,7 +198,8 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
       setViewingVersion(null);
       setDraftText("");
       setItems([]);
-      setMode(activeFormDef ? "form" : "json");
+      setStagePromptsDraft(null);
+      setMode(kind === "stage_prompts" || activeFormDef ? "form" : "json");
       setParseError(null);
       setSaveError(null);
       resetItemEditing();
@@ -205,13 +237,17 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
   // real persisted body shape (a no-op for array-body kinds, `{ layers: items }` for
   // priority_logic) so the raw JSON editor always shows what "Save" would actually send.
   const switchToJson = useCallback(() => {
-    setDraftText(JSON.stringify(formDef ? buildFormBody(formDef, items) : items, null, 2));
+    if (isStagePrompts) {
+      setDraftText(JSON.stringify(stagePromptsDraft, null, 2));
+    } else {
+      setDraftText(JSON.stringify(formDef ? buildFormBody(formDef, items) : items, null, 2));
+    }
     resetItemEditing();
     setMode("json");
-  }, [items, formDef, resetItemEditing]);
+  }, [items, formDef, resetItemEditing, isStagePrompts, stagePromptsDraft]);
 
   const switchToForm = useCallback(() => {
-    if (!openKind || !formDef) return;
+    if (!openKind || !(isStagePrompts || formDef)) return;
     let parsed: unknown;
     try {
       parsed = JSON.parse(draftText);
@@ -219,17 +255,25 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
       setParseError(`Invalid JSON: ${e instanceof Error ? e.message : "unknown error"}`);
       return;
     }
-    // The structured form assumes a schema-valid item array (objects with unique,
-    // non-empty string ids — configSchemas.ts) — run the same validator the server and
-    // "Save" both use before accepting hand-edited JSON into `items`. Without this, a
-    // malformed body (non-object entries, a missing/non-string/duplicate id) would reach
-    // the id-keyed lookups below, which compare with strict `===` and can crash or
-    // silently mismatch/merge rows.
+    // The structured form assumes a schema-valid body (configSchemas.ts) — run the same
+    // validator the server and "Save" both use before accepting hand-edited JSON back
+    // into the form. Without this, a malformed body (non-object entries, a missing/
+    // non-string/duplicate id for item-array kinds; a missing sub-field for stage_prompts)
+    // would reach the id-keyed lookups below or the stage_prompts form's field renderers,
+    // which can crash or silently mismatch/merge rows.
     const errors = validateConfigBody(openKind, parsed);
     if (errors.length) {
       setParseError(`Can't switch to the form — fix this in JSON first: ${errors.join("; ")}`);
       return;
     }
+    if (isStagePrompts) {
+      resetItemEditing();
+      setStagePromptsDraft(parsed as StagePromptsConfig);
+      setParseError(null);
+      setMode("form");
+      return;
+    }
+    if (!formDef) return;
     const extracted = extractFormItems(formDef, parsed);
     if (!extracted) {
       setParseError("Can't switch to the form — body doesn't match the expected shape.");
@@ -239,7 +283,7 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
     setItems(extracted);
     setParseError(null);
     setMode("form");
-  }, [openKind, formDef, draftText, resetItemEditing]);
+  }, [openKind, formDef, draftText, resetItemEditing, isStagePrompts]);
 
   const handleStartCreate = useCallback(() => {
     if (!formDef) return;
@@ -345,7 +389,17 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
   const handleSave = useCallback(async () => {
     if (!openKind) return;
     let parsed: unknown;
-    if (mode === "form" && formDef) {
+    if (mode === "form" && isStagePrompts) {
+      // Every other guard clause in this function reports why it stopped (parse error,
+      // client validation error) — match that here rather than silently no-op'ing, even
+      // though today's callers always pair `mode === "form"` with a non-null draft for
+      // this kind (see `openVersion`/`switchToForm` above).
+      if (!stagePromptsDraft) {
+        setSaveError("Nothing to save yet — reopen this Config kind and try again.");
+        return;
+      }
+      parsed = stagePromptsDraft;
+    } else if (mode === "form" && formDef) {
       // `items` is form mode's live source of truth (see the `draftText` state comment
       // above) — rebuild the real body shape (`buildFormBody`) and save that directly
       // instead of round-tripping through `draftText`.
@@ -370,6 +424,27 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
       return;
     }
 
+    // PRD story 21 / ADR 0001: saving a Content safety Stage prompt CHANGE shows a
+    // lightweight, non-blocking warning. Plain `alert()` rather than `confirm()` — unlike
+    // handleDelete's confirm() above (which gates the action on the operator's answer),
+    // there's no OK/Cancel decision to make here: the save always proceeds either way, so
+    // a dismiss-to-continue notice is the honest primitive. Compared against the last
+    // actually-*saved* text (the latest version already in `versions`), not merely
+    // whatever's sitting in the draft, so this only fires for a real change reaching Neon
+    // (including one staged in via Restore), not for re-saving an unmodified body.
+    if (isStagePrompts) {
+      const latestSaved = versions.length ? versions[versions.length - 1] : null;
+      const latestSavedContentSafety = latestSaved
+        ? (parseValidStagePromptsBody(latestSaved.body)?.contentSafety.systemPrompt ?? "")
+        : "";
+      const nextContentSafety = (parsed as StagePromptsConfig).contentSafety.systemPrompt;
+      if (shouldWarnOnContentSafetySave(latestSavedContentSafety, nextContentSafety)) {
+        alert(
+          "Content safety is the FIRST pipeline gate — every run is checked against it before Asset analysis or FAL generation runs. This save will proceed either way; use this moment to double-check the wording.",
+        );
+      }
+    }
+
     setSaving(true);
     try {
       const saved = await saveConfigVersion(openKind, parsed);
@@ -385,7 +460,7 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
     } finally {
       setSaving(false);
     }
-  }, [openKind, mode, formDef, items, draftText, openVersion, onSaved]);
+  }, [openKind, mode, formDef, items, draftText, openVersion, onSaved, isStagePrompts, stagePromptsDraft, versions]);
 
   const latestVersionNumber = versions.length ? versions[versions.length - 1].version : null;
   const isEditingLatest = viewingVersion === latestVersionNumber;
@@ -471,7 +546,7 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
                         <span className="text-xs font-semibold uppercase tracking-wide text-neutral-400">
                           {mode === "form" ? "Form" : "Advanced: raw JSON"}
                         </span>
-                        {formDef ? (
+                        {formDef || isStagePrompts ? (
                           <button
                             type="button"
                             onClick={mode === "form" ? switchToJson : switchToForm}
@@ -486,7 +561,11 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
                         )}
                       </div>
 
-                      {mode === "form" && formDef ? (
+                      {mode === "form" && isStagePrompts && stagePromptsDraft ? (
+                        <div className="mb-3">
+                          <StagePromptsForm value={stagePromptsDraft} onChange={setStagePromptsDraft} versions={versions} />
+                        </div>
+                      ) : mode === "form" && formDef ? (
                         <div className="mb-3 space-y-2">
                           {items.length === 0 && !creating && (
                             <p className="rounded-lg bg-neutral-50 px-3 py-2 text-xs text-neutral-500">

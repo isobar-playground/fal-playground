@@ -21,7 +21,8 @@
     "check:maszynka-fal-mapper": "node lib/maszynka/falMapper.check.ts",
     "check:maszynka-scoring": "node lib/maszynka/scoring.check.ts",
     "check:maszynka-run-trace": "node lib/maszynka/runTrace.check.ts",
-    "check:maszynka-stage-prompt-resolver": "node lib/maszynka/stagePromptResolver.check.ts"
+    "check:maszynka-stage-prompt-resolver": "node lib/maszynka/stagePromptResolver.check.ts",
+    "check:maszynka-stage-prompt-restore": "node lib/maszynka/stagePromptRestore.check.ts"
   },
   "dependencies": {
     "@fal-ai/client": "^1.10.1",
