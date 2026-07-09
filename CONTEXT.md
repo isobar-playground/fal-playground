@@ -14,6 +14,26 @@ _Avoid_: generation (that's the FAL step only), session
 A short attention-grabbing marketing text ("zaczepka") rendered on the generated asset, e.g. "Przeczytaj to dwa razy, zanim podejmiesz decyzję", "Specjaliści to polecają". Chosen from the Hook library; the Prompt reviewer checks the asset copy against the selected hook config.
 _Avoid_: headline, claim, caption
 
+**Config kind**:
+A category of Maszynka settings versioned as one collection, such as Hooks, Styles, Camera settings, Global rules, Priority logic, or Model capability matrix.
+_Avoid_: table, section
+
+**Config item**:
+One operator-editable entry inside a Config kind, such as a single Hook, Style, Camera setting, Global rule, Priority layer, or Model capability entry.
+_Avoid_: row, record
+
+**Config version**:
+A reproducible snapshot of one Config kind used to understand or rerun a Run later.
+_Avoid_: draft, edit
+
+**Stage prompt**:
+The operator-editable instruction text that guides one LLM pipeline stage, such as Content safety, Asset analysis, Prompt improvement, Prompt builder, or Prompt reviewer.
+_Avoid_: system prompt, hardcoded prompt
+
+**Stage prompt restore**:
+An operator action that reuses an older Stage prompt as the content for the same stage in a new Config version, preserving the full version history.
+_Avoid_: rollback, overwrite
+
 **Asset role**:
 The systemic function of an uploaded image, derived from which upload field it came through — `packshot`, `style_reference`, `brand_reference`, or `campaign_reference`. Never inferred from operator description.
 
