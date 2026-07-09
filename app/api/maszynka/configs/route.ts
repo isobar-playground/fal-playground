@@ -2,7 +2,7 @@ import { ensureReady, getSql, listLatestConfigs } from "@/lib/maszynka/configSto
 
 export const runtime = "nodejs";
 
-// Overview for the Configs section: latest version of all six kinds in one call. An
+// Overview for the Configs section: latest version of every config kind in one call. An
 // empty database self-seeds here (see ensureSeeded in configStore.ts) so the operator
 // never has to run a separate migration/seed step.
 export async function GET() {

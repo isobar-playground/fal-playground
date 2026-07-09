@@ -9,7 +9,7 @@
 // step and no dependency.
 import assert from "node:assert/strict";
 import { nextVersion } from "./configVersion.ts";
-import { CONFIG_KINDS, validateConfigBody } from "./configSchemas.ts";
+import { CONFIG_KINDS, validateConfigBody, type StagePromptsConfig } from "./configSchemas.ts";
 import { CONFIG_SEEDS } from "./configSeeds.ts";
 
 // --- version increment ------------------------------------------------------
@@ -23,7 +23,8 @@ for (const kind of CONFIG_KINDS) {
   const errors = validateConfigBody(kind, CONFIG_SEEDS[kind]);
   assert.deepEqual(errors, [], `seed for "${kind}" must be schema-valid, got: ${errors.join("; ")}`);
 }
-assert.equal(CONFIG_KINDS.length, 6, "PRD/ADR name exactly six config kinds");
+assert.equal(CONFIG_KINDS.length, 7, "PRD/ADR name exactly seven config kinds (issue #16 adds stage_prompts)");
+assert.ok(CONFIG_KINDS.includes("stage_prompts"), "stage_prompts must be a registered config kind");
 
 // --- validators reject malformed bodies (spot checks per kind) --------------
 assert.ok(validateConfigBody("hooks", { not: "an array" }).length, "hooks body must be an array");
@@ -49,5 +50,42 @@ assert.ok(
   validateConfigBody("model_capability_matrix", [{ modelKey: "m", modelId: "m", modelLabel: "M", supportsNegativePrompt: "yes", supportsSeed: true, supportsMultiImage: true, maxInputImages: 1 }]).length,
   "capability booleans must actually be booleans",
 );
+
+// --- stage_prompts (issue #16) ------------------------------------------------
+
+const stagePromptsSeed = CONFIG_SEEDS.stage_prompts as StagePromptsConfig;
+
+assert.ok(validateConfigBody("stage_prompts", "not-an-object").length, "stage_prompts body must be an object");
+assert.ok(validateConfigBody("stage_prompts", {}).length, "stage_prompts body must have every stage key");
+assert.ok(
+  validateConfigBody("stage_prompts", { ...stagePromptsSeed, contentSafety: { systemPrompt: "" } }).length,
+  "stage_prompts systemPrompt fields must be non-empty",
+);
+assert.ok(
+  validateConfigBody("stage_prompts", {
+    ...stagePromptsSeed,
+    promptBuilder: { systemPrompt: "x" }, // missing revisionInstructionTemplate
+  }).length,
+  "promptBuilder must carry both systemPrompt and revisionInstructionTemplate",
+);
+assert.ok(
+  validateConfigBody("stage_prompts", {
+    ...stagePromptsSeed,
+    assetAnalysis: { baseInstructions: "x", roleInstructions: { packshot: "p" } }, // missing 3 roles
+  }).length,
+  "assetAnalysis.roleInstructions must cover every asset role",
+);
+assert.equal(
+  validateConfigBody("stage_prompts", CONFIG_SEEDS.stage_prompts).length,
+  0,
+  "seeded stage_prompts body must itself be schema-valid",
+);
+
+for (const role of ["packshot", "style_reference", "brand_reference", "campaign_reference"] as const) {
+  assert.ok(
+    stagePromptsSeed.assetAnalysis.roleInstructions[role]?.trim().length,
+    `stage_prompts seed must include asset-analysis instructions for role "${role}"`,
+  );
+}
 
 console.log("lib/maszynka/config.check.ts — all checks passed");

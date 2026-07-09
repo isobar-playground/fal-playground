@@ -1,10 +1,11 @@
 "use client";
 
-// Maszynka Configs section — slice 2. Lists the six config kinds (server-side truth,
-// see ADR 0001), lets an operator view any past version and save an edited JSON body
-// as a new version (append-only — never UPDATE). No preset/hook names are hardcoded
-// here; the six *kind* identifiers are a fixed taxonomy (ADR 0001 / PRD), not preset
-// content — everything inside a kind's body comes from Neon.
+// Maszynka Configs section — slice 2 (extended by issue #16 to include stage_prompts).
+// Lists the config kinds (server-side truth, see ADR 0001), lets an operator view any
+// past version and save an edited JSON body as a new version (append-only — never
+// UPDATE). No preset/hook names are hardcoded here; the *kind* identifiers are a fixed
+// taxonomy (ADR 0001 / PRD), not preset content — everything inside a kind's body comes
+// from Neon.
 import { useCallback, useEffect, useState } from "react";
 import {
   listConfigVersions,
