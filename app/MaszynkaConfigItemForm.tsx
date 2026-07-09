@@ -3,10 +3,12 @@
 // Generic, field-definition-driven form for a single Config item (issue #18 — shared
 // Config form editor shell). Doesn't know about hooks/styles/cameras specifically — it
 // just renders whatever `ConfigFieldDef[]` the kind's `ConfigItemFormDef` declares
-// (lib/maszynka/configFormDefs.ts), so later slices (#22-#23) register a new form def
-// instead of building a new form component per Config kind. Issue #21 adds the
-// `stringList` field type (add/edit/remove/reorder entries within a single item, e.g.
-// StyleConfig.avoid) on top of the plain text/textarea fields issue #18 shipped with.
+// (lib/maszynka/configFormDefs.ts), so later slices (#23) register a new form def instead
+// of building a new form component per Config kind. Issue #21 added the `stringList`
+// field type (add/edit/remove/reorder entries within a single item, e.g. StyleConfig.
+// avoid) on top of the plain text/textarea fields issue #18 shipped with. Issue #22 adds
+// `boolean` (checkbox) and `number` fields for ModelCapabilityEntry's supports*/
+// maxInputImages fields.
 import { useState } from "react";
 import type { ConfigFieldDef, ConfigItemFormDef } from "@/lib/maszynka/configFormDefs";
 import { addListEntry, moveConfigItem, removeListEntry, updateListEntry, type ConfigItem } from "@/lib/maszynka/configItemCrud";
@@ -24,8 +26,37 @@ function FieldInput({
 }: {
   field: ConfigFieldDef;
   value: unknown;
-  onChange: (v: string) => void;
+  onChange: (v: string | number | boolean) => void;
 }) {
+  if (field.type === "boolean") {
+    return (
+      <input
+        type="checkbox"
+        checked={value === true}
+        onChange={(e) => onChange(e.target.checked)}
+        className="h-4 w-4 rounded border-neutral-300 accent-amber-400"
+      />
+    );
+  }
+  if (field.type === "number") {
+    const numberValue = typeof value === "number" ? value : "";
+    return (
+      <input
+        type="number"
+        min={0}
+        value={numberValue}
+        // An empty or not-yet-parseable field (e.g. "-", "1e" while mid-typing) commits
+        // as 0 rather than NaN — configSchemas.ts's isFiniteNumber check would otherwise
+        // reject `NaN` with a confusing "must be a non-negative number" error banner
+        // while the operator is still typing.
+        onChange={(e) => {
+          const parsed = Number(e.target.value);
+          onChange(e.target.value === "" || Number.isNaN(parsed) ? 0 : parsed);
+        }}
+        className={FIELD_CLASS}
+      />
+    );
+  }
   const stringValue = typeof value === "string" ? value : "";
   if (field.type === "textarea") {
     return (

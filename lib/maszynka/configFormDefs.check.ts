@@ -3,17 +3,21 @@
 // validator (configSchemas.ts), and the shipped seed (configSeeds.ts) — issue #20
 // ("Add form CRUD for Hooks") added the hooks section below; issue #21 ("Add form CRUD
 // for Styles and Camera settings") added the styles/camera_settings sections, including
-// the new `stringList` field type's add/edit/remove/reorder behavior. The other check
-// files each cover one layer in isolation (configItemCrud.check.ts exercises the generic
-// helpers against hand-rolled shapes; config.check.ts checks every seed against its
-// schema) but nothing else exercises a real `CONFIG_FORM_DEFS` entry — the actual object
-// the UI (MaszynkaConfigs.tsx / MaszynkaConfigItemForm.tsx) renders — end to end against
-// the real seed data. Run with:
+// the new `stringList` field type's add/edit/remove/reorder behavior. Issue #22 ("Add
+// form CRUD for Global rules, Priority logic, and Model capability") adds the
+// global_rules/priority_logic/model_capability_matrix sections, including
+// `itemsFromBody`/`bodyFromItems` (priority_logic's `{ layers: [...] }` body isn't itself
+// the item array) and the new `boolean`/`number` field types. The other check files each
+// cover one layer in isolation (configItemCrud.check.ts exercises the generic helpers
+// against hand-rolled shapes; config.check.ts checks every seed against its schema) but
+// nothing else exercises a real `CONFIG_FORM_DEFS` entry — the actual object the UI
+// (MaszynkaConfigs.tsx / MaszynkaConfigItemForm.tsx) renders — end to end against the
+// real seed data. Run with:
 //   node lib/maszynka/configFormDefs.check.ts   (or: npm run check:maszynka-config-form-defs)
 // No test framework in this repo by design (see docs/prd/0001-maszynka-test-bench.md,
 // "Testing Decisions") — Node 22+ strips TS types natively.
 import assert from "node:assert/strict";
-import { CONFIG_FORM_DEFS } from "./configFormDefs.ts";
+import { buildFormBody, CONFIG_FORM_DEFS, extractFormItems } from "./configFormDefs.ts";
 import {
   addConfigItem,
   addListEntry,
@@ -27,7 +31,15 @@ import {
   updateListEntry,
   type ConfigItem,
 } from "./configItemCrud.ts";
-import { validateConfigBody, type CameraSettingConfig, type HookConfig, type StyleConfig } from "./configSchemas.ts";
+import {
+  validateConfigBody,
+  type CameraSettingConfig,
+  type GlobalRuleConfig,
+  type HookConfig,
+  type ModelCapabilityEntry,
+  type PriorityLogicConfig,
+  type StyleConfig,
+} from "./configSchemas.ts";
 import { CONFIG_SEEDS } from "./configSeeds.ts";
 
 // `HookConfig` (an `interface`) doesn't structurally satisfy the `ConfigItem` generic
@@ -545,6 +557,365 @@ for (const cam of seedCameraSettings) {
     validateConfigBody("camera_settings", deleted),
     [],
     "the list after deleting a seeded camera setting must stay valid",
+  );
+}
+
+// ======================================================================================
+// global_rules (issue #22)
+// ======================================================================================
+type GlobalRule = GlobalRuleConfig & ConfigItem;
+
+const globalRuleFormDef = CONFIG_FORM_DEFS.global_rules;
+assert.ok(globalRuleFormDef, "global_rules must have a registered ConfigItemFormDef (issue #22)");
+
+const seedGlobalRules = CONFIG_SEEDS.global_rules as GlobalRule[];
+assert.equal(
+  validateConfigBody("global_rules", seedGlobalRules).length,
+  0,
+  "seeded global rules must already be schema-valid (sanity check before mutating them below)",
+);
+
+assert.equal(globalRuleFormDef.idKey, "id", "Global rule identity field is GlobalRuleConfig.id");
+assert.equal(globalRuleFormDef.suggestIdFromKey, "name", "PRD story 14: id is suggested from the rule name");
+const globalRuleFieldKeys = globalRuleFormDef.fields.map((f) => f.key);
+assert.deepEqual(
+  globalRuleFieldKeys.sort(),
+  ["name", "description"].sort(),
+  "global rule form must expose name and description (issue #22 acceptance)",
+);
+for (const key of ["name", "description"]) {
+  assert.equal(globalRuleFormDef.fields.find((f) => f.key === key)?.required, true, `${key} is required on GlobalRule`);
+}
+
+for (const rule of seedGlobalRules) {
+  for (const key of globalRuleFieldKeys) {
+    assert.ok(
+      typeof rule[key] === "string" && rule[key],
+      `seed global rule "${rule.id}" should have a non-empty ${key} for the form to demonstrate editing it`,
+    );
+  }
+}
+
+// --- add: suggested id, exercised against the real seed -------------------------------
+{
+  const empty = globalRuleFormDef.emptyItem();
+  assert.equal(empty[globalRuleFormDef.idKey], "", "a brand-new rule starts with no id");
+
+  const draft = { ...empty, name: "Packaging claims", description: "Check regulated packaging claims." };
+  const suggested = suggestUniqueConfigId(seedGlobalRules, globalRuleFormDef.idKey, suggestConfigId(draft.name));
+  assert.equal(suggested, "packaging-claims");
+  assert.equal(isDuplicateConfigId(seedGlobalRules, globalRuleFormDef.idKey, suggested), false);
+
+  const withNewRule = addConfigItem(seedGlobalRules, { ...draft, id: suggested } as GlobalRule);
+  assert.equal(withNewRule.length, seedGlobalRules.length + 1);
+  assert.deepEqual(
+    validateConfigBody("global_rules", withNewRule),
+    [],
+    "adding a global rule with a suggested id and required fields must stay schema-valid",
+  );
+
+  // issue #22 acceptance: "Validation rejects malformed bodies and shows actionable
+  // errors."
+  const missingDescription = addConfigItem(seedGlobalRules, { id: "incomplete", name: "Incomplete" } as GlobalRule);
+  assert.ok(
+    validateConfigBody("global_rules", missingDescription).length > 0,
+    "a global rule missing description must fail validation",
+  );
+}
+
+// --- edit: name/description update without touching id -------------------------------
+{
+  const target = seedGlobalRules[0];
+  const patch = { name: "Updated name", description: "Updated description" };
+  const updated = updateConfigItem(seedGlobalRules, globalRuleFormDef.idKey, target.id, patch);
+  const updatedRule = updated.find((r) => r.id === target.id);
+  assert.equal(updatedRule?.name, patch.name);
+  assert.equal(updatedRule?.description, patch.description);
+  assert.equal(updated.length, seedGlobalRules.length, "editing never changes the item count");
+  assert.deepEqual(validateConfigBody("global_rules", updated), [], "an edited global rule list must stay schema-valid");
+
+  const tampered = updateConfigItem(seedGlobalRules, globalRuleFormDef.idKey, target.id, {
+    id: "hijacked",
+    name: "x",
+  } as Partial<GlobalRule>);
+  assert.equal(
+    tampered.some((r) => r.id === "hijacked"),
+    false,
+    "editing a seeded global rule can never change its id",
+  );
+}
+
+// --- delete: removes from the next version, list stays schema-valid ------------------
+{
+  const target = seedGlobalRules[seedGlobalRules.length - 1];
+  const deleted = deleteConfigItem(seedGlobalRules, globalRuleFormDef.idKey, target.id);
+  assert.equal(deleted.length, seedGlobalRules.length - 1);
+  assert.equal(
+    deleted.some((r) => r.id === target.id),
+    false,
+  );
+  assert.deepEqual(
+    validateConfigBody("global_rules", deleted),
+    [],
+    "the list after deleting a seeded global rule must stay valid",
+  );
+}
+
+// ======================================================================================
+// priority_logic (issue #22) — the one kind whose body isn't itself the item array
+// ======================================================================================
+const priorityFormDef = CONFIG_FORM_DEFS.priority_logic;
+assert.ok(priorityFormDef, "priority_logic must have a registered ConfigItemFormDef (issue #22)");
+assert.equal(priorityFormDef.reorderable, true, "priority_logic layers must support reordering (ADR 0001)");
+
+const seedPriorityLogic = CONFIG_SEEDS.priority_logic as PriorityLogicConfig;
+assert.equal(
+  validateConfigBody("priority_logic", seedPriorityLogic).length,
+  0,
+  "seeded priority_logic must already be schema-valid (sanity check before mutating it below)",
+);
+
+assert.equal(priorityFormDef.idKey, "id", "Priority layer identity field is the layer's id");
+assert.equal(priorityFormDef.suggestIdFromKey, "label", "PRD story 14: id is suggested from the layer label");
+assert.deepEqual(
+  priorityFormDef.fields.map((f) => f.key),
+  ["label"],
+  "priority layer form exposes just the label — id is the identity field",
+);
+
+// --- itemsFromBody / bodyFromItems round-trip the `{ layers: [...] }` wrapper --------
+{
+  const extracted = extractFormItems(priorityFormDef, seedPriorityLogic);
+  assert.ok(extracted, "extractFormItems must unwrap priority_logic's `layers` array");
+  assert.deepEqual(extracted, seedPriorityLogic.layers, "extracted items are exactly the seeded layers");
+  assert.deepEqual(
+    buildFormBody(priorityFormDef, extracted!),
+    seedPriorityLogic,
+    "bodyFromItems must rebuild the exact `{ layers: [...] }` shape extractFormItems unwrapped",
+  );
+
+  assert.equal(
+    extractFormItems(priorityFormDef, { notLayers: [] }),
+    null,
+    "extractFormItems returns null for a body that doesn't have a `layers` array",
+  );
+  assert.equal(extractFormItems(priorityFormDef, ["a", "b"]), null, "a bare array is not priority_logic's body shape");
+}
+
+// --- add: suggested id, exercised against the real seed -------------------------------
+{
+  const layers = seedPriorityLogic.layers as (ConfigItem & { id: string; label: string })[];
+  const empty = priorityFormDef.emptyItem();
+  assert.equal(empty[priorityFormDef.idKey], "", "a brand-new layer starts with no id");
+
+  const draft = { ...empty, label: "Operator override" };
+  const suggested = suggestUniqueConfigId(layers, priorityFormDef.idKey, suggestConfigId(draft.label));
+  assert.equal(suggested, "operator-override");
+  assert.equal(isDuplicateConfigId(layers, priorityFormDef.idKey, suggested), false);
+
+  const withNewLayer = addConfigItem(layers, { ...draft, id: suggested });
+  assert.equal(withNewLayer.length, layers.length + 1);
+  assert.deepEqual(
+    validateConfigBody("priority_logic", buildFormBody(priorityFormDef, withNewLayer)),
+    [],
+    "adding a layer, rewrapped into the `layers` body, must stay schema-valid",
+  );
+}
+
+// --- edit: renaming a layer's label without touching its id --------------------------
+{
+  const layers = seedPriorityLogic.layers as (ConfigItem & { id: string; label: string })[];
+  const target = layers[0];
+  const renamed = updateConfigItem(layers, priorityFormDef.idKey, target.id, { label: "Renamed layer" });
+  assert.equal(renamed.find((l) => l.id === target.id)?.label, "Renamed layer");
+  assert.equal(renamed.length, layers.length, "renaming never changes the layer count");
+  assert.deepEqual(
+    validateConfigBody("priority_logic", buildFormBody(priorityFormDef, renamed)),
+    [],
+    "a renamed-layer body must stay schema-valid",
+  );
+
+  const tampered = updateConfigItem(layers, priorityFormDef.idKey, target.id, {
+    id: "hijacked",
+    label: "x",
+  } as Partial<ConfigItem>);
+  assert.equal(
+    tampered.some((l) => l.id === "hijacked"),
+    false,
+    "renaming a seeded layer can never change its id",
+  );
+}
+
+// --- reorder: full CRUD acceptance includes moving layers (ADR 0001) -----------------
+{
+  const layers = seedPriorityLogic.layers as (ConfigItem & { id: string; label: string })[];
+  assert.ok(layers.length >= 2, "seed needs at least 2 layers to exercise reorder");
+
+  const reordered = moveConfigItem(layers, 0, layers.length - 1);
+  assert.equal(reordered[reordered.length - 1].id, layers[0].id, "reorder moves the layer to the requested position");
+  assert.equal(reordered.length, layers.length, "reorder never changes the layer count");
+  assert.deepEqual(
+    validateConfigBody("priority_logic", buildFormBody(priorityFormDef, reordered)),
+    [],
+    "a reordered-layers body must stay schema-valid",
+  );
+}
+
+// --- delete: removing a layer down to the schema's minimum is rejected ---------------
+{
+  const layers = seedPriorityLogic.layers as (ConfigItem & { id: string; label: string })[];
+  const target = layers[layers.length - 1];
+  const deleted = deleteConfigItem(layers, priorityFormDef.idKey, target.id);
+  assert.equal(deleted.length, layers.length - 1);
+  assert.deepEqual(
+    validateConfigBody("priority_logic", buildFormBody(priorityFormDef, deleted)),
+    [],
+    "deleting one of several layers must stay schema-valid",
+  );
+
+  // configSchemas.ts's validatePriorityLogic requires a non-empty `layers` array —
+  // deleting down to zero must be caught by the same validator the save button runs,
+  // not silently accepted.
+  assert.ok(
+    validateConfigBody("priority_logic", buildFormBody(priorityFormDef, [])).length > 0,
+    "an empty layers body must fail validation (issue #22 acceptance: malformed bodies are rejected)",
+  );
+}
+
+// ======================================================================================
+// model_capability_matrix (issue #22)
+// ======================================================================================
+type ModelCapability = ModelCapabilityEntry & ConfigItem;
+
+const capabilityFormDef = CONFIG_FORM_DEFS.model_capability_matrix;
+assert.ok(capabilityFormDef, "model_capability_matrix must have a registered ConfigItemFormDef (issue #22)");
+
+const seedCapabilities = CONFIG_SEEDS.model_capability_matrix as ModelCapability[];
+assert.equal(
+  validateConfigBody("model_capability_matrix", seedCapabilities).length,
+  0,
+  "seeded model capability matrix must already be schema-valid (sanity check before mutating it below)",
+);
+assert.ok(seedCapabilities.length >= 1, "seed needs at least one model capability entry to exercise edit/delete");
+
+assert.equal(capabilityFormDef.idKey, "modelKey", "Model capability identity field is ModelCapabilityEntry.modelKey");
+const capabilityFieldKeys = capabilityFormDef.fields.map((f) => f.key);
+assert.deepEqual(
+  capabilityFieldKeys.sort(),
+  ["modelId", "modelLabel", "supportsNegativePrompt", "supportsSeed", "supportsMultiImage", "maxInputImages", "notes"].sort(),
+  "model capability form must expose every ModelCapabilityEntry field besides the id (issue #22 acceptance)",
+);
+assert.equal(capabilityFormDef.fields.find((f) => f.key === "maxInputImages")?.type, "number", "maxInputImages is a numeric field");
+for (const key of ["supportsNegativePrompt", "supportsSeed", "supportsMultiImage"]) {
+  assert.equal(capabilityFormDef.fields.find((f) => f.key === key)?.type, "boolean", `${key} is a boolean field`);
+}
+for (const key of ["modelId", "modelLabel"]) {
+  assert.equal(capabilityFormDef.fields.find((f) => f.key === key)?.type, "text", `${key} is a text field`);
+}
+
+// --- emptyItem() is a valid starting point for the create form ------------------------
+{
+  const empty = capabilityFormDef.emptyItem();
+  assert.equal(empty[capabilityFormDef.idKey], "", "a brand-new entry starts with no id");
+  assert.equal(empty.supportsNegativePrompt, false, "boolean fields default to false, not undefined");
+  assert.equal(empty.maxInputImages, 0, "numeric fields default to a real number, not undefined");
+  const filled = { ...empty, modelKey: "placeholder", modelId: "placeholder-v1", modelLabel: "Placeholder" };
+  assert.deepEqual(
+    validateConfigBody("model_capability_matrix", [filled]),
+    [],
+    "emptyItem() plus an id and required text fields must be a schema-valid entry",
+  );
+}
+
+// --- add: suggested id, boolean/numeric fields carried through unchanged -------------
+{
+  const draft = {
+    ...capabilityFormDef.emptyItem(),
+    modelId: "new-model-v1",
+    modelLabel: "New Model",
+    supportsNegativePrompt: true,
+    supportsSeed: true,
+    maxInputImages: 4,
+    supportsMultiImage: true,
+  };
+  const suggested = suggestUniqueConfigId(seedCapabilities, capabilityFormDef.idKey, suggestConfigId(draft.modelLabel));
+  assert.equal(suggested, "new-model");
+  assert.equal(isDuplicateConfigId(seedCapabilities, capabilityFormDef.idKey, suggested), false);
+
+  const withNewEntry = addConfigItem(seedCapabilities, { ...draft, modelKey: suggested } as ModelCapability);
+  assert.equal(withNewEntry.length, seedCapabilities.length + 1);
+  const added = withNewEntry.find((e) => e.modelKey === suggested);
+  assert.equal(added?.supportsNegativePrompt, true, "boolean field value is preserved on add");
+  assert.equal(added?.maxInputImages, 4, "numeric field value is preserved on add");
+  assert.deepEqual(
+    validateConfigBody("model_capability_matrix", withNewEntry),
+    [],
+    "adding a capability entry with required fields must stay schema-valid",
+  );
+
+  // issue #22 acceptance: "Validation rejects malformed bodies and shows actionable
+  // errors" — a non-boolean in a boolean field, or a negative maxInputImages, must fail.
+  const badBoolean = addConfigItem(seedCapabilities, {
+    ...draft,
+    modelKey: "bad-boolean",
+    supportsNegativePrompt: "yes",
+  } as unknown as ModelCapability);
+  assert.ok(
+    validateConfigBody("model_capability_matrix", badBoolean).length > 0,
+    "a non-boolean value in a boolean field must fail validation",
+  );
+
+  const negativeMax = addConfigItem(seedCapabilities, {
+    ...draft,
+    modelKey: "bad-max",
+    maxInputImages: -1,
+  } as ModelCapability);
+  assert.ok(
+    validateConfigBody("model_capability_matrix", negativeMax).length > 0,
+    "a negative maxInputImages must fail validation",
+  );
+}
+
+// --- edit: text/boolean/numeric fields update without touching id --------------------
+{
+  const target = seedCapabilities[0];
+  const patch = { modelLabel: "Updated label", supportsSeed: !target.supportsSeed, maxInputImages: 9 };
+  const updated = updateConfigItem(seedCapabilities, capabilityFormDef.idKey, target.modelKey, patch);
+  const updatedEntry = updated.find((e) => e.modelKey === target.modelKey);
+  assert.equal(updatedEntry?.modelLabel, patch.modelLabel);
+  assert.equal(updatedEntry?.supportsSeed, patch.supportsSeed);
+  assert.equal(updatedEntry?.maxInputImages, patch.maxInputImages);
+  assert.equal(updated.length, seedCapabilities.length, "editing never changes the item count");
+  assert.deepEqual(
+    validateConfigBody("model_capability_matrix", updated),
+    [],
+    "an edited model capability matrix must stay schema-valid",
+  );
+
+  const tampered = updateConfigItem(seedCapabilities, capabilityFormDef.idKey, target.modelKey, {
+    modelKey: "hijacked",
+    modelLabel: "x",
+  } as Partial<ModelCapability>);
+  assert.equal(
+    tampered.some((e) => e.modelKey === "hijacked"),
+    false,
+    "editing a seeded model capability entry can never change its id",
+  );
+}
+
+// --- delete: removes from the next version, list stays schema-valid ------------------
+{
+  const target = seedCapabilities[seedCapabilities.length - 1];
+  const deleted = deleteConfigItem(seedCapabilities, capabilityFormDef.idKey, target.modelKey);
+  assert.equal(deleted.length, seedCapabilities.length - 1);
+  assert.equal(
+    deleted.some((e) => e.modelKey === target.modelKey),
+    false,
+  );
+  assert.deepEqual(
+    validateConfigBody("model_capability_matrix", deleted),
+    [],
+    "the list after deleting a seeded model capability entry must stay valid",
   );
 }
 

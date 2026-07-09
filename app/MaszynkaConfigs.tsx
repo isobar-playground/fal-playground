@@ -8,12 +8,17 @@
 // PRD), not preset content — everything inside a kind's body comes from Neon.
 //
 // Issue #18: structured form CRUD is now the default editing path for any Config kind
-// with a registered `ConfigItemFormDef` (lib/maszynka/configFormDefs.ts) — this slice
-// wires exactly one, `hooks`, end to end as the shell's concrete proof; the other array
-// kinds and the two structurally different kinds (priority_logic, stage_prompts) still
-// fall back to the raw JSON editor until their own slices (#20-#22) add a form def. Raw
-// JSON remains one click away as the "Advanced" path for every kind, using the exact
-// same validateConfigBody + saveConfigVersion (append-only) flow either mode ends on.
+// with a registered `ConfigItemFormDef` (lib/maszynka/configFormDefs.ts) — that slice
+// wired exactly one, `hooks`, end to end as the shell's concrete proof; #21 added styles/
+// camera_settings; #22 adds global_rules, priority_logic (full CRUD incl. reordering
+// layers, via `formDef.reorderable` + `handleMoveItem` below), and model_capability_matrix
+// (boolean/number fields). `stage_prompts` — a non-item-list body — still falls back to
+// the raw JSON editor until its own slice (#23). Raw JSON remains one click away as the
+// "Advanced" path for every kind, using the exact same validateConfigBody +
+// saveConfigVersion (append-only) flow either mode ends on. `extractFormItems`/
+// `buildFormBody` (configFormDefs.ts) translate between a kind's raw Config body and the
+// plain item array this shell operates on — identity for array-body kinds, priority_
+// logic's `{ layers: [...] }` unwrap/rewrap for that one kind.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   listConfigVersions,
@@ -23,11 +28,12 @@ import {
   type MaszynkaConfigVersion,
 } from "@/lib/maszynka/configApi";
 import { CONFIG_KINDS, CONFIG_KIND_LABELS, validateConfigBody } from "@/lib/maszynka/configSchemas";
-import { CONFIG_FORM_DEFS } from "@/lib/maszynka/configFormDefs";
+import { buildFormBody, CONFIG_FORM_DEFS, extractFormItems } from "@/lib/maszynka/configFormDefs";
 import {
   addConfigItem,
   deleteConfigItem,
   isDuplicateConfigId,
+  moveConfigItem,
   suggestConfigId,
   suggestUniqueConfigId,
   updateConfigItem,
@@ -120,8 +126,24 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
       setParseError(null);
       setSaveError(null);
       resetItemEditing();
-      if (activeFormDef && Array.isArray(v.body)) {
-        setItems(v.body as ConfigItem[]);
+      // Re-validate a loaded version's body against its kind's schema before trusting it
+      // to the structured form — mirrors switchToForm's validate-before-extract below.
+      // The save endpoint (app/api/maszynka/configs/[kind]/route.ts) already rejects a
+      // malformed body before it ever reaches Neon, so this is defense in depth (e.g.
+      // against a version some other write path stored), not a path any UI flow can
+      // trigger today: without it, a `layers` entry shaped like `null` (schema-invalid,
+      // so `extractFormItems`'s shallow `Array.isArray` check wouldn't catch it) would
+      // reach `String(item[formDef.idKey])` in the row renderer below and throw.
+      // `extractFormItems` handles both "body is the item array" (hooks, styles, ...)
+      // and a form def's own unwrap (priority_logic's `{ layers: [...] }`) — see
+      // configFormDefs.ts. Returns null for a body that doesn't match what the form
+      // expects, in which case raw JSON is the only safe editor.
+      const extracted =
+        activeFormDef && validateConfigBody(v.kind, v.body).length === 0
+          ? extractFormItems(activeFormDef, v.body)
+          : null;
+      if (activeFormDef && extracted) {
+        setItems(extracted);
         setMode("form");
       } else {
         setItems([]);
@@ -179,12 +201,14 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
 
   // JSON mode is a snapshot of `items` at the moment of switching — not kept live in sync
   // while in form mode (see the `draftText` state comment above), so it's (re)computed
-  // here rather than on every CRUD op.
+  // here rather than on every CRUD op. `buildFormBody` re-wraps `items` into the kind's
+  // real persisted body shape (a no-op for array-body kinds, `{ layers: items }` for
+  // priority_logic) so the raw JSON editor always shows what "Save" would actually send.
   const switchToJson = useCallback(() => {
-    setDraftText(JSON.stringify(items, null, 2));
+    setDraftText(JSON.stringify(formDef ? buildFormBody(formDef, items) : items, null, 2));
     resetItemEditing();
     setMode("json");
-  }, [items, resetItemEditing]);
+  }, [items, formDef, resetItemEditing]);
 
   const switchToForm = useCallback(() => {
     if (!openKind || !formDef) return;
@@ -206,8 +230,13 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
       setParseError(`Can't switch to the form — fix this in JSON first: ${errors.join("; ")}`);
       return;
     }
+    const extracted = extractFormItems(formDef, parsed);
+    if (!extracted) {
+      setParseError("Can't switch to the form — body doesn't match the expected shape.");
+      return;
+    }
     resetItemEditing();
-    setItems(parsed as ConfigItem[]);
+    setItems(extracted);
     setParseError(null);
     setMode("form");
   }, [openKind, formDef, draftText, resetItemEditing]);
@@ -246,8 +275,10 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
     const next = addConfigItem(items, { ...createDraft, [formDef.idKey]: id });
     // Catch missing/invalid required fields (e.g. an empty hook text) right here, so the
     // operator finds out which item is wrong immediately rather than in a generic
-    // save-time error banner after the row has scrolled out of view.
-    const errors = validateConfigBody(openKind, next);
+    // save-time error banner after the row has scrolled out of view. Validate the real
+    // body shape (`buildFormBody`), not the bare item array — priority_logic's validator
+    // expects `{ layers: [...] }`, not the array itself.
+    const errors = validateConfigBody(openKind, buildFormBody(formDef, next));
     if (errors.length) {
       setItemError(errors.join("; "));
       return;
@@ -268,7 +299,7 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
   const handleConfirmEdit = useCallback(() => {
     if (!openKind || !formDef || editingId == null || !editDraft) return;
     const next = updateConfigItem(items, formDef.idKey, editingId, editDraft);
-    const errors = validateConfigBody(openKind, next);
+    const errors = validateConfigBody(openKind, buildFormBody(formDef, next));
     if (errors.length) {
       setItemError(errors.join("; "));
       return;
@@ -278,6 +309,17 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
     setEditDraft(null);
     setItemError(null);
   }, [openKind, formDef, editingId, editDraft, items, applyItems]);
+
+  // Reorders a top-level item (e.g. a priority_logic layer — ADR 0001 / issue #22 "full
+  // CRUD ... including ... reordering layers"), gated by `formDef.reorderable` in the
+  // render below. Reuses `moveConfigItem`, the same generic helper `stringList` fields
+  // (MaszynkaConfigItemForm.tsx) already use to reorder entries within one item.
+  const handleMoveItem = useCallback(
+    (fromIndex: number, toIndex: number) => {
+      applyItems(moveConfigItem(items, fromIndex, toIndex));
+    },
+    [items, applyItems],
+  );
 
   const handleDelete = useCallback(
     (item: ConfigItem) => {
@@ -305,8 +347,9 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
     let parsed: unknown;
     if (mode === "form" && formDef) {
       // `items` is form mode's live source of truth (see the `draftText` state comment
-      // above) — save it directly instead of round-tripping through `draftText`.
-      parsed = items;
+      // above) — rebuild the real body shape (`buildFormBody`) and save that directly
+      // instead of round-tripping through `draftText`.
+      parsed = buildFormBody(formDef, items);
     } else {
       try {
         parsed = JSON.parse(draftText);
@@ -450,7 +493,7 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
                               No {formDef.itemLabel.toLowerCase()}s yet.
                             </p>
                           )}
-                          {items.map((item) => {
+                          {items.map((item, index) => {
                             const id = String(item[formDef.idKey]);
                             const isRowEditing = editingId === id;
                             return (
@@ -482,6 +525,28 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
                                       <p className="truncate font-mono text-[11px] text-neutral-400">{id}</p>
                                     </div>
                                     <div className="flex shrink-0 gap-2">
+                                      {formDef.reorderable && (
+                                        <>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleMoveItem(index, index - 1)}
+                                            disabled={index === 0}
+                                            title={`Move ${formDef.itemLabel.toLowerCase()} up`}
+                                            className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-500 hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                          >
+                                            ↑
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleMoveItem(index, index + 1)}
+                                            disabled={index === items.length - 1}
+                                            title={`Move ${formDef.itemLabel.toLowerCase()} down`}
+                                            className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-500 hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                          >
+                                            ↓
+                                          </button>
+                                        </>
+                                      )}
                                       <button
                                         type="button"
                                         onClick={() => handleStartEdit(item, formDef.idKey)}
