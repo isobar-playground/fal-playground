@@ -3,14 +3,19 @@
 // Generic, field-definition-driven form for a single Config item (issue #18 — shared
 // Config form editor shell). Doesn't know about hooks/styles/cameras specifically — it
 // just renders whatever `ConfigFieldDef[]` the kind's `ConfigItemFormDef` declares
-// (lib/maszynka/configFormDefs.ts), so later slices (#20-#22) register a new form def
-// instead of building a new form component per Config kind.
+// (lib/maszynka/configFormDefs.ts), so later slices (#22-#23) register a new form def
+// instead of building a new form component per Config kind. Issue #21 adds the
+// `stringList` field type (add/edit/remove/reorder entries within a single item, e.g.
+// StyleConfig.avoid) on top of the plain text/textarea fields issue #18 shipped with.
+import { useState } from "react";
 import type { ConfigFieldDef, ConfigItemFormDef } from "@/lib/maszynka/configFormDefs";
-import type { ConfigItem } from "@/lib/maszynka/configItemCrud";
+import { addListEntry, moveConfigItem, removeListEntry, updateListEntry, type ConfigItem } from "@/lib/maszynka/configItemCrud";
 
 const FIELD_CLASS =
   "w-full rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100";
 const LABEL_CLASS = "mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400";
+const LIST_ICON_BUTTON_CLASS =
+  "shrink-0 rounded-lg border border-neutral-300 px-1.5 py-1 text-xs font-medium text-neutral-500 hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-40";
 
 function FieldInput({
   field,
@@ -33,6 +38,95 @@ function FieldInput({
     );
   }
   return <input type="text" value={stringValue} onChange={(e) => onChange(e.target.value)} className={FIELD_CLASS} />;
+}
+
+/** Editor for a `stringList` field (e.g. StyleConfig.avoid/recommendedModels/
+ *  scoringCriteria) — add, edit in place, remove, and reorder entries. All mutation goes
+ *  through the pure helpers in configItemCrud.ts so this component just wires buttons to
+ *  them and reports the new array up via `onChange`. */
+function StringListField({
+  field,
+  value,
+  onChange,
+}: {
+  field: ConfigFieldDef;
+  value: unknown;
+  onChange: (next: string[]) => void;
+}) {
+  const list = Array.isArray(value) ? (value as unknown[]).filter((v): v is string => typeof v === "string") : [];
+  const [draft, setDraft] = useState("");
+  const entryLabel = field.entryLabel ?? "entry";
+
+  const handleAdd = () => {
+    const trimmed = draft.trim();
+    if (!trimmed) return;
+    onChange(addListEntry(list, trimmed));
+    setDraft("");
+  };
+
+  return (
+    <div className="space-y-1.5">
+      {list.length === 0 && <p className="text-xs text-neutral-400">No entries yet.</p>}
+      {list.map((entry, i) => (
+        <div key={i} className="flex items-center gap-1.5">
+          <input
+            type="text"
+            value={entry}
+            onChange={(e) => onChange(updateListEntry(list, i, e.target.value))}
+            className={`${FIELD_CLASS} flex-1`}
+          />
+          <button
+            type="button"
+            onClick={() => onChange(moveConfigItem(list, i, i - 1))}
+            disabled={i === 0}
+            title={`Move ${entryLabel} up`}
+            className={LIST_ICON_BUTTON_CLASS}
+          >
+            ↑
+          </button>
+          <button
+            type="button"
+            onClick={() => onChange(moveConfigItem(list, i, i + 1))}
+            disabled={i === list.length - 1}
+            title={`Move ${entryLabel} down`}
+            className={LIST_ICON_BUTTON_CLASS}
+          >
+            ↓
+          </button>
+          <button
+            type="button"
+            onClick={() => onChange(removeListEntry(list, i))}
+            title={`Remove ${entryLabel}`}
+            className="shrink-0 rounded-lg border border-red-200 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50"
+          >
+            Remove
+          </button>
+        </div>
+      ))}
+      <div className="flex items-center gap-1.5">
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              handleAdd();
+            }
+          }}
+          placeholder={`Add ${entryLabel}…`}
+          className={`${FIELD_CLASS} flex-1`}
+        />
+        <button
+          type="button"
+          onClick={handleAdd}
+          className="shrink-0 rounded-lg border border-neutral-300 px-2.5 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-50"
+        >
+          Add
+        </button>
+      </div>
+    </div>
+  );
 }
 
 /** `isNew`: the id field is a suggested/editable text input (PRD story 14). Otherwise
@@ -93,7 +187,15 @@ export default function ConfigItemForm({
             {field.label}
             {field.required ? " *" : ""}
           </label>
-          <FieldInput field={field} value={item[field.key]} onChange={(v) => onChange({ ...item, [field.key]: v })} />
+          {field.type === "stringList" ? (
+            <StringListField
+              field={field}
+              value={item[field.key]}
+              onChange={(next) => onChange({ ...item, [field.key]: next })}
+            />
+          ) : (
+            <FieldInput field={field} value={item[field.key]} onChange={(v) => onChange({ ...item, [field.key]: v })} />
+          )}
         </div>
       ))}
     </div>

@@ -1,17 +1,21 @@
 // Runnable check for the pure Config item CRUD + id-suggestion helpers that back the
-// shared Config form editor shell (issue #18). Run with:
+// shared Config form editor shell (issue #18; list-valued-field helpers added by #21).
+// Run with:
 //   node lib/maszynka/configItemCrud.check.ts   (or: npm run check:maszynka-config-items)
 // No test framework in this repo by design (see docs/prd/0001-maszynka-test-bench.md,
 // "Testing Decisions") — Node 22+ strips TS types natively.
 import assert from "node:assert/strict";
 import {
   addConfigItem,
+  addListEntry,
   deleteConfigItem,
   isDuplicateConfigId,
   moveConfigItem,
+  removeListEntry,
   suggestConfigId,
   suggestUniqueConfigId,
   updateConfigItem,
+  updateListEntry,
 } from "./configItemCrud.ts";
 
 type Hook = { id: string; text: string; toneGuidance?: string };
@@ -67,6 +71,30 @@ const hooks: Hook[] = [
   assert.deepEqual(moveConfigItem(layers, -1, 2), layers, "out-of-range fromIndex is a no-op, not a throw");
   assert.deepEqual(moveConfigItem(layers, 0, 99), layers, "out-of-range toIndex is a no-op, not a throw");
   assert.equal(layers.length, 4, "reorder must not mutate the input array");
+}
+
+// --- list-valued field entries (StyleConfig.avoid etc. — issue #21) ---------------
+{
+  const avoid = ["harsh flat lighting", "cluttered background"];
+
+  const added = addListEntry(avoid, "neon colors");
+  assert.deepEqual(added, ["harsh flat lighting", "cluttered background", "neon colors"], "add appends to the end");
+  assert.equal(avoid.length, 2, "add must not mutate the input array");
+
+  const updated = updateListEntry(avoid, 1, "busy background");
+  assert.deepEqual(updated, ["harsh flat lighting", "busy background"], "update replaces only the targeted index");
+  assert.equal(avoid[1], "cluttered background", "update must not mutate the input array");
+  assert.deepEqual(updateListEntry(avoid, 5, "x"), avoid, "out-of-range index is a no-op, not a throw");
+  assert.deepEqual(updateListEntry(avoid, -1, "x"), avoid, "negative index is a no-op, not a throw");
+
+  const removed = removeListEntry(avoid, 0);
+  assert.deepEqual(removed, ["cluttered background"], "remove drops only the targeted index");
+  assert.equal(avoid.length, 2, "remove must not mutate the input array");
+  assert.deepEqual(removeListEntry(avoid, 5), avoid, "out-of-range index is a no-op, not a throw");
+
+  // Reordering a list-valued field's entries reuses moveConfigItem (already generic over
+  // T[], exercised above for priority_logic-style layers) rather than a new algorithm.
+  assert.deepEqual(moveConfigItem(avoid, 0, 1), ["cluttered background", "harsh flat lighting"]);
 }
 
 // --- duplicate id detection ------------------------------------------------------

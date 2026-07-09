@@ -6,21 +6,19 @@
 // about hooks/styles/cameras individually, only how to render `ConfigFieldDef[]` and run
 // the CRUD helpers in configItemCrud.ts.
 //
-// This slice (#18) wires exactly one Config kind — `hooks`, the simplest shape — end to
-// end as a concrete proof the shell works. It's a genuine proof, not a full
-// generalization yet: this model only covers a kind whose body *is* a flat array of
-// objects with flat string fields and one id key. The other array-shaped kinds (styles,
-// camera_settings, model_capability_matrix) need at least a string-array and/or
-// boolean/number `ConfigFieldType` added before their form defs can plug in unchanged;
-// priority_logic's body is `{ layers: [...] }` (an object wrapping the array, not the
-// array itself) and stage_prompts has no id-keyed item list at all — both will likely
-// need a small shell change (or a different editor entirely for stage_prompts, given its
-// PRD-mandated restore behavior) rather than "just register a form def". Tracked for
-// #20-#22; this file intentionally doesn't try to guess their shapes in advance.
+// Issue #18 wired exactly one Config kind — `hooks`, the simplest shape — end to end as
+// a concrete proof the shell works: a flat array of objects with flat string fields and
+// one id key. Issue #21 extends the model with a `stringList` field type (add/edit/
+// remove/reorder entries within a single item, backed by configItemCrud.ts's
+// addListEntry/updateListEntry/removeListEntry/moveConfigItem) and registers `styles` and
+// `camera_settings`, both of which carry three string-array fields (avoid,
+// recommendedModels, scoringCriteria — see configSchemas.ts). `model_capability_matrix`
+// (boolean/number fields) and priority_logic's `{ layers: [...] }` wrapper-object body and
+// stage_prompts' non-item-list body still fall back to raw JSON — tracked for #22/#23.
 import type { ConfigKind } from "./configSchemas";
 import type { ConfigItem } from "./configItemCrud";
 
-export type ConfigFieldType = "text" | "textarea";
+export type ConfigFieldType = "text" | "textarea" | "stringList";
 
 export interface ConfigFieldDef {
   /** Property name on the item, e.g. "text" or "placementGuidance". */
@@ -28,6 +26,10 @@ export interface ConfigFieldDef {
   label: string;
   type: ConfigFieldType;
   required?: boolean;
+  /** `stringList` fields only: singular noun for one entry (e.g. "avoid entry"), used in
+   *  the "no entries yet" / "add entry" / delete-confirmation copy. Falls back to a
+   *  generic "entry" if omitted. */
+  entryLabel?: string;
 }
 
 // Not generic over the item type: the shell (app/MaszynkaConfigs.tsx) always operates on
@@ -61,8 +63,83 @@ const HOOK_FORM_DEF: ConfigItemFormDef = {
   suggestIdFromKey: "text",
 };
 
+// Shared by styles and camera_settings — both StyleConfig and CameraSettingConfig
+// (configSchemas.ts) end in the same three string-array fields with the same validation
+// rule (must be arrays of strings, may be empty).
+const AVOID_MODELS_SCORING_FIELDS: ConfigFieldDef[] = [
+  { key: "avoid", label: "Avoid", type: "stringList", entryLabel: "avoid entry" },
+  { key: "recommendedModels", label: "Recommended models", type: "stringList", entryLabel: "recommended model" },
+  { key: "scoringCriteria", label: "Scoring criteria", type: "stringList", entryLabel: "scoring criterion" },
+];
+
+const STYLE_FORM_DEF: ConfigItemFormDef = {
+  itemLabel: "Style",
+  idKey: "styleId",
+  idFieldLabel: "Style ID",
+  fields: [
+    { key: "styleName", label: "Style name", type: "text", required: true },
+    { key: "visualIntent", label: "Visual intent", type: "textarea", required: true },
+    { key: "lighting", label: "Lighting", type: "textarea", required: true },
+    { key: "colorDirection", label: "Color direction", type: "textarea", required: true },
+    { key: "compositionBias", label: "Composition bias", type: "textarea", required: true },
+    { key: "typographyBehavior", label: "Typography behavior", type: "textarea", required: true },
+    ...AVOID_MODELS_SCORING_FIELDS,
+  ],
+  emptyItem: (): ConfigItem => ({
+    styleId: "",
+    styleName: "",
+    visualIntent: "",
+    lighting: "",
+    colorDirection: "",
+    compositionBias: "",
+    typographyBehavior: "",
+    avoid: [],
+    recommendedModels: [],
+    scoringCriteria: [],
+  }),
+  suggestIdFromKey: "styleName",
+};
+
+const CAMERA_SETTING_FORM_DEF: ConfigItemFormDef = {
+  itemLabel: "Camera setting",
+  idKey: "cameraSettingId",
+  idFieldLabel: "Camera setting ID",
+  fields: [
+    { key: "cameraSettingName", label: "Camera setting name", type: "text", required: true },
+    { key: "cameraIntent", label: "Camera intent", type: "textarea", required: true },
+    { key: "shotType", label: "Shot type", type: "text", required: true },
+    { key: "framing", label: "Framing", type: "textarea", required: true },
+    { key: "angle", label: "Angle", type: "text", required: true },
+    { key: "cameraDistance", label: "Camera distance", type: "text", required: true },
+    { key: "lensFeel", label: "Lens feel", type: "textarea", required: true },
+    { key: "motionIntensity", label: "Motion intensity", type: "text", required: true },
+    { key: "stability", label: "Stability", type: "text", required: true },
+    { key: "imageTranslation", label: "Image translation", type: "textarea", required: true },
+    ...AVOID_MODELS_SCORING_FIELDS,
+  ],
+  emptyItem: (): ConfigItem => ({
+    cameraSettingId: "",
+    cameraSettingName: "",
+    cameraIntent: "",
+    shotType: "",
+    framing: "",
+    angle: "",
+    cameraDistance: "",
+    lensFeel: "",
+    motionIntensity: "",
+    stability: "",
+    imageTranslation: "",
+    avoid: [],
+    recommendedModels: [],
+    scoringCriteria: [],
+  }),
+  suggestIdFromKey: "cameraSettingName",
+};
+
 /** Config kinds with a registered structured-form definition. Kinds absent from this map
- *  fall back to the raw JSON editor until their slice (#20-#22) adds a form def. */
+ *  fall back to the raw JSON editor until their slice (#22-#23) adds a form def. */
 export const CONFIG_FORM_DEFS: Partial<Record<ConfigKind, ConfigItemFormDef>> = {
   hooks: HOOK_FORM_DEF,
+  styles: STYLE_FORM_DEF,
+  camera_settings: CAMERA_SETTING_FORM_DEF,
 };

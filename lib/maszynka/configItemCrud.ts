@@ -41,15 +41,11 @@ export function deleteConfigItem<T extends ConfigItem>(items: T[], idKey: string
 
 /** Move the item at `fromIndex` to `toIndex`, shifting the items between. For Config
  *  kinds with an operator-defined order (e.g. priority_logic layers — ADR 0001: "full
- *  CRUD ... including adding, removing, renaming, and reordering layers"). Out-of-range
- *  indexes return the list unchanged rather than throwing.
- *
- *  Not called from the shell yet (app/MaszynkaConfigs.tsx) — priority_logic doesn't have
- *  a form def in this slice (#18 only wires `hooks`, which has no order to preserve), so
- *  there's no reorder UI to wire it into. It's included now because the PRD's testing
- *  decisions explicitly ask for reorder to be covered as a pure helper ahead of that UI
- *  landing in #20-#22, and the UI work is a `moveConfigItem` call plus buttons, not a new
- *  algorithm. */
+ *  CRUD ... including adding, removing, renaming, and reordering layers") and, since
+ *  issue #21, for reordering entries within a list-valued field (e.g. StyleConfig.avoid)
+ *  from `MaszynkaConfigItemForm.tsx`. Out-of-range indexes return the list unchanged
+ *  rather than throwing. Generic over `T` (not `ConfigItem`-shaped) since both top-level
+ *  item arrays and plain string-array fields need the same shift-in-place behavior. */
 export function moveConfigItem<T>(items: T[], fromIndex: number, toIndex: number): T[] {
   if (
     fromIndex === toIndex ||
@@ -64,6 +60,30 @@ export function moveConfigItem<T>(items: T[], fromIndex: number, toIndex: number
   const [moved] = next.splice(fromIndex, 1);
   next.splice(toIndex, 0, moved);
   return next;
+}
+
+/** Append `value` to the end of a list-valued field (e.g. StyleConfig.avoid,
+ *  CameraSettingConfig.recommendedModels — issue #21). Pure — returns a new array. Kept
+ *  separate from `addConfigItem` above: list-valued fields hold plain strings (or other
+ *  scalars), not id-keyed `ConfigItem` objects, so there's no id to preserve/validate. */
+export function addListEntry<T>(list: T[], value: T): T[] {
+  return [...list, value];
+}
+
+/** Replace the entry at `index` with `value`. Out-of-range `index` is a no-op (returns
+ *  an equal list) rather than throwing, so a stale row can't crash the form. */
+export function updateListEntry<T>(list: T[], index: number, value: T): T[] {
+  if (index < 0 || index >= list.length) return list;
+  const next = [...list];
+  next[index] = value;
+  return next;
+}
+
+/** Remove the entry at `index`. Out-of-range `index` is a no-op, matching
+ *  `deleteConfigItem`'s stale-id-is-a-no-op behavior above. */
+export function removeListEntry<T>(list: T[], index: number): T[] {
+  if (index < 0 || index >= list.length) return list;
+  return list.filter((_, i) => i !== index);
 }
 
 /** True when `id` is already used by another item in the list (excluding `excludeId`,
