@@ -1,12 +1,20 @@
 "use client";
 
-// Maszynka Configs section — slice 2 (extended by issue #16 to include stage_prompts).
-// Lists the config kinds (server-side truth, see ADR 0001), lets an operator view any
-// past version and save an edited JSON body as a new version (append-only — never
-// UPDATE). No preset/hook names are hardcoded here; the *kind* identifiers are a fixed
-// taxonomy (ADR 0001 / PRD), not preset content — everything inside a kind's body comes
-// from Neon.
-import { useCallback, useEffect, useState } from "react";
+// Maszynka Configs section — slice 2 (extended by issue #16 to include stage_prompts,
+// and by issue #18 to add the shared structured-form editor shell). Lists the config
+// kinds (server-side truth, see ADR 0001), lets an operator view any past version and
+// save an edited body as a new version (append-only — never UPDATE). No preset/hook
+// names are hardcoded here; the *kind* identifiers are a fixed taxonomy (ADR 0001 /
+// PRD), not preset content — everything inside a kind's body comes from Neon.
+//
+// Issue #18: structured form CRUD is now the default editing path for any Config kind
+// with a registered `ConfigItemFormDef` (lib/maszynka/configFormDefs.ts) — this slice
+// wires exactly one, `hooks`, end to end as the shell's concrete proof; the other array
+// kinds and the two structurally different kinds (priority_logic, stage_prompts) still
+// fall back to the raw JSON editor until their own slices (#20-#22) add a form def. Raw
+// JSON remains one click away as the "Advanced" path for every kind, using the exact
+// same validateConfigBody + saveConfigVersion (append-only) flow either mode ends on.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   listConfigVersions,
   listLatestConfigs,
@@ -14,10 +22,37 @@ import {
   type ConfigKind,
   type MaszynkaConfigVersion,
 } from "@/lib/maszynka/configApi";
-import { CONFIG_KINDS, CONFIG_KIND_LABELS } from "@/lib/maszynka/configSchemas";
+import { CONFIG_KINDS, CONFIG_KIND_LABELS, validateConfigBody } from "@/lib/maszynka/configSchemas";
+import { CONFIG_FORM_DEFS } from "@/lib/maszynka/configFormDefs";
+import {
+  addConfigItem,
+  deleteConfigItem,
+  isDuplicateConfigId,
+  suggestConfigId,
+  suggestUniqueConfigId,
+  updateConfigItem,
+  type ConfigItem,
+} from "@/lib/maszynka/configItemCrud";
+import ConfigItemForm from "./MaszynkaConfigItemForm";
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : "Unknown error";
+}
+
+// Shared Tailwind classes for the small in-panel item-editor action buttons — used by
+// both the edit row and the create panel below, so a future style tweak only needs one
+// edit per role rather than four scattered literals.
+const ITEM_PRIMARY_BUTTON_CLASS =
+  "rounded-lg bg-amber-400 px-3 py-1 text-xs font-semibold text-amber-950 hover:bg-amber-300";
+const ITEM_SECONDARY_BUTTON_CLASS =
+  "rounded-lg border border-neutral-300 px-3 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-50";
+
+/** A short, human-readable label for a Config item row — prefers the field the kind
+ *  suggests ids from (usually the most descriptive text), falls back to the id. */
+function itemSummary(item: ConfigItem, idKey: string, labelKey: string): string {
+  const label = item[labelKey];
+  if (typeof label === "string" && label.trim()) return label;
+  return String(item[idKey] ?? "");
 }
 
 export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
@@ -29,10 +64,31 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
   const [versions, setVersions] = useState<MaszynkaConfigVersion[]>([]);
   const [versionsState, setVersionsState] = useState<"idle" | "loading" | "error">("idle");
   const [viewingVersion, setViewingVersion] = useState<number | null>(null);
+
+  // Each mode owns its own source of truth while active: `items` in form mode, `draftText`
+  // in JSON mode. They're only reconciled at the seam — switching modes, or saving — so a
+  // structured-mode CRUD op (add/edit/delete) doesn't re-serialize the whole array on
+  // every keystroke-adjacent action just to keep an unused string in sync.
   const [draftText, setDraftText] = useState("");
+  const [items, setItems] = useState<ConfigItem[]>([]);
+  const [mode, setMode] = useState<"form" | "json">("json");
+
   const [parseError, setParseError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<ConfigItem | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [createDraft, setCreateDraft] = useState<ConfigItem | null>(null);
+  const [itemError, setItemError] = useState<string | null>(null);
+
+  const formDef = openKind ? CONFIG_FORM_DEFS[openKind] : undefined;
+
+  // Tracks which kind's version-list fetch is the "current" one, so a slow response for a
+  // kind the operator has since closed (or swapped for another) can't land after the
+  // fact and overwrite what's actually on screen — see toggleKind below.
+  const openRequestRef = useRef<ConfigKind | null>(null);
 
   const refreshOverview = useCallback(() => {
     setOverviewState("loading");
@@ -49,57 +105,234 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
   }, []);
   useEffect(() => refreshOverview(), [refreshOverview]);
 
-  const openVersion = useCallback((v: MaszynkaConfigVersion) => {
-    setViewingVersion(v.version);
-    setDraftText(JSON.stringify(v.body, null, 2));
-    setParseError(null);
-    setSaveError(null);
+  const resetItemEditing = useCallback(() => {
+    setEditingId(null);
+    setEditDraft(null);
+    setCreating(false);
+    setCreateDraft(null);
+    setItemError(null);
   }, []);
+
+  const openVersion = useCallback(
+    (v: MaszynkaConfigVersion, activeFormDef: typeof formDef) => {
+      setViewingVersion(v.version);
+      setDraftText(JSON.stringify(v.body, null, 2));
+      setParseError(null);
+      setSaveError(null);
+      resetItemEditing();
+      if (activeFormDef && Array.isArray(v.body)) {
+        setItems(v.body as ConfigItem[]);
+        setMode("form");
+      } else {
+        setItems([]);
+        setMode("json");
+      }
+    },
+    [resetItemEditing],
+  );
 
   const toggleKind = useCallback(
     (kind: ConfigKind) => {
       if (openKind === kind) {
+        openRequestRef.current = null;
         setOpenKind(null);
         return;
       }
+      const activeFormDef = CONFIG_FORM_DEFS[kind];
+      openRequestRef.current = kind;
       setOpenKind(kind);
       setVersions([]);
       setViewingVersion(null);
       setDraftText("");
+      setItems([]);
+      setMode(activeFormDef ? "form" : "json");
       setParseError(null);
       setSaveError(null);
+      resetItemEditing();
       setVersionsState("loading");
       listConfigVersions(kind)
         .then((vs) => {
+          // A newer toggleKind call (a different kind opened, or this one closed) has
+          // superseded this fetch — applying it now would silently overwrite whatever
+          // the operator is actually looking at.
+          if (openRequestRef.current !== kind) return;
           setVersions(vs);
           setVersionsState("idle");
-          if (vs.length) openVersion(vs[vs.length - 1]); // latest is last (ordered oldest -> newest)
+          if (vs.length) openVersion(vs[vs.length - 1], activeFormDef); // latest is last (oldest -> newest)
         })
         .catch((e) => {
+          if (openRequestRef.current !== kind) return;
           setVersionsState("error");
           setSaveError(errMsg(e));
         });
     },
-    [openKind, openVersion],
+    [openKind, openVersion, resetItemEditing],
+  );
+
+  const applyItems = useCallback(
+    (next: ConfigItem[]) => {
+      setItems(next);
+      setSaveError(null);
+    },
+    [],
+  );
+
+  // JSON mode is a snapshot of `items` at the moment of switching — not kept live in sync
+  // while in form mode (see the `draftText` state comment above), so it's (re)computed
+  // here rather than on every CRUD op.
+  const switchToJson = useCallback(() => {
+    setDraftText(JSON.stringify(items, null, 2));
+    resetItemEditing();
+    setMode("json");
+  }, [items, resetItemEditing]);
+
+  const switchToForm = useCallback(() => {
+    if (!openKind || !formDef) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(draftText);
+    } catch (e) {
+      setParseError(`Invalid JSON: ${e instanceof Error ? e.message : "unknown error"}`);
+      return;
+    }
+    // The structured form assumes a schema-valid item array (objects with unique,
+    // non-empty string ids — configSchemas.ts) — run the same validator the server and
+    // "Save" both use before accepting hand-edited JSON into `items`. Without this, a
+    // malformed body (non-object entries, a missing/non-string/duplicate id) would reach
+    // the id-keyed lookups below, which compare with strict `===` and can crash or
+    // silently mismatch/merge rows.
+    const errors = validateConfigBody(openKind, parsed);
+    if (errors.length) {
+      setParseError(`Can't switch to the form — fix this in JSON first: ${errors.join("; ")}`);
+      return;
+    }
+    resetItemEditing();
+    setItems(parsed as ConfigItem[]);
+    setParseError(null);
+    setMode("form");
+  }, [openKind, formDef, draftText, resetItemEditing]);
+
+  const handleStartCreate = useCallback(() => {
+    if (!formDef) return;
+    // Reset any in-progress edit first — otherwise a pending edit row and this new create
+    // panel could both be open (and the pending edit silently dropped later) at once.
+    resetItemEditing();
+    setCreating(true);
+    setCreateDraft(formDef.emptyItem());
+  }, [formDef, resetItemEditing]);
+
+  // Only the field the id is suggested *from* should drive recomputation — depending on
+  // the whole `createDraft` object would rerun the uniqueness scan below on every
+  // keystroke in every other field too (e.g. typing in "Placement guidance").
+  const suggestSourceValue = formDef && createDraft ? createDraft[formDef.suggestIdFromKey] : undefined;
+  const suggestedCreateId = useMemo(() => {
+    if (!formDef || !creating) return "";
+    const base = suggestConfigId(typeof suggestSourceValue === "string" ? suggestSourceValue : "");
+    return suggestUniqueConfigId(items, formDef.idKey, base);
+  }, [formDef, creating, suggestSourceValue, items]);
+
+  const handleConfirmCreate = useCallback(() => {
+    if (!openKind || !formDef || !createDraft) return;
+    const rawId = createDraft[formDef.idKey];
+    const id = (typeof rawId === "string" && rawId.trim() ? rawId.trim() : suggestedCreateId).trim();
+    if (!id) {
+      setItemError(`${formDef.itemLabel} needs an ID.`);
+      return;
+    }
+    if (isDuplicateConfigId(items, formDef.idKey, id)) {
+      setItemError(`ID "${id}" is already used by another ${formDef.itemLabel.toLowerCase()}.`);
+      return;
+    }
+    const next = addConfigItem(items, { ...createDraft, [formDef.idKey]: id });
+    // Catch missing/invalid required fields (e.g. an empty hook text) right here, so the
+    // operator finds out which item is wrong immediately rather than in a generic
+    // save-time error banner after the row has scrolled out of view.
+    const errors = validateConfigBody(openKind, next);
+    if (errors.length) {
+      setItemError(errors.join("; "));
+      return;
+    }
+    applyItems(next);
+    resetItemEditing();
+  }, [openKind, formDef, createDraft, suggestedCreateId, items, applyItems, resetItemEditing]);
+
+  const handleStartEdit = useCallback(
+    (item: ConfigItem, idKey: string) => {
+      resetItemEditing();
+      setEditingId(String(item[idKey]));
+      setEditDraft({ ...item });
+    },
+    [resetItemEditing],
+  );
+
+  const handleConfirmEdit = useCallback(() => {
+    if (!openKind || !formDef || editingId == null || !editDraft) return;
+    const next = updateConfigItem(items, formDef.idKey, editingId, editDraft);
+    const errors = validateConfigBody(openKind, next);
+    if (errors.length) {
+      setItemError(errors.join("; "));
+      return;
+    }
+    applyItems(next);
+    setEditingId(null);
+    setEditDraft(null);
+    setItemError(null);
+  }, [openKind, formDef, editingId, editDraft, items, applyItems]);
+
+  const handleDelete = useCallback(
+    (item: ConfigItem) => {
+      if (!formDef) return;
+      const id = String(item[formDef.idKey]);
+      const label = itemSummary(item, formDef.idKey, formDef.suggestIdFromKey);
+      // PRD story 13 / issue #18 acceptance: deleting a Config item requires
+      // confirmation. This only removes the item from the in-memory draft — it takes
+      // effect in Neon only once the operator hits "Save as new version" below, which
+      // keeps delete on the exact same append-only save path as every other edit.
+      if (!confirm(`Delete ${formDef.itemLabel.toLowerCase()} "${label}"? This will be removed from the next saved version.`)) {
+        return;
+      }
+      applyItems(deleteConfigItem(items, formDef.idKey, id));
+      if (editingId === id) {
+        setEditingId(null);
+        setEditDraft(null);
+      }
+    },
+    [formDef, items, applyItems, editingId],
   );
 
   const handleSave = useCallback(async () => {
     if (!openKind) return;
     let parsed: unknown;
-    try {
-      parsed = JSON.parse(draftText);
-    } catch (e) {
-      setParseError(e instanceof Error ? e.message : "Invalid JSON");
-      return;
+    if (mode === "form" && formDef) {
+      // `items` is form mode's live source of truth (see the `draftText` state comment
+      // above) — save it directly instead of round-tripping through `draftText`.
+      parsed = items;
+    } else {
+      try {
+        parsed = JSON.parse(draftText);
+      } catch (e) {
+        setParseError(`Invalid JSON: ${e instanceof Error ? e.message : "unknown error"}`);
+        return;
+      }
     }
     setParseError(null);
     setSaveError(null);
+
+    // Same validator the server runs (lib/maszynka/configSchemas.ts) — checked
+    // client-side first so a failed save is never mistaken for a successful one and the
+    // operator sees exactly what's wrong before any network round trip.
+    const clientErrors = validateConfigBody(openKind, parsed);
+    if (clientErrors.length) {
+      setSaveError(clientErrors.join("; "));
+      return;
+    }
+
     setSaving(true);
     try {
       const saved = await saveConfigVersion(openKind, parsed);
       setVersions((prev) => [...prev, saved]);
       setOverview((prev) => ({ ...prev, [openKind]: saved }));
-      openVersion(saved);
+      openVersion(saved, formDef);
       // Issue #17: the Run form keeps its own copy of "latest configs" (dropdowns +
       // Contract snapshots at Run time) — tell it a version just landed so it refetches
       // rather than the operator having to hit a manual refresh button.
@@ -109,7 +342,7 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
     } finally {
       setSaving(false);
     }
-  }, [openKind, draftText, openVersion, onSaved]);
+  }, [openKind, mode, formDef, items, draftText, openVersion, onSaved]);
 
   const latestVersionNumber = versions.length ? versions[versions.length - 1].version : null;
   const isEditingLatest = viewingVersion === latestVersionNumber;
@@ -167,7 +400,7 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
                         <button
                           key={v.version}
                           type="button"
-                          onClick={() => openVersion(v)}
+                          onClick={() => openVersion(v, formDef)}
                           className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
                             viewingVersion === v.version
                               ? "bg-amber-400 text-amber-950"
@@ -190,21 +423,131 @@ export default function MaszynkaConfigs({ onSaved }: { onSaved?: () => void }) {
                           v{latestVersionNumber}.
                         </p>
                       )}
-                      <textarea
-                        value={draftText}
-                        onChange={(e) => {
-                          setDraftText(e.target.value);
-                          setParseError(null);
-                          setSaveError(null);
-                        }}
-                        rows={14}
-                        spellCheck={false}
-                        className="mb-2 w-full resize-y rounded-lg border border-neutral-300 bg-neutral-50 px-3 py-2 font-mono text-xs outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
-                      />
+
+                      <div className="mb-2 flex items-center justify-between">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-neutral-400">
+                          {mode === "form" ? "Form" : "Advanced: raw JSON"}
+                        </span>
+                        {formDef ? (
+                          <button
+                            type="button"
+                            onClick={mode === "form" ? switchToJson : switchToForm}
+                            className="text-xs text-neutral-400 underline decoration-dotted hover:text-amber-700"
+                          >
+                            {mode === "form" ? "Advanced: edit raw JSON" : "Back to form"}
+                          </button>
+                        ) : (
+                          <span className="text-xs text-neutral-400">
+                            Structured form for this Config kind isn't available yet — use raw JSON.
+                          </span>
+                        )}
+                      </div>
+
+                      {mode === "form" && formDef ? (
+                        <div className="mb-3 space-y-2">
+                          {items.length === 0 && !creating && (
+                            <p className="rounded-lg bg-neutral-50 px-3 py-2 text-xs text-neutral-500">
+                              No {formDef.itemLabel.toLowerCase()}s yet.
+                            </p>
+                          )}
+                          {items.map((item) => {
+                            const id = String(item[formDef.idKey]);
+                            const isRowEditing = editingId === id;
+                            return (
+                              <div key={id} className="rounded-lg border border-neutral-200 p-3">
+                                {isRowEditing && editDraft ? (
+                                  <>
+                                    <ConfigItemForm
+                                      formDef={formDef}
+                                      item={editDraft}
+                                      isNew={false}
+                                      onChange={setEditDraft}
+                                    />
+                                    {itemError && <p className="mt-2 text-xs text-red-600">{itemError}</p>}
+                                    <div className="mt-3 flex gap-2">
+                                      <button type="button" onClick={handleConfirmEdit} className={ITEM_PRIMARY_BUTTON_CLASS}>
+                                        Apply edit
+                                      </button>
+                                      <button type="button" onClick={resetItemEditing} className={ITEM_SECONDARY_BUTTON_CLASS}>
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  </>
+                                ) : (
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0 flex-1">
+                                      <p className="truncate text-sm font-medium text-neutral-700">
+                                        {itemSummary(item, formDef.idKey, formDef.suggestIdFromKey)}
+                                      </p>
+                                      <p className="truncate font-mono text-[11px] text-neutral-400">{id}</p>
+                                    </div>
+                                    <div className="flex shrink-0 gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleStartEdit(item, formDef.idKey)}
+                                        className="rounded-lg border border-neutral-300 px-2.5 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-50"
+                                      >
+                                        Edit
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDelete(item)}
+                                        className="rounded-lg border border-red-200 px-2.5 py-1 text-xs font-medium text-red-600 hover:bg-red-50"
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+
+                          {creating && createDraft ? (
+                            <div className="rounded-lg border border-amber-300 bg-amber-50/40 p-3">
+                              <ConfigItemForm
+                                formDef={formDef}
+                                item={createDraft}
+                                isNew
+                                suggestedId={suggestedCreateId}
+                                onChange={setCreateDraft}
+                              />
+                              {itemError && <p className="mt-2 text-xs text-red-600">{itemError}</p>}
+                              <div className="mt-3 flex gap-2">
+                                <button type="button" onClick={handleConfirmCreate} className={ITEM_PRIMARY_BUTTON_CLASS}>
+                                  Add {formDef.itemLabel.toLowerCase()}
+                                </button>
+                                <button type="button" onClick={resetItemEditing} className={ITEM_SECONDARY_BUTTON_CLASS}>
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={handleStartCreate}
+                              className="w-full rounded-lg border border-dashed border-neutral-300 px-3 py-2 text-xs font-medium text-neutral-500 hover:border-amber-400 hover:text-amber-700"
+                            >
+                              + Add {formDef.itemLabel.toLowerCase()}
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <textarea
+                          value={draftText}
+                          onChange={(e) => {
+                            setDraftText(e.target.value);
+                            setParseError(null);
+                            setSaveError(null);
+                          }}
+                          rows={14}
+                          spellCheck={false}
+                          className="mb-2 w-full resize-y rounded-lg border border-neutral-300 bg-neutral-50 px-3 py-2 font-mono text-xs outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+                        />
+                      )}
+
                       {parseError && (
-                        <p className="mb-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
-                          Invalid JSON: {parseError}
-                        </p>
+                        <p className="mb-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{parseError}</p>
                       )}
                       {saveError && (
                         <p className="mb-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{saveError}</p>
