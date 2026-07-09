@@ -13,6 +13,7 @@ import type {
   HookConfig,
   ModelCapabilityEntry,
   PriorityLogicConfig,
+  StagePromptsConfig,
   StyleConfig,
 } from "./configSchemas.ts";
 import type { AssetAnalysisOutput } from "./assetAnalysis.ts";
@@ -64,6 +65,25 @@ const CAMERAS: CameraSettingConfig[] = [
 ];
 const GLOBAL_RULES: GlobalRuleConfig[] = [{ id: "g1", name: "G", description: "d" }];
 const PRIORITY_LOGIC: PriorityLogicConfig = { layers: [{ id: "p1", label: "P" }] };
+// issue #19: a minimal but schema-valid stage_prompts body — every field just needs to
+// be a non-empty string (see configSchemas.ts's validateStagePrompts), the exact text
+// doesn't matter for Contract assembly/validation.
+const STAGE_PROMPTS: StagePromptsConfig = {
+  contentSafety: { systemPrompt: "Check for unsafe content." },
+  assetAnalysis: {
+    baseInstructions: "Describe this asset.",
+    roleInstructions: {
+      packshot: "Describe the packshot.",
+      style_reference: "Describe the style.",
+      brand_reference: "Describe the brand.",
+      campaign_reference: "Describe the campaign.",
+    },
+  },
+  promptImprovement: { systemPrompt: "Improve this prompt." },
+  promptBuilder: { systemPrompt: "Build the final prompt.", revisionInstructionTemplate: "Fix: {{issues}}." },
+  promptReviewer: { systemPrompt: "Review the final prompt." },
+};
+
 const CAPABILITY: ModelCapabilityEntry[] = [
   {
     modelKey: "nano-banana",
@@ -90,6 +110,7 @@ function baseInput(overrides: Partial<AssembleContractInput> = {}): AssembleCont
     globalRules: { version: 2, body: GLOBAL_RULES },
     priorityLogic: { version: 1, body: PRIORITY_LOGIC },
     modelCapabilityMatrix: { version: 1, body: CAPABILITY },
+    stagePrompts: { version: 4, body: STAGE_PROMPTS },
     modelKey: "nano-banana",
     targetLanguage: "Polish",
     aspectRatio: "1:1",
@@ -104,6 +125,12 @@ assert.deepEqual(validateContract(good), []);
 assert.equal(good.hook.version, 3, "contract must carry the exact config version used, not just its id");
 assert.equal(good.hook.snapshot?.text, "Hook text", "contract must carry the config snapshot, not just an id");
 assert.equal(good.modelCapability.snapshot?.modelKey, "nano-banana");
+assert.equal(good.stagePrompts.version, 4, "contract must carry the exact stage_prompts version used");
+assert.equal(
+  good.stagePrompts.snapshot?.contentSafety.systemPrompt,
+  STAGE_PROMPTS.contentSafety.systemPrompt,
+  "contract must carry the stage_prompts snapshot, not just a version number",
+);
 assert.equal(good.assets[0]?.role, "packshot");
 assert.equal(good.assets[0]?.url, "https://example.com/packshot.png");
 assert.equal(good.assets[0]?.analysis?.description, ANALYSIS.description, "contract must carry the asset's analysis output");
@@ -194,6 +221,23 @@ assert.ok(validateContract(assembleContract(baseInput({ aspectRatio: "" }))).len
 assert.ok(
   validateContract(assembleContract(baseInput({ globalRules: { version: 1, body: [] } }))).length,
   "global rules must be a non-empty snapshot",
+);
+
+// --- issue #19: stagePrompts is schema-checked the same way a config save is (re-using
+// configSchemas.validateConfigBody) — a body missing a required stage field must fail
+// Contract validation, never silently produce a runnable Contract -------------------
+assert.ok(
+  validateContract(
+    assembleContract(
+      baseInput({ stagePrompts: { version: 1, body: { ...STAGE_PROMPTS, contentSafety: { systemPrompt: "" } } } }),
+    ),
+  ).length,
+  "a stage_prompts snapshot with a blank required field must fail Contract validation",
+);
+assert.deepEqual(
+  validateContract(assembleContract(baseInput({ stagePrompts: { version: 7, body: STAGE_PROMPTS } }))),
+  [],
+  "a fully-formed stage_prompts snapshot must validate cleanly",
 );
 
 console.log("lib/maszynka/contract.ts — all checks passed");

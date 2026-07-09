@@ -2,8 +2,9 @@
 // "Historia runów"). This module holds the one piece of genuinely non-trivial pure logic
 // the detail view needs: turning a run's Contract snapshot (lib/maszynka/contract.ts) —
 // itself already a snapshot of hook/style/camera setting/global rules/priority logic/
-// model capability at whatever versions were selected when the run was created — into a
-// flat, display-ready list. Everything else the detail view renders (input assets,
+// model capability/stage prompts (issue #19) at whatever versions were selected when the
+// run was created — into a flat, display-ready list. Everything else the detail view
+// renders (input assets,
 // generated assets, per-stage panels) is a direct 1:1 read of a `MaszynkaRun` field with a
 // `null`/`[]` guard, which doesn't earn a pure module of its own; this summarization does,
 // because it has to reach through several optional nested fields and decide a human label
@@ -27,7 +28,8 @@ export type SelectedConfigKind =
   | "cameraSetting"
   | "globalRules"
   | "priorityLogic"
-  | "modelCapability";
+  | "modelCapability"
+  | "stagePrompts";
 
 export interface SelectedConfigSummaryItem {
   kind: SelectedConfigKind;
@@ -51,6 +53,11 @@ export function summarizeSelectedConfigs(contract: Contract | null | undefined):
 
   const rulesCount = contract.globalRules?.snapshot?.length ?? 0;
   const layersCount = contract.priorityLogic?.snapshot?.layers?.length ?? 0;
+  // Derived from the snapshot's own keys (contentSafety/assetAnalysis/promptImprovement/
+  // promptBuilder/promptReviewer today), not a hardcoded literal — same "count what's
+  // actually there" rule as rulesCount/layersCount above, so this label can't silently go
+  // stale if `StagePromptsConfig` ever gains or loses a stage.
+  const stagePromptsCount = contract.stagePrompts?.snapshot ? Object.keys(contract.stagePrompts.snapshot).length : 0;
 
   return [
     {
@@ -94,6 +101,18 @@ export function summarizeSelectedConfigs(contract: Contract | null | undefined):
       version: contract.modelCapability?.version ?? 0,
       label: contract.modelCapability?.snapshot?.modelLabel ?? "(unresolved)",
       resolved: contract.modelCapability?.snapshot != null,
+    },
+    {
+      // Issue #19: applies wholesale to every LLM stage, same footing as globalRules/
+      // priorityLogic above (no per-run selection id) — see contract.ts's `stagePrompts`
+      // field doc comment.
+      kind: "stagePrompts",
+      id: "",
+      version: contract.stagePrompts?.version ?? 0,
+      label: contract.stagePrompts?.snapshot
+        ? `${stagePromptsCount} stage prompt${stagePromptsCount === 1 ? "" : "s"} configured`
+        : "(unresolved)",
+      resolved: contract.stagePrompts?.snapshot != null,
     },
   ];
 }

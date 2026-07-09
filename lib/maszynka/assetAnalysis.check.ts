@@ -15,6 +15,7 @@ import {
   validateAssetAnalysisOutput,
 } from "./assetAnalysis.ts";
 import { ASSET_ROLES, type AssetRole } from "./contract.ts";
+import type { StagePromptsConfig } from "./configSchemas.ts";
 
 // --- model catalog ----------------------------------------------------------
 assert.ok(ASSET_ANALYSIS_MODELS.length > 0, "at least one vision + structured-output model must be offered");
@@ -58,6 +59,41 @@ for (const role of referenceRoles) {
   assert.match(system, /empty array/i, `${role} system prompt must instruct preserveElements to stay empty`);
   assert.ok(!/packagingShape/i.test(system), `${role} system prompt must not ask for packshot-only fields`);
 }
+
+// --- issue #19: composes the Contract's/config's shared base instructions with the
+// role-specific instruction for the analyzed asset's role, not just the hardcoded
+// defaults; omitting the config preserves the old hardcoded-only behavior -----------
+const STAGE_PROMPTS: StagePromptsConfig = {
+  contentSafety: { systemPrompt: "x" },
+  assetAnalysis: {
+    baseInstructions: "CONFIGURED base instructions.",
+    roleInstructions: {
+      packshot: "CONFIGURED packshot instructions.",
+      style_reference: "CONFIGURED style_reference instructions.",
+      brand_reference: "CONFIGURED brand_reference instructions.",
+      campaign_reference: "CONFIGURED campaign_reference instructions.",
+    },
+  },
+  promptImprovement: { systemPrompt: "x" },
+  promptBuilder: { systemPrompt: "x", revisionInstructionTemplate: "x" },
+  promptReviewer: { systemPrompt: "x" },
+};
+for (const role of ASSET_ROLES) {
+  const req = buildAssetAnalysisRequestBody({ role, url: "https://x/a.png" }, "m", STAGE_PROMPTS);
+  const system = req.messages.find((m) => m.role === "system")!.content as string;
+  assert.ok(system.includes(STAGE_PROMPTS.assetAnalysis.baseInstructions), `${role}: must include the configured base`);
+  assert.ok(
+    system.includes(STAGE_PROMPTS.assetAnalysis.roleInstructions[role]),
+    `${role}: must include that role's configured instruction`,
+  );
+}
+
+const reqDefault = buildAssetAnalysisRequestBody({ role: "packshot", url: "https://x/a.png" }, "m");
+const systemDefault = reqDefault.messages.find((m) => m.role === "system")!.content as string;
+assert.ok(
+  !systemDefault.includes(STAGE_PROMPTS.assetAnalysis.baseInstructions),
+  "omitting stagePrompts must not accidentally pick up unrelated configured text",
+);
 
 // --- output validation --------------------------------------------------------
 const GOOD_PACKSHOT_OUTPUT = {

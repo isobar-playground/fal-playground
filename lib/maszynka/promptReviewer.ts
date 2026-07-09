@@ -19,6 +19,9 @@ import type { WirePart } from "../chat/attachments";
 import { CHAT_MODELS, CHAT_MODEL_BY_ID, DEFAULT_CHAT_MODEL, modelSupportsImages, type ChatModelDef } from "../chat/models.ts";
 import type { Contract } from "./contract";
 import type { PromptBuilderOutput } from "./promptBuilder";
+// Explicit extension: a real runtime import (see contentSafety.ts's comment / this
+// module's promptReviewer.check.ts).
+import { resolvePromptReviewerSystemPrompt } from "./stagePromptResolver.ts";
 
 // --- model selection ---------------------------------------------------------
 // Same catalog filter as the builder stage (structured output + vision, since the
@@ -75,6 +78,10 @@ export const PROMPT_REVIEWER_OUTPUT_SCHEMA: Record<string, unknown> = {
   },
 };
 
+// Hardcoded fallback (issue #19 / PRD story 33): used whenever a Contract's
+// `stagePrompts` snapshot has no `promptReviewer.systemPrompt` (or, defensively, none at
+// all) — see stagePromptResolver.ts. Same text as the `stage_prompts` seed content
+// (configSeeds.ts's `STAGE_PROMPTS_SEED.promptReviewer.systemPrompt`).
 const PROMPT_REVIEWER_SYSTEM_PROMPT = `You are the Prompt reviewer stage of the Maszynka Content Factory test bench.
 
 You receive the same Contract the Prompt builder used (operator's raw prompt, uploaded assets with their systemic roles — packshot, style_reference, brand_reference, campaign_reference — and each asset's Asset analysis output, a selected Hook, Style and Camera setting, global rules, an ordered priority logic, the target model's capability entry, and generation settings) and the Prompt builder's output (finalPrompt, negativePrompt, promptSummary, appliedRules, riskNotes). Your job is to gate that output before it reaches FAL generation — never rewrite it yourself.
@@ -136,7 +143,7 @@ export function buildPromptReviewerRequestBody(
   return {
     model,
     messages: [
-      { role: "system", content: PROMPT_REVIEWER_SYSTEM_PROMPT },
+      { role: "system", content: resolvePromptReviewerSystemPrompt(contract.stagePrompts?.snapshot, PROMPT_REVIEWER_SYSTEM_PROMPT) },
       { role: "user", content: userContent },
     ],
     temperature: 0.2,

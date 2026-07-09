@@ -14,6 +14,7 @@ import {
   parseContentSafetyContent,
   validateContentSafetyOutput,
 } from "./contentSafety.ts";
+import type { StagePromptsConfig } from "./configSchemas.ts";
 
 // --- model catalog ----------------------------------------------------------
 assert.ok(CONTENT_SAFETY_MODELS.length > 0, "at least one vision + structured-output model must be offered");
@@ -40,6 +41,32 @@ const userMsgWithAssets = reqWithAssets.messages.find((m) => m.role === "user");
 assert.ok(Array.isArray(userMsgWithAssets?.content), "uploaded assets must force the content-parts array form");
 const imageParts = (userMsgWithAssets!.content as { type: string }[]).filter((p) => p.type === "image_url");
 assert.equal(imageParts.length, assets.length, "every uploaded asset must be attached as its own image_url part");
+
+// --- issue #19: a configured stage_prompts snapshot overrides the hardcoded system
+// prompt; omitting it (or passing null/undefined) preserves the old hardcoded-only
+// behavior ------------------------------------------------------------------------
+const STAGE_PROMPTS: StagePromptsConfig = {
+  contentSafety: { systemPrompt: "CONFIGURED content safety instructions." },
+  assetAnalysis: {
+    baseInstructions: "x",
+    roleInstructions: { packshot: "x", style_reference: "x", brand_reference: "x", campaign_reference: "x" },
+  },
+  promptImprovement: { systemPrompt: "x" },
+  promptBuilder: { systemPrompt: "x", revisionInstructionTemplate: "x" },
+  promptReviewer: { systemPrompt: "x" },
+};
+const reqConfigured = buildContentSafetyRequestBody("a red shoe", [], "test/model", STAGE_PROMPTS);
+const systemConfigured = reqConfigured.messages.find((m) => m.role === "system");
+assert.equal(systemConfigured?.content, STAGE_PROMPTS.contentSafety.systemPrompt);
+
+const reqDefault = buildContentSafetyRequestBody("a red shoe", [], "test/model");
+const systemDefault = reqDefault.messages.find((m) => m.role === "system");
+assert.notEqual(
+  systemDefault?.content,
+  STAGE_PROMPTS.contentSafety.systemPrompt,
+  "omitting stagePrompts must not accidentally pick up unrelated configured text",
+);
+assert.ok(typeof systemDefault?.content === "string" && systemDefault.content.length > 0);
 
 // --- output validation --------------------------------------------------------
 const GOOD_PASSED = { status: "content_safety_passed", reasons: [], constraints: [] };

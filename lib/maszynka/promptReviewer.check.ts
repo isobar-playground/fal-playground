@@ -16,6 +16,7 @@ import {
 } from "./promptReviewer.ts";
 import type { Contract } from "./contract.ts";
 import type { PromptBuilderOutput } from "./promptBuilder.ts";
+import type { StagePromptsConfig } from "./configSchemas.ts";
 
 // --- model catalog ----------------------------------------------------------
 assert.ok(PROMPT_REVIEWER_MODELS.length > 0, "at least one vision + structured-output model must be offered");
@@ -25,6 +26,20 @@ assert.ok(
 );
 
 // --- request building ---------------------------------------------------------
+// issue #19: a stage_prompts snapshot with distinctive reviewer text, so tests below can
+// assert the request actually used the *configured* system prompt rather than the
+// module's hardcoded default.
+const STAGE_PROMPTS: StagePromptsConfig = {
+  contentSafety: { systemPrompt: "x" },
+  assetAnalysis: {
+    baseInstructions: "x",
+    roleInstructions: { packshot: "x", style_reference: "x", brand_reference: "x", campaign_reference: "x" },
+  },
+  promptImprovement: { systemPrompt: "x" },
+  promptBuilder: { systemPrompt: "x", revisionInstructionTemplate: "x" },
+  promptReviewer: { systemPrompt: "CONFIGURED reviewer system prompt — gate the builder output." },
+};
+
 const CONTRACT_WITH_PACKSHOT: Contract = {
   userInput: { userPromptRaw: "a red shoe on a white background" },
   assets: [
@@ -42,6 +57,7 @@ const CONTRACT_WITH_PACKSHOT: Contract = {
   globalRules: { version: 1, snapshot: [] },
   priorityLogic: { version: 1, snapshot: null },
   modelCapability: { modelKey: "nano-banana", version: 1, snapshot: null },
+  stagePrompts: { version: 1, snapshot: STAGE_PROMPTS },
   generationSettings: { targetLanguage: "Polish", aspectRatio: "1:1", variantsCount: 1 },
 };
 
@@ -69,6 +85,28 @@ const CONTRACT_NO_PACKSHOT: Contract = { ...CONTRACT_WITH_PACKSHOT, assets: [] }
 const reqNoPackshot = buildPromptReviewerRequestBody(CONTRACT_NO_PACKSHOT, BUILDER_OUTPUT, "test/model");
 const userMsgNoPackshot = reqNoPackshot.messages.find((m) => m.role === "user");
 assert.equal(typeof userMsgNoPackshot?.content, "string", "no packshot -> plain string content, no image part");
+
+// --- issue #19: the request builder must use the Contract's configured stage_prompts
+// text, never only the hardcoded default -------------------------------------------
+const systemMsg = reqWithPackshot.messages.find((m) => m.role === "system");
+assert.equal(
+  systemMsg?.content,
+  STAGE_PROMPTS.promptReviewer.systemPrompt,
+  "the reviewer's system prompt must be the Contract's configured promptReviewer.systemPrompt",
+);
+
+const CONTRACT_NO_STAGE_PROMPTS: Contract = { ...CONTRACT_WITH_PACKSHOT, stagePrompts: { version: 0, snapshot: null } };
+const reqFallback = buildPromptReviewerRequestBody(CONTRACT_NO_STAGE_PROMPTS, BUILDER_OUTPUT, "test/model");
+const fallbackSystemMsg = reqFallback.messages.find((m) => m.role === "system");
+assert.ok(
+  typeof fallbackSystemMsg?.content === "string" && fallbackSystemMsg.content.length > 0,
+  "with no stage_prompts snapshot, the reviewer must still fall back to its hardcoded default system prompt",
+);
+assert.notEqual(
+  fallbackSystemMsg?.content,
+  STAGE_PROMPTS.promptReviewer.systemPrompt,
+  "the fallback system prompt must not be the configured one from the other Contract",
+);
 
 // --- output validation --------------------------------------------------------
 const PASS_OUTPUT = { status: "pass", issues: [], revisionInstruction: "" };

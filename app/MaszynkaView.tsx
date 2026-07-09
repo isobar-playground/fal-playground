@@ -80,6 +80,7 @@ import type {
   HookConfig,
   ModelCapabilityEntry,
   PriorityLogicConfig,
+  StagePromptsConfig,
   StyleConfig,
 } from "@/lib/maszynka/configSchemas";
 import type { Contract } from "@/lib/maszynka/contract";
@@ -88,6 +89,24 @@ import { useImageLightbox } from "./ImageLightbox";
 import MaszynkaConfigs from "./MaszynkaConfigs";
 
 const ASPECT_RATIO_OPTIONS = ["1:1", "4:5", "9:16", "16:9", "3:4"];
+
+// Fallback `stage_prompts` body (issue #19) for the one moment `configs.stage_prompts`
+// might genuinely be absent when a Contract is assembled (e.g. Neon fetch failed) — an
+// all-blank body that `assembleContract`/`validateContract` treat exactly like an
+// unresolved priorityLogic/globalRules snapshot (schema-invalid, per
+// lib/maszynka/configSchemas.ts's `validateStagePrompts`), so the run fails cleanly at
+// `prompt_builder_contract_validation_failed` instead of silently proceeding on
+// hardcoded text the operator never actually configured.
+const EMPTY_STAGE_PROMPTS: StagePromptsConfig = {
+  contentSafety: { systemPrompt: "" },
+  assetAnalysis: {
+    baseInstructions: "",
+    roleInstructions: { packshot: "", style_reference: "", brand_reference: "", campaign_reference: "" },
+  },
+  promptImprovement: { systemPrompt: "" },
+  promptBuilder: { systemPrompt: "", revisionInstructionTemplate: "" },
+  promptReviewer: { systemPrompt: "" },
+};
 
 // Stable id-accessors for the three Config-backed dropdowns below — module-scope so
 // they're the same function reference on every render (only the `items`/`selectedId`
@@ -306,6 +325,13 @@ export default function MaszynkaView({
   const hooks = (configs.hooks?.body as HookConfig[] | undefined) ?? [];
   const styles = (configs.styles?.body as StyleConfig[] | undefined) ?? [];
   const cameraSettings = (configs.camera_settings?.body as CameraSettingConfig[] | undefined) ?? [];
+  // Stage prompts (issue #19): fed straight into the pre-Contract stages' request
+  // builders below (content safety / asset analysis / prompt improvement all run before
+  // a Contract exists) and, for the Contract itself, into `assembleContract` further
+  // down — see lib/maszynka/contract.ts's `stagePrompts` field. Left `undefined` when
+  // not yet loaded; every build*RequestBody call below falls back to that stage's
+  // hardcoded default text in that case (see lib/maszynka/stagePromptResolver.ts).
+  const stagePromptsConfig = configs.stage_prompts?.body as StagePromptsConfig | undefined;
 
   const [selectedHookId, setSelectedHookId] = useState("");
   const [selectedStyleId, setSelectedStyleId] = useState("");
@@ -434,7 +460,7 @@ export default function MaszynkaView({
     if (!raw || !orKey) return;
     setImprovement({ status: "loading", sourcePromptRaw: raw });
     try {
-      const reqBody = buildPromptImprovementRequestBody(raw, promptImprovementModel);
+      const reqBody = buildPromptImprovementRequestBody(raw, promptImprovementModel, stagePromptsConfig);
       const { content } = await callPromptImprovement(orKey, reqBody);
       const { output, errors } = parsePromptImprovementContent(content);
       if (!output) {
@@ -445,7 +471,7 @@ export default function MaszynkaView({
     } catch (e) {
       setImprovement({ status: "error", sourcePromptRaw: raw, error: errMsg(e) });
     }
-  }, [prompt, orKey, promptImprovementModel]);
+  }, [prompt, orKey, promptImprovementModel, stagePromptsConfig]);
 
   const acceptImprovement = useCallback(() => {
     setImprovement((s) => (s.status === "proposed" ? { ...s, accepted: true } : s));
@@ -540,7 +566,7 @@ export default function MaszynkaView({
       // status in the PRD's four-way vocabulary, so it fails the gate closed as
       // `content_safety_blocked` rather than silently letting the run continue — see
       // lib/maszynka/contentSafety.ts module header.
-      const safetyRequest = buildContentSafetyRequestBody(effectivePrompt, runAssets, contentSafetyModel);
+      const safetyRequest = buildContentSafetyRequestBody(effectivePrompt, runAssets, contentSafetyModel, stagePromptsConfig);
       let safetyOutput: ContentSafetyOutput | null = null;
       let safetyResponse: unknown = null;
       let safetyFailureReason: string | null = null;
@@ -603,7 +629,7 @@ export default function MaszynkaView({
       const assetAnalysisRecords: AssetAnalysisRecord[] = [];
       let assetAnalysisFailure: string | null = null;
       for (const asset of runAssets) {
-        const analysisRequest = buildAssetAnalysisRequestBody(asset, assetAnalysisModel);
+        const analysisRequest = buildAssetAnalysisRequestBody(asset, assetAnalysisModel, stagePromptsConfig);
         try {
           const { raw: analysisResponse, content } = await callAssetAnalysis(orKey, analysisRequest);
           const { output, errors: analysisErrors } = parseAssetAnalysisContent(content);
@@ -685,6 +711,7 @@ export default function MaszynkaView({
           version: configs.model_capability_matrix?.version ?? 0,
           body: (configs.model_capability_matrix?.body as ModelCapabilityEntry[] | undefined) ?? [],
         },
+        stagePrompts: { version: configs.stage_prompts?.version ?? 0, body: stagePromptsConfig ?? EMPTY_STAGE_PROMPTS },
         modelKey: model.key,
         targetLanguage: targetLanguage.trim(),
         aspectRatio,
@@ -978,6 +1005,7 @@ export default function MaszynkaView({
     hooks,
     styles,
     cameraSettings,
+    stagePromptsConfig,
     selectedHookId,
     selectedStyleId,
     selectedCameraSettingId,
@@ -1714,6 +1742,7 @@ function SelectedConfigsPanel({ contract }: { contract: Contract | null }) {
     globalRules: "Global rules",
     priorityLogic: "Priority logic",
     modelCapability: "Model capability",
+    stagePrompts: "Stage prompts",
   };
   return (
     <div className="mb-3 rounded-lg bg-neutral-50 p-3">

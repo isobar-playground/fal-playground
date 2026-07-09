@@ -15,6 +15,7 @@ import {
   validatePromptImprovementOutput,
   resolveEffectivePrompt,
 } from "./promptImprovement.ts";
+import type { StagePromptsConfig } from "./configSchemas.ts";
 
 // --- model catalog ----------------------------------------------------------
 assert.ok(PROMPT_IMPROVEMENT_MODELS.length > 0, "at least one structured-output model must be offered");
@@ -32,6 +33,31 @@ assert.deepEqual(req.response_format.json_schema.schema.required, ["userPromptIm
 const userMsg = req.messages.find((m) => m.role === "user");
 assert.equal(typeof userMsg?.content, "string", "this stage is text-only — no image_url parts, ever");
 assert.ok((userMsg!.content as string).includes("a red shoe on a white background"));
+
+// --- issue #19: a configured stage_prompts snapshot overrides the hardcoded system
+// prompt; omitting it (or passing null/undefined) preserves the old hardcoded-only
+// behavior ------------------------------------------------------------------------
+const STAGE_PROMPTS: StagePromptsConfig = {
+  contentSafety: { systemPrompt: "x" },
+  assetAnalysis: {
+    baseInstructions: "x",
+    roleInstructions: { packshot: "x", style_reference: "x", brand_reference: "x", campaign_reference: "x" },
+  },
+  promptImprovement: { systemPrompt: "CONFIGURED prompt improvement instructions." },
+  promptBuilder: { systemPrompt: "x", revisionInstructionTemplate: "x" },
+  promptReviewer: { systemPrompt: "x" },
+};
+const reqConfigured = buildPromptImprovementRequestBody("a red shoe", "test/model", STAGE_PROMPTS);
+const systemConfigured = reqConfigured.messages.find((m) => m.role === "system");
+assert.equal(systemConfigured?.content, STAGE_PROMPTS.promptImprovement.systemPrompt);
+
+const reqDefault = buildPromptImprovementRequestBody("a red shoe", "test/model");
+const systemDefault = reqDefault.messages.find((m) => m.role === "system");
+assert.notEqual(
+  systemDefault?.content,
+  STAGE_PROMPTS.promptImprovement.systemPrompt,
+  "omitting stagePrompts must not accidentally pick up unrelated configured text",
+);
 
 // --- output validation --------------------------------------------------------
 const GOOD = { userPromptImproved: "A vivid red running shoe, studio-lit, on a seamless white backdrop.", rationale: "Added lighting/backdrop specificity." };

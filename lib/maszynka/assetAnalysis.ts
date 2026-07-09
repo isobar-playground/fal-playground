@@ -26,6 +26,10 @@
 import type { WirePart } from "../chat/attachments";
 import { CHAT_MODELS, CHAT_MODEL_BY_ID, DEFAULT_CHAT_MODEL, modelSupportsImages, type ChatModelDef } from "../chat/models.ts";
 import type { AssetRole } from "./contract";
+import type { StagePromptsConfig } from "./configSchemas";
+// Explicit extension: a real runtime import (see contentSafety.ts's comment / this
+// module's assetAnalysis.check.ts).
+import { resolveAssetAnalysisSystemPrompt } from "./stagePromptResolver.ts";
 
 // --- model selection ---------------------------------------------------------
 // Vision is mandatory (the stage's whole job is describing an image); structured
@@ -97,6 +101,18 @@ export const ASSET_ANALYSIS_OUTPUT_SCHEMA: Record<string, unknown> = {
   },
 };
 
+// Hardcoded fallbacks (issue #19 / PRD story 33): used whenever a run has no
+// `stage_prompts` config yet, or the operator left a field blank — see
+// stagePromptResolver.ts's `resolveAssetAnalysisSystemPrompt`. Same text as the
+// `stage_prompts` seed content (configSeeds.ts's `STAGE_PROMPTS_SEED.assetAnalysis`,
+// copied by hand there — see that file's header for why), split the same way: shared
+// base instructions (PRD story 22) plus one instruction block per Asset role.
+const ASSET_ANALYSIS_BASE_INSTRUCTIONS = `You are the Asset analysis stage of the Maszynka Content Factory test bench.
+
+You are given exactly one uploaded image and its systemic role (derived from which upload field it came through, never from operator prose — see the role instruction below). Your job is to produce a structured description of THIS image for the Prompt builder stage to use instead of raw pixels.
+
+Respond with ONE JSON object (matching the required schema exactly): description, attributes, preserveElements. Respond with the JSON object only.`;
+
 const ROLE_INSTRUCTIONS: Record<AssetRole, string> = {
   packshot:
     "This image's role is PACKSHOT — the product that must be preserved exactly in the generated asset. " +
@@ -122,14 +138,11 @@ const ROLE_INSTRUCTIONS: Record<AssetRole, string> = {
     "transcribe any old marketing copy 1:1.",
 };
 
-function systemPromptFor(role: AssetRole): string {
-  return `You are the Asset analysis stage of the Maszynka Content Factory test bench.
-
-You are given exactly one uploaded image and its systemic role (derived from which upload field it came through, never from operator prose — see the role instruction below). Your job is to produce a structured description of THIS image for the Prompt builder stage to use instead of raw pixels.
-
-${ROLE_INSTRUCTIONS[role]}
-
-Respond with ONE JSON object (matching the required schema exactly): description, attributes, preserveElements. Respond with the JSON object only.`;
+/** Composes the base instructions with the analyzed asset's role-specific block (PRD
+ *  story 22) — configured `stage_prompts` text if present, the hardcoded defaults above
+ *  otherwise, resolved field-by-field (stagePromptResolver.ts). */
+function systemPromptFor(role: AssetRole, stagePrompts?: StagePromptsConfig | null): string {
+  return resolveAssetAnalysisSystemPrompt(stagePrompts, role, ASSET_ANALYSIS_BASE_INSTRUCTIONS, ROLE_INSTRUCTIONS);
 }
 
 // --- request building ----------------------------------------------------------
@@ -144,15 +157,19 @@ export interface AssetAnalysisRequestBody {
   response_format: { type: "json_schema"; json_schema: { name: string; strict: true; schema: Record<string, unknown> } };
 }
 
-/** Builds the exact OpenRouter chat-completions body for analyzing one asset. */
+/** Builds the exact OpenRouter chat-completions body for analyzing one asset.
+ *  `stagePrompts` is the run's resolved `stage_prompts` config snapshot (issue #19) —
+ *  omit it (or pass null/undefined) to fall back to the hardcoded defaults, same
+ *  behavior as before this stage was configurable. */
 export function buildAssetAnalysisRequestBody(
   asset: { role: AssetRole; url: string },
   model: string,
+  stagePrompts?: StagePromptsConfig | null,
 ): AssetAnalysisRequestBody {
   return {
     model,
     messages: [
-      { role: "system", content: systemPromptFor(asset.role) },
+      { role: "system", content: systemPromptFor(asset.role, stagePrompts) },
       {
         role: "user",
         content: [
