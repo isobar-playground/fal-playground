@@ -10,6 +10,7 @@
     "check:maszynka": "node lib/maszynka/status.check.ts",
     "check:maszynka-configs": "node lib/maszynka/config.check.ts",
     "check:maszynka-config-items": "node lib/maszynka/configItemCrud.check.ts",
+    "check:maszynka-config-form-defs": "node lib/maszynka/configFormDefs.check.ts",
     "check:maszynka-contract": "node lib/maszynka/contract.check.ts",
     "check:maszynka-prompt-builder": "node lib/maszynka/promptBuilder.check.ts",
     "check:maszynka-prompt-reviewer": "node lib/maszynka/promptReviewer.check.ts",
