@@ -36,6 +36,7 @@ import {
   type CameraSettingConfig,
   type GlobalRuleConfig,
   type HookConfig,
+  type LightingConfig,
   type ModelCapabilityEntry,
   type PriorityLogicConfig,
   type StyleConfig,
@@ -558,6 +559,101 @@ for (const cam of seedCameraSettings) {
     [],
     "the list after deleting a seeded camera setting must stay valid",
   );
+}
+
+// ======================================================================================
+// lighting — standalone Lighting preset library, addable like Hooks/Styles
+// ======================================================================================
+type Lighting = LightingConfig & ConfigItem;
+
+const lightingFormDef = CONFIG_FORM_DEFS.lighting;
+assert.ok(lightingFormDef, "lighting must have a registered ConfigItemFormDef");
+
+const seedLighting = CONFIG_SEEDS.lighting as Lighting[];
+assert.equal(
+  validateConfigBody("lighting", seedLighting).length,
+  0,
+  "seeded lighting presets must already be schema-valid (sanity check before mutating them below)",
+);
+
+assert.equal(lightingFormDef.idKey, "id", "Lighting identity field is LightingConfig.id");
+assert.equal(lightingFormDef.suggestIdFromKey, "name", "id is suggested from the lighting preset name");
+const lightingFieldKeys = lightingFormDef.fields.map((f) => f.key);
+assert.deepEqual(
+  lightingFieldKeys.sort(),
+  ["name", "instruction"].sort(),
+  "lighting form must expose name and instruction",
+);
+for (const key of ["name", "instruction"]) {
+  assert.equal(lightingFormDef.fields.find((f) => f.key === key)?.required, true, `${key} is required on Lighting`);
+}
+
+for (const preset of seedLighting) {
+  for (const key of lightingFieldKeys) {
+    assert.ok(
+      typeof preset[key] === "string" && preset[key],
+      `seed lighting preset "${preset.id}" should have a non-empty ${key} for the form to demonstrate editing it`,
+    );
+  }
+}
+
+// --- add: suggested id, exercised against the real seed -------------------------------
+{
+  const empty = lightingFormDef.emptyItem();
+  assert.equal(empty[lightingFormDef.idKey], "", "a brand-new lighting preset starts with no id");
+
+  const draft = { ...empty, name: "Rim Light", instruction: "Strong backlight rim, subject silhouetted at the edges." };
+  const suggested = suggestUniqueConfigId(seedLighting, lightingFormDef.idKey, suggestConfigId(draft.name));
+  assert.equal(suggested, "rim-light");
+  assert.equal(isDuplicateConfigId(seedLighting, lightingFormDef.idKey, suggested), false);
+
+  const withNewPreset = addConfigItem(seedLighting, { ...draft, id: suggested } as Lighting);
+  assert.equal(withNewPreset.length, seedLighting.length + 1);
+  assert.deepEqual(
+    validateConfigBody("lighting", withNewPreset),
+    [],
+    "adding a lighting preset with a suggested id and required fields must stay schema-valid",
+  );
+
+  const missingInstruction = addConfigItem(seedLighting, { id: "incomplete", name: "Incomplete" } as Lighting);
+  assert.ok(
+    validateConfigBody("lighting", missingInstruction).length > 0,
+    "a lighting preset missing instruction must fail validation",
+  );
+}
+
+// --- edit: name/instruction update without touching id --------------------------------
+{
+  const target = seedLighting[0];
+  const patch = { name: "Updated name", instruction: "Updated instruction" };
+  const updated = updateConfigItem(seedLighting, lightingFormDef.idKey, target.id, patch);
+  const updatedPreset = updated.find((p) => p.id === target.id);
+  assert.equal(updatedPreset?.name, patch.name);
+  assert.equal(updatedPreset?.instruction, patch.instruction);
+  assert.equal(updated.length, seedLighting.length, "editing never changes the item count");
+  assert.deepEqual(validateConfigBody("lighting", updated), [], "an edited lighting list must stay schema-valid");
+
+  const tampered = updateConfigItem(seedLighting, lightingFormDef.idKey, target.id, {
+    id: "hijacked",
+    name: "x",
+  } as Partial<Lighting>);
+  assert.equal(
+    tampered.some((p) => p.id === "hijacked"),
+    false,
+    "editing a seeded lighting preset can never change its id",
+  );
+}
+
+// --- delete: removes from the next version, list stays schema-valid ------------------
+{
+  const target = seedLighting[seedLighting.length - 1];
+  const deleted = deleteConfigItem(seedLighting, lightingFormDef.idKey, target.id);
+  assert.equal(deleted.length, seedLighting.length - 1);
+  assert.equal(
+    deleted.some((p) => p.id === target.id),
+    false,
+  );
+  assert.deepEqual(validateConfigBody("lighting", deleted), [], "the list after deleting a seeded lighting preset must stay valid");
 }
 
 // ======================================================================================

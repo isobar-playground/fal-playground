@@ -78,6 +78,7 @@ import type {
   ConfigKind,
   GlobalRuleConfig,
   HookConfig,
+  LightingConfig,
   ModelCapabilityEntry,
   PriorityLogicConfig,
   StagePromptsConfig,
@@ -114,6 +115,7 @@ const EMPTY_STAGE_PROMPTS: StagePromptsConfig = {
 const hookId = (h: HookConfig) => h.id;
 const styleId = (s: StyleConfig) => s.styleId;
 const cameraSettingId = (c: CameraSettingConfig) => c.cameraSettingId;
+const lightingId = (l: LightingConfig) => l.id;
 
 /** Shared "keep the operator's selection if it still exists after a Config refetch,
  *  otherwise fall back to the first still-available item, or to none if the kind is now
@@ -325,6 +327,7 @@ export default function MaszynkaView({
   const hooks = (configs.hooks?.body as HookConfig[] | undefined) ?? [];
   const styles = (configs.styles?.body as StyleConfig[] | undefined) ?? [];
   const cameraSettings = (configs.camera_settings?.body as CameraSettingConfig[] | undefined) ?? [];
+  const lightings = (configs.lighting?.body as LightingConfig[] | undefined) ?? [];
   // Stage prompts (issue #19): fed straight into the pre-Contract stages' request
   // builders below (content safety / asset analysis / prompt improvement all run before
   // a Contract exists) and, for the Contract itself, into `assembleContract` further
@@ -336,6 +339,7 @@ export default function MaszynkaView({
   const [selectedHookId, setSelectedHookId] = useState("");
   const [selectedStyleId, setSelectedStyleId] = useState("");
   const [selectedCameraSettingId, setSelectedCameraSettingId] = useState("");
+  const [selectedLightingId, setSelectedLightingId] = useState("");
   const [targetLanguage, setTargetLanguage] = useState("Polish");
   const [aspectRatio, setAspectRatio] = useState(ASPECT_RATIO_OPTIONS[0]);
   const [variantsCount, setVariantsCount] = useState(1);
@@ -377,6 +381,7 @@ export default function MaszynkaView({
   useConfigSelectionFallback(hooks, selectedHookId, hookId, setSelectedHookId);
   useConfigSelectionFallback(styles, selectedStyleId, styleId, setSelectedStyleId);
   useConfigSelectionFallback(cameraSettings, selectedCameraSettingId, cameraSettingId, setSelectedCameraSettingId);
+  useConfigSelectionFallback(lightings, selectedLightingId, lightingId, setSelectedLightingId);
 
   // Eager-upload every asset as soon as it's picked, mirroring the Images-tab reference
   // pattern (upload cost is paid once, not on every Run click) — generalized from
@@ -502,6 +507,7 @@ export default function MaszynkaView({
     Boolean(selectedHookId) &&
     Boolean(selectedStyleId) &&
     Boolean(selectedCameraSettingId) &&
+    Boolean(selectedLightingId) &&
     Boolean(targetLanguage.trim()) &&
     Boolean(aspectRatio);
 
@@ -699,6 +705,8 @@ export default function MaszynkaView({
         selectedStyleId,
         cameraSettings: { version: configs.camera_settings?.version ?? 0, body: cameraSettings },
         selectedCameraSettingId,
+        lightings: { version: configs.lighting?.version ?? 0, body: lightings },
+        selectedLightingId,
         globalRules: {
           version: configs.global_rules?.version ?? 0,
           body: (configs.global_rules?.body as GlobalRuleConfig[] | undefined) ?? [],
@@ -1005,10 +1013,12 @@ export default function MaszynkaView({
     hooks,
     styles,
     cameraSettings,
+    lightings,
     stagePromptsConfig,
     selectedHookId,
     selectedStyleId,
     selectedCameraSettingId,
+    selectedLightingId,
     targetLanguage,
     aspectRatio,
     variantsCount,
@@ -1332,6 +1342,24 @@ export default function MaszynkaView({
               {cameraSettings.map((c) => (
                 <option key={c.cameraSettingId} value={c.cameraSettingId}>
                   {c.cameraSettingName}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
+              Lighting
+            </label>
+            <select
+              value={selectedLightingId}
+              onChange={(e) => setSelectedLightingId(e.target.value)}
+              disabled={configsState !== "idle"}
+              className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 disabled:bg-neutral-50 disabled:text-neutral-400"
+            >
+              {lightings.length === 0 && <option value="">— none available —</option>}
+              {lightings.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.name}
                 </option>
               ))}
             </select>
@@ -1739,6 +1767,7 @@ function SelectedConfigsPanel({ contract }: { contract: Contract | null }) {
     hook: "Hook",
     style: "Style",
     cameraSetting: "Camera setting",
+    lighting: "Lighting",
     globalRules: "Global rules",
     priorityLogic: "Priority logic",
     modelCapability: "Model capability",

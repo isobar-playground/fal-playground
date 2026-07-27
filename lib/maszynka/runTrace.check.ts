@@ -70,6 +70,7 @@ const fullContract: Contract = {
       scoringCriteria: [],
     },
   },
+  lighting: { id: "light-1", version: 2, snapshot: { id: "light-1", name: "Soft key light", instruction: "" } },
   globalRules: { version: 5, snapshot: [{ id: "g1", name: "Safety", description: "" }] },
   priorityLogic: { version: 1, snapshot: { layers: [{ id: "l1", label: "Content safety" }, { id: "l2", label: "Product" }] } },
   modelCapability: {
@@ -90,7 +91,7 @@ const fullContract: Contract = {
 };
 
 const full = summarizeSelectedConfigs(fullContract);
-assert.equal(full.length, 7, "every one of the seven config kinds must be summarized (issue #19 adds stagePrompts)");
+assert.equal(full.length, 8, "every one of the eight config kinds must be summarized (lighting joins hook/style/cameraSetting)");
 assert.deepEqual(
   full.find((i) => i.kind === "hook"),
   { kind: "hook", id: "hook-1", version: 3, label: "Read this twice", resolved: true },
@@ -102,6 +103,10 @@ assert.deepEqual(
 assert.deepEqual(
   full.find((i) => i.kind === "cameraSetting"),
   { kind: "cameraSetting", id: "cam-1", version: 1, label: "Eye-level product shot", resolved: true },
+);
+assert.deepEqual(
+  full.find((i) => i.kind === "lighting"),
+  { kind: "lighting", id: "light-1", version: 2, label: "Soft key light", resolved: true },
 );
 assert.deepEqual(
   full.find((i) => i.kind === "globalRules"),
@@ -146,7 +151,8 @@ assert.deepEqual(
   partial.find((i) => i.kind === "stagePrompts"),
   { kind: "stagePrompts", id: "", version: 6, label: "(unresolved)", resolved: false },
 );
-// style/cameraSetting/modelCapability were untouched by the spread above — still resolved
+// style/cameraSetting/lighting/modelCapability were untouched by the spread above — still resolved
 assert.equal(partial.find((i) => i.kind === "style")?.resolved, true);
+assert.equal(partial.find((i) => i.kind === "lighting")?.resolved, true);
 
 console.log("lib/maszynka/runTrace.ts — all checks passed");

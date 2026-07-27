@@ -11,6 +11,7 @@ import type {
   CameraSettingConfig,
   GlobalRuleConfig,
   HookConfig,
+  LightingConfig,
   ModelCapabilityEntry,
   PriorityLogicConfig,
   StagePromptsConfig,
@@ -63,6 +64,7 @@ const CAMERAS: CameraSettingConfig[] = [
     scoringCriteria: [],
   },
 ];
+const LIGHTINGS: LightingConfig[] = [{ id: "l1", name: "L", instruction: "l" }];
 const GLOBAL_RULES: GlobalRuleConfig[] = [{ id: "g1", name: "G", description: "d" }];
 const PRIORITY_LOGIC: PriorityLogicConfig = { layers: [{ id: "p1", label: "P" }] };
 // issue #19: a minimal but schema-valid stage_prompts body — every field just needs to
@@ -107,6 +109,8 @@ function baseInput(overrides: Partial<AssembleContractInput> = {}): AssembleCont
     selectedStyleId: "s1",
     cameraSettings: { version: 1, body: CAMERAS },
     selectedCameraSettingId: "c1",
+    lightings: { version: 1, body: LIGHTINGS },
+    selectedLightingId: "l1",
     globalRules: { version: 2, body: GLOBAL_RULES },
     priorityLogic: { version: 1, body: PRIORITY_LOGIC },
     modelCapabilityMatrix: { version: 1, body: CAPABILITY },
@@ -124,6 +128,7 @@ const good = assembleContract(baseInput());
 assert.deepEqual(validateContract(good), []);
 assert.equal(good.hook.version, 3, "contract must carry the exact config version used, not just its id");
 assert.equal(good.hook.snapshot?.text, "Hook text", "contract must carry the config snapshot, not just an id");
+assert.equal(good.lighting.snapshot?.name, "L", "contract must carry the selected lighting preset's snapshot");
 assert.equal(good.modelCapability.snapshot?.modelKey, "nano-banana");
 assert.equal(good.stagePrompts.version, 4, "contract must carry the exact stage_prompts version used");
 assert.equal(
@@ -183,6 +188,9 @@ assert.ok(validateContract(badStyle).length, "an unresolved style id must fail v
 
 const badCamera = assembleContract(baseInput({ selectedCameraSettingId: "does-not-exist" }));
 assert.ok(validateContract(badCamera).length, "an unresolved camera setting id must fail validation");
+
+const badLighting = assembleContract(baseInput({ selectedLightingId: "does-not-exist" }));
+assert.ok(validateContract(badLighting).length, "an unresolved lighting id must fail validation");
 
 const badModel = assembleContract(baseInput({ modelKey: "unknown-model" }));
 assert.ok(

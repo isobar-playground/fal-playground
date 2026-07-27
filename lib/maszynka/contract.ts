@@ -30,6 +30,7 @@ import {
   type CameraSettingConfig,
   type GlobalRuleConfig,
   type HookConfig,
+  type LightingConfig,
   type ModelCapabilityEntry,
   type PriorityLogicConfig,
   type StagePromptsConfig,
@@ -71,6 +72,7 @@ export interface Contract {
   hook: ContractConfigRef<HookConfig>;
   style: ContractConfigRef<StyleConfig>;
   cameraSetting: ContractConfigRef<CameraSettingConfig>;
+  lighting: ContractConfigRef<LightingConfig>;
   globalRules: { version: number; snapshot: GlobalRuleConfig[] };
   priorityLogic: { version: number; snapshot: PriorityLogicConfig | null };
   modelCapability: { modelKey: string; version: number; snapshot: ModelCapabilityEntry | null };
@@ -104,6 +106,8 @@ export interface AssembleContractInput {
   selectedStyleId: string;
   cameraSettings: { version: number; body: CameraSettingConfig[] };
   selectedCameraSettingId: string;
+  lightings: { version: number; body: LightingConfig[] };
+  selectedLightingId: string;
   globalRules: { version: number; body: GlobalRuleConfig[] };
   priorityLogic: { version: number; body: PriorityLogicConfig };
   modelCapabilityMatrix: { version: number; body: ModelCapabilityEntry[] };
@@ -123,6 +127,7 @@ export function assembleContract(input: AssembleContractInput): Contract {
   const style = input.styles.body.find((s) => s.styleId === input.selectedStyleId) ?? null;
   const cameraSetting =
     input.cameraSettings.body.find((c) => c.cameraSettingId === input.selectedCameraSettingId) ?? null;
+  const lighting = input.lightings.body.find((l) => l.id === input.selectedLightingId) ?? null;
   const modelCapability = input.modelCapabilityMatrix.body.find((m) => m.modelKey === input.modelKey) ?? null;
 
   return {
@@ -136,6 +141,7 @@ export function assembleContract(input: AssembleContractInput): Contract {
       version: input.cameraSettings.version,
       snapshot: cameraSetting,
     },
+    lighting: { id: input.selectedLightingId, version: input.lightings.version, snapshot: lighting },
     globalRules: { version: input.globalRules.version, snapshot: input.globalRules.body },
     priorityLogic: { version: input.priorityLogic.version, snapshot: input.priorityLogic.body },
     modelCapability: { modelKey: input.modelKey, version: input.modelCapabilityMatrix.version, snapshot: modelCapability },
@@ -188,6 +194,7 @@ export function validateContract(contract: Contract): string[] {
     ["hook", contract.hook],
     ["style", contract.style],
     ["cameraSetting", contract.cameraSetting],
+    ["lighting", contract.lighting],
   ];
   for (const [name, ref] of namedRefs) {
     if (!ref || !isNonEmptyString(ref.id) || !isFiniteNumber(ref.version)) {

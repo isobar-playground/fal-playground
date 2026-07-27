@@ -209,6 +209,37 @@ const CAMERA_SETTINGS_SEED = [
   },
 ];
 
+// A standalone Lighting preset library (mirrors the `lighting` instruction each Style
+// preset above already carries, just factored out into its own reusable, addable list —
+// same simple id/name/instruction shape as global_rules below).
+const LIGHTING_SEED = [
+  {
+    id: "soft_directional_key",
+    name: "Soft Directional Key",
+    instruction: "Soft directional key light with controlled specular highlights; deep, clean shadows.",
+  },
+  {
+    id: "natural_on_camera",
+    name: "Natural / On-Camera",
+    instruction: "Natural or on-camera flash look; slightly uneven, authentic.",
+  },
+  {
+    id: "even_shadowless",
+    name: "Even Shadowless",
+    instruction: "Even, soft, shadowless lighting with no harsh shadows.",
+  },
+  {
+    id: "studio_multi_point",
+    name: "Studio Multi-Point",
+    instruction: "Studio-grade multi-point lighting with crisp reflections and controlled specularity.",
+  },
+  {
+    id: "bright_high_contrast",
+    name: "Bright High-Contrast",
+    instruction: "Bright, high-contrast lighting for feed visibility and thumbnail-scale legibility.",
+  },
+];
+
 const GLOBAL_RULES_SEED = [
   {
     id: "content_safety_legal",
@@ -346,17 +377,17 @@ Respond with the JSON object only.`,
   promptBuilder: {
     systemPrompt: `You are the Prompt builder stage of the Maszynka Content Factory test bench.
 
-You receive a single JSON "Contract" object describing one test run: the operator's raw prompt, a "safetyConstraints" array (operator-facing constraints from the Content safety pre-check stage that ran before this Contract was even assembled — see below), any uploaded assets (asset "role" is systemic — packshot/style_reference/brand_reference/campaign_reference — never inferred from prose) each carrying an "analysis" object (the Asset analysis stage's structured description: "description", "attributes" as role-specific key/value facts, and "preserveElements" — packaging/color/proportions/logo/label/variant to preserve, populated only for the packshot), a selected Hook (short attention-grabbing marketing text to render on the asset), a selected Style preset, a selected Camera setting preset, a set of global rules that always apply, an ordered Priority logic (most important first: content safety > product/brand preservation > packshot analysis > hook > style > camera setting > operator prompt — on conflict, the higher layer wins), the target model's capabilities, and generation settings (target language, aspect ratio, variant count).
+You receive a single JSON "Contract" object describing one test run: the operator's raw prompt, a "safetyConstraints" array (operator-facing constraints from the Content safety pre-check stage that ran before this Contract was even assembled — see below), any uploaded assets (asset "role" is systemic — packshot/style_reference/brand_reference/campaign_reference — never inferred from prose) each carrying an "analysis" object (the Asset analysis stage's structured description: "description", "attributes" as role-specific key/value facts, and "preserveElements" — packaging/color/proportions/logo/label/variant to preserve, populated only for the packshot), a selected Hook (short attention-grabbing marketing text to render on the asset), a selected Style preset, a selected Camera setting preset, a selected Lighting preset (a specific lighting instruction — e.g. rim light, soft key light — to apply alongside the Style preset's own broader "lighting" field), a set of global rules that always apply, an ordered Priority logic (most important first: content safety > product/brand preservation > packshot analysis > hook > style > camera setting > operator prompt — on conflict, the higher layer wins), the target model's capabilities, and generation settings (target language, aspect ratio, variant count).
 
 "safetyConstraints" is rank 1 in the priority logic — higher than product/brand preservation, higher than the hook, higher than everything else. If it is non-empty, finalPrompt MUST honor every listed constraint exactly (e.g. "no visible alcohol branding" means finalPrompt must not describe or imply alcohol branding, even if the operator's raw prompt or a reference asset suggests otherwise); treat these as hard requirements, never as optional style guidance. An empty array means no extra constraints apply beyond the global content-safety rule already baked into the priority logic.
 
 Use each asset strictly within its role and its "analysis" output: the packshot (its "preserveElements" list is non-negotiable — packaging, color, proportions, logo, label, variant MUST be preserved exactly, never mutated) is the product to feature; a style_reference informs only look/mood/lighting/palette; a brand_reference informs only brand elements/palette/layout feel; a campaign_reference informs only the series' rhythm/consistency — never treat a reference asset as a preservation target, and never copy old marketing text from a campaign_reference verbatim. If a packshot image is attached to this message directly (in addition to its analysis text), cross-check it visually against "preserveElements".
 
 Your job: produce ONE JSON object (matching the required schema exactly) with:
-- finalPrompt: the complete prompt to send to the image generation model, combining the operator's intent with the hook, style, camera setting and global rules per the priority logic.
+- finalPrompt: the complete prompt to send to the image generation model, combining the operator's intent with the hook, style, camera setting, lighting preset and global rules per the priority logic.
 - negativePrompt: things to avoid in the generated image (empty string if nothing specific applies).
 - promptSummary: a short human-readable summary of what you built and why.
-- appliedRules: the ids/names of the hook, style, camera setting and global rules you actually applied.
+- appliedRules: the ids/names of the hook, style, camera setting, lighting preset and global rules you actually applied.
 - riskNotes: anything ambiguous, conflicting, or risky you noticed while building the prompt (empty array if none).
 
 Respond with the JSON object only.`,
@@ -373,13 +404,13 @@ Respond with the JSON object only.`,
   promptReviewer: {
     systemPrompt: `You are the Prompt reviewer stage of the Maszynka Content Factory test bench.
 
-You receive the same Contract the Prompt builder used (operator's raw prompt, uploaded assets with their systemic roles — packshot, style_reference, brand_reference, campaign_reference — and each asset's Asset analysis output, a selected Hook, Style and Camera setting, global rules, an ordered priority logic, the target model's capability entry, and generation settings) and the Prompt builder's output (finalPrompt, negativePrompt, promptSummary, appliedRules, riskNotes). Your job is to gate that output before it reaches FAL generation — never rewrite it yourself.
+You receive the same Contract the Prompt builder used (operator's raw prompt, uploaded assets with their systemic roles — packshot, style_reference, brand_reference, campaign_reference — and each asset's Asset analysis output, a selected Hook, Style, Camera setting and Lighting preset, global rules, an ordered priority logic, the target model's capability entry, and generation settings) and the Prompt builder's output (finalPrompt, negativePrompt, promptSummary, appliedRules, riskNotes). Your job is to gate that output before it reaches FAL generation — never rewrite it yourself.
 
 Check, at minimum:
 1. If the Contract's "safetyConstraints" array is non-empty (constraints from the Content safety pre-check stage that ran before this Contract was assembled — rank 1 in the priority logic, above everything else including product/brand preservation), finalPrompt and negativePrompt must honor every one of them exactly. Any violation is not a minor style issue — treat it the same severity as a content-safety violation (see check 6).
 2. Asset roles are honored — if a packshot is attached, finalPrompt must clearly treat it as the product to feature, not a generic/background reference. Any style/brand/campaign reference asset must only have influenced finalPrompt within its role's scope (look/mood for style, brand elements for brand, series rhythm for campaign) per its analysis output — never treated as a product to preserve, never a source of literal copy to reuse. Skip a role's check when no such asset is present.
 3. Product preservation is present — if a packshot is attached, finalPrompt must explicitly preserve the product's packaging, color, proportions, logo, label, variant. Compare the packshot image (attached below, if present) against finalPrompt's description.
-4. The selected Style and Camera setting are actually reflected in finalPrompt (their visual intent, lighting/framing/angle etc. — not ignored, not replaced with something unrelated).
+4. The selected Style, Camera setting and Lighting preset are actually reflected in finalPrompt (their visual intent, lighting/framing/angle etc. — not ignored, not replaced with something unrelated).
 5. If the Contract carries a Hook, its exact text must appear (or be very clearly rendered) in finalPrompt — not dropped, not paraphrased into something different.
 6. finalPrompt does not carry over stale marketing copy from the operator's raw prompt that conflicts with or duplicates the Hook.
 7. finalPrompt and negativePrompt do not violate content safety (no illegal content, no sexualization of minors, no hateful or otherwise disallowed material).
@@ -398,6 +429,7 @@ export const CONFIG_SEEDS: Record<ConfigKind, unknown> = {
   hooks: HOOKS_SEED,
   styles: STYLES_SEED,
   camera_settings: CAMERA_SETTINGS_SEED,
+  lighting: LIGHTING_SEED,
   global_rules: GLOBAL_RULES_SEED,
   priority_logic: PRIORITY_LOGIC_SEED,
   model_capability_matrix: MODEL_CAPABILITY_MATRIX_SEED,

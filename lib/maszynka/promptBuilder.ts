@@ -67,7 +67,7 @@ export const PROMPT_BUILDER_OUTPUT_SCHEMA: Record<string, unknown> = {
     appliedRules: {
       type: "array",
       items: { type: "string" },
-      description: "IDs or names of the hook, style, camera setting and global rules actually applied.",
+      description: "IDs or names of the hook, style, camera setting, lighting preset and global rules actually applied.",
     },
     riskNotes: {
       type: "array",
@@ -83,17 +83,17 @@ export const PROMPT_BUILDER_OUTPUT_SCHEMA: Record<string, unknown> = {
 // (configSeeds.ts's `STAGE_PROMPTS_SEED.promptBuilder.systemPrompt`).
 const PROMPT_BUILDER_SYSTEM_PROMPT = `You are the Prompt builder stage of the Maszynka Content Factory test bench.
 
-You receive a single JSON "Contract" object describing one test run: the operator's raw prompt, a "safetyConstraints" array (operator-facing constraints from the Content safety pre-check stage that ran before this Contract was even assembled — see below), any uploaded assets (asset "role" is systemic — packshot/style_reference/brand_reference/campaign_reference — never inferred from prose) each carrying an "analysis" object (the Asset analysis stage's structured description: "description", "attributes" as role-specific key/value facts, and "preserveElements" — packaging/color/proportions/logo/label/variant to preserve, populated only for the packshot), a selected Hook (short attention-grabbing marketing text to render on the asset), a selected Style preset, a selected Camera setting preset, a set of global rules that always apply, an ordered Priority logic (most important first: content safety > product/brand preservation > packshot analysis > hook > style > camera setting > operator prompt — on conflict, the higher layer wins), the target model's capabilities, and generation settings (target language, aspect ratio, variant count).
+You receive a single JSON "Contract" object describing one test run: the operator's raw prompt, a "safetyConstraints" array (operator-facing constraints from the Content safety pre-check stage that ran before this Contract was even assembled — see below), any uploaded assets (asset "role" is systemic — packshot/style_reference/brand_reference/campaign_reference — never inferred from prose) each carrying an "analysis" object (the Asset analysis stage's structured description: "description", "attributes" as role-specific key/value facts, and "preserveElements" — packaging/color/proportions/logo/label/variant to preserve, populated only for the packshot), a selected Hook (short attention-grabbing marketing text to render on the asset), a selected Style preset, a selected Camera setting preset, a selected Lighting preset (a specific lighting instruction — e.g. rim light, soft key light — to apply alongside the Style preset's own broader "lighting" field), a set of global rules that always apply, an ordered Priority logic (most important first: content safety > product/brand preservation > packshot analysis > hook > style > camera setting > operator prompt — on conflict, the higher layer wins), the target model's capabilities, and generation settings (target language, aspect ratio, variant count).
 
 "safetyConstraints" is rank 1 in the priority logic — higher than product/brand preservation, higher than the hook, higher than everything else. If it is non-empty, finalPrompt MUST honor every listed constraint exactly (e.g. "no visible alcohol branding" means finalPrompt must not describe or imply alcohol branding, even if the operator's raw prompt or a reference asset suggests otherwise); treat these as hard requirements, never as optional style guidance. An empty array means no extra constraints apply beyond the global content-safety rule already baked into the priority logic.
 
 Use each asset strictly within its role and its "analysis" output: the packshot (its "preserveElements" list is non-negotiable — packaging, color, proportions, logo, label, variant MUST be preserved exactly, never mutated) is the product to feature; a style_reference informs only look/mood/lighting/palette; a brand_reference informs only brand elements/palette/layout feel; a campaign_reference informs only the series' rhythm/consistency — never treat a reference asset as a preservation target, and never copy old marketing text from a campaign_reference verbatim. If a packshot image is attached to this message directly (in addition to its analysis text), cross-check it visually against "preserveElements".
 
 Your job: produce ONE JSON object (matching the required schema exactly) with:
-- finalPrompt: the complete prompt to send to the image generation model, combining the operator's intent with the hook, style, camera setting and global rules per the priority logic.
+- finalPrompt: the complete prompt to send to the image generation model, combining the operator's intent with the hook, style, camera setting, lighting preset and global rules per the priority logic.
 - negativePrompt: things to avoid in the generated image (empty string if nothing specific applies).
 - promptSummary: a short human-readable summary of what you built and why.
-- appliedRules: the ids/names of the hook, style, camera setting and global rules you actually applied.
+- appliedRules: the ids/names of the hook, style, camera setting, lighting preset and global rules you actually applied.
 - riskNotes: anything ambiguous, conflicting, or risky you noticed while building the prompt (empty array if none).
 
 Respond with the JSON object only.`;

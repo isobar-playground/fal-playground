@@ -23,8 +23,9 @@ for (const kind of CONFIG_KINDS) {
   const errors = validateConfigBody(kind, CONFIG_SEEDS[kind]);
   assert.deepEqual(errors, [], `seed for "${kind}" must be schema-valid, got: ${errors.join("; ")}`);
 }
-assert.equal(CONFIG_KINDS.length, 7, "PRD/ADR name exactly seven config kinds (issue #16 adds stage_prompts)");
+assert.equal(CONFIG_KINDS.length, 8, "PRD/ADR name eight config kinds (stage_prompts + the standalone lighting library)");
 assert.ok(CONFIG_KINDS.includes("stage_prompts"), "stage_prompts must be a registered config kind");
+assert.ok(CONFIG_KINDS.includes("lighting"), "lighting must be a registered config kind");
 
 // --- validators reject malformed bodies (spot checks per kind) --------------
 assert.ok(validateConfigBody("hooks", { not: "an array" }).length, "hooks body must be an array");
@@ -41,6 +42,16 @@ assert.ok(validateConfigBody("styles", [{ styleId: "x" }]).length, "styles entri
 assert.ok(
   validateConfigBody("styles", [{ styleId: "x", styleName: "X", visualIntent: "i", lighting: "l", colorDirection: "c", compositionBias: "b", typographyBehavior: "t", avoid: "not-an-array", recommendedModels: [], scoringCriteria: [] }]).length,
   "styles array fields must actually be arrays",
+);
+
+assert.ok(validateConfigBody("lighting", { not: "an array" }).length, "lighting body must be an array");
+assert.ok(validateConfigBody("lighting", [{ id: "x" }]).length, "lighting entries need a name and instruction");
+assert.ok(
+  validateConfigBody("lighting", [
+    { id: "dup", name: "a", instruction: "a" },
+    { id: "dup", name: "b", instruction: "b" },
+  ]).length,
+  "duplicate lighting ids are rejected",
 );
 
 assert.ok(validateConfigBody("priority_logic", { layers: [] }).length, "priority_logic needs at least one layer");

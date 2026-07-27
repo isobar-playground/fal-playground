@@ -19,6 +19,7 @@ export type ConfigKind =
   | "hooks"
   | "styles"
   | "camera_settings"
+  | "lighting"
   | "global_rules"
   | "priority_logic"
   | "model_capability_matrix"
@@ -28,6 +29,7 @@ export const CONFIG_KINDS: ConfigKind[] = [
   "hooks",
   "styles",
   "camera_settings",
+  "lighting",
   "global_rules",
   "priority_logic",
   "model_capability_matrix",
@@ -38,6 +40,7 @@ export const CONFIG_KIND_LABELS: Record<ConfigKind, string> = {
   hooks: "Hooks",
   styles: "Styles",
   camera_settings: "Camera settings",
+  lighting: "Lighting",
   global_rules: "Global rules",
   priority_logic: "Priority logic",
   model_capability_matrix: "Model capability matrix",
@@ -90,6 +93,17 @@ export interface CameraSettingConfig {
   avoid: string[];
   recommendedModels: string[];
   scoringCriteria: string[];
+}
+
+// A standalone Lighting preset library, alongside Hooks/Styles/Camera settings — same
+// flat id/name/instruction shape as GlobalRuleConfig below (the simplest existing
+// pattern), not the richer avoid/recommendedModels/scoringCriteria shape Styles/Camera
+// settings carry, since nothing has asked for that yet (YAGNI — extend later if a real
+// need for it shows up).
+export interface LightingConfig {
+  id: string;
+  name: string;
+  instruction: string;
 }
 
 export interface GlobalRuleConfig {
@@ -258,6 +272,20 @@ function validateCameraSettings(body: unknown): string[] {
   return errors;
 }
 
+function validateLighting(body: unknown): string[] {
+  if (!Array.isArray(body)) return ["body must be an array of lighting presets"];
+  const errors: string[] = [];
+  body.forEach((item, i) => {
+    if (!isPlainObject(item)) {
+      errors.push(`lighting[${i}] must be an object`);
+      return;
+    }
+    errors.push(...checkStringFields(item, ["id", "name", "instruction"], `lighting[${i}]`));
+  });
+  errors.push(...checkUniqueIds(body.filter(isPlainObject), "id"));
+  return errors;
+}
+
 function validateGlobalRules(body: unknown): string[] {
   if (!Array.isArray(body)) return ["body must be an array of global rules"];
   const errors: string[] = [];
@@ -365,6 +393,8 @@ export function validateConfigBody(kind: ConfigKind, body: unknown): string[] {
       return validateStyles(body);
     case "camera_settings":
       return validateCameraSettings(body);
+    case "lighting":
+      return validateLighting(body);
     case "global_rules":
       return validateGlobalRules(body);
     case "priority_logic":

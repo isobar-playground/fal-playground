@@ -179,6 +179,20 @@ const CAMERA_SETTING_FORM_DEF: ConfigItemFormDef = {
   suggestIdFromKey: "cameraSettingName",
 };
 
+// LightingConfig (configSchemas.ts) — a standalone Lighting preset library, addable the
+// same way as Hooks/Styles: flat id/name/instruction fields, no list-valued fields.
+const LIGHTING_FORM_DEF: ConfigItemFormDef = {
+  itemLabel: "Lighting",
+  idKey: "id",
+  idFieldLabel: "ID",
+  fields: [
+    { key: "name", label: "Name", type: "text", required: true },
+    { key: "instruction", label: "Lighting instruction", type: "textarea", required: true },
+  ],
+  emptyItem: (): ConfigItem => ({ id: "", name: "", instruction: "" }),
+  suggestIdFromKey: "name",
+};
+
 // GlobalRuleConfig (configSchemas.ts) is the same flat id/name/description shape as
 // HookConfig — issue #22 "Global rules can be added, edited, and deleted through
 // structured fields."
@@ -252,6 +266,7 @@ export const CONFIG_FORM_DEFS: Partial<Record<ConfigKind, ConfigItemFormDef>> = 
   hooks: HOOK_FORM_DEF,
   styles: STYLE_FORM_DEF,
   camera_settings: CAMERA_SETTING_FORM_DEF,
+  lighting: LIGHTING_FORM_DEF,
   global_rules: GLOBAL_RULE_FORM_DEF,
   priority_logic: PRIORITY_LOGIC_FORM_DEF,
   model_capability_matrix: MODEL_CAPABILITY_FORM_DEF,

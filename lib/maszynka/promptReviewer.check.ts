@@ -54,6 +54,7 @@ const CONTRACT_WITH_PACKSHOT: Contract = {
   hook: { id: "h1", version: 1, snapshot: { id: "h1", text: "Hook" } },
   style: { id: "s1", version: 1, snapshot: null },
   cameraSetting: { id: "c1", version: 1, snapshot: null },
+  lighting: { id: "l1", version: 1, snapshot: null },
   globalRules: { version: 1, snapshot: [] },
   priorityLogic: { version: 1, snapshot: null },
   modelCapability: { modelKey: "nano-banana", version: 1, snapshot: null },

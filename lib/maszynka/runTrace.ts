@@ -26,6 +26,7 @@ export type SelectedConfigKind =
   | "hook"
   | "style"
   | "cameraSetting"
+  | "lighting"
   | "globalRules"
   | "priorityLogic"
   | "modelCapability"
@@ -80,6 +81,13 @@ export function summarizeSelectedConfigs(contract: Contract | null | undefined):
       version: contract.cameraSetting?.version ?? 0,
       label: contract.cameraSetting?.snapshot?.cameraSettingName ?? "(unresolved)",
       resolved: contract.cameraSetting?.snapshot != null,
+    },
+    {
+      kind: "lighting",
+      id: contract.lighting?.id ?? "",
+      version: contract.lighting?.version ?? 0,
+      label: contract.lighting?.snapshot?.name ?? "(unresolved)",
+      resolved: contract.lighting?.snapshot != null,
     },
     {
       kind: "globalRules",
