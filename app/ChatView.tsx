@@ -616,10 +616,10 @@ export default function ChatView({
                       void send();
                     }
                   }}
-                  rows={1}
+                  rows={3}
                   disabled={!orKey}
                   placeholder={orKey ? "Message… (Enter to send, Shift+Enter for newline)" : "Enter your OpenRouter key above to start chatting"}
-                  className="max-h-48 min-h-[2.75rem] flex-1 resize-y rounded-xl border border-neutral-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100 disabled:cursor-not-allowed disabled:bg-neutral-100 disabled:text-neutral-400"
+                  className="max-h-64 min-h-[5.25rem] flex-1 resize-y rounded-xl border border-neutral-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100 disabled:cursor-not-allowed disabled:bg-neutral-100 disabled:text-neutral-400"
                 />
                 {streaming ? (
                   <button
@@ -801,11 +801,66 @@ function GenPicker({
   );
 }
 
+// Shared by JsonBlock's "copy" and the reply footer's "copy" — writes text to the
+// clipboard and flips a `copied` flag for 1200ms so the button can echo the label.
+function useClipboardCopy(text: string) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard
+      ?.writeText(text)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1200);
+      })
+      .catch(() => {});
+  };
+  return { copied, copy };
+}
+
+// Two offset squares — the conventional "copy" glyph. Inline SVG rather than an icon
+// dependency: this file draws its handful of glyphs as emoji or markup already.
+function CopyIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="size-3.5"
+      aria-hidden="true"
+    >
+      <rect x="6" y="6" width="8" height="8" rx="1.5" />
+      <path d="M10 6V3.5A1.5 1.5 0 0 0 8.5 2h-5A1.5 1.5 0 0 0 2 3.5v5A1.5 1.5 0 0 0 3.5 10H6" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="size-3.5"
+      aria-hidden="true"
+    >
+      <path d="m3 8.5 3 3 7-7" />
+    </svg>
+  );
+}
+
 function MessageBubble({ message, streaming }: { message: ChatMessage; streaming: boolean }) {
   const isUser = message.role === "user";
   const isEmptyStreaming = !isUser && !message.content && !message.reasoning && !message.error;
   const [showJson, setShowJson] = useState(false);
   const hasJson = message.request != null || message.response != null;
+  const hasContent = !isUser && Boolean(message.content);
+  const { copied, copy } = useClipboardCopy(message.content);
   return (
     <div className={`mb-5 flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div className={`max-w-[85%] ${isUser ? "" : "w-full"}`}>
@@ -847,8 +902,24 @@ function MessageBubble({ message, streaming }: { message: ChatMessage; streaming
         {message.error && (
           <p className="mt-1 rounded-lg bg-red-50 px-3 py-1.5 text-xs text-red-600">{message.error}</p>
         )}
-        {!streaming && (message.usage || hasJson) && (
+        {!streaming && (message.usage || hasJson || hasContent) && (
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-[11px] text-neutral-400">
+            {hasContent && (
+              <button
+                type="button"
+                onClick={copy}
+                title={copied ? "Copied to clipboard" : "Copy reply as markdown"}
+                aria-label={copied ? "Copied to clipboard" : "Copy reply as markdown"}
+                className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-medium transition ${
+                  copied
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-600"
+                    : "border-neutral-200 bg-white text-neutral-500 hover:border-neutral-300 hover:bg-neutral-50 hover:text-neutral-700"
+                }`}
+              >
+                {copied ? <CheckIcon /> : <CopyIcon />}
+                {copied ? "copied" : "copy"}
+              </button>
+            )}
             {message.usage && (
               <span>
                 {fmtTokens(message.usage.totalTokens)} tokens · {fmtCost(message.usage.costUsd)}
@@ -881,18 +952,9 @@ function MessageBubble({ message, streaming }: { message: ChatMessage; streaming
 }
 
 function JsonBlock({ title, value }: { title: string; value: unknown }) {
-  const [copied, setCopied] = useState(false);
   const text = useMemo(() => (value == null ? "" : JSON.stringify(value, null, 2)), [value]);
+  const { copied, copy } = useClipboardCopy(text);
   if (value == null) return null;
-  const copy = () => {
-    navigator.clipboard
-      ?.writeText(text)
-      .then(() => {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1200);
-      })
-      .catch(() => {});
-  };
   return (
     <div className="overflow-hidden rounded-lg border border-neutral-200 bg-neutral-50">
       <div className="flex items-center justify-between border-b border-neutral-200 px-3 py-1.5">
