@@ -63,6 +63,14 @@ export interface VideoModelDef {
   /** Source-audio parameter name, for models that need audio alongside video (e.g.
    *  sync-lipsync's "audio_url"). Independent of inputMode. */
   audioParam?: string;
+  /** Boolean audio on/off switch, when the endpoint's input schema exposes one. Distinct
+   *  from `audioParam` above (that's an *input file*, sync-lipsync's source audio track).
+   *  Three names appear across the catalog, all defaulting `true` server-side: `generate_audio`
+   *  means "synthesize a new soundtrack" (Veo/Seedance/Kling-v3-text-and-image); `keep_audio` /
+   *  `keep_original_sound` mean "preserve the source video's existing audio" (Kling O3 edit /
+   *  Kling motion-control). A literal union, not `string` — it's a closed set per fal's schema,
+   *  and a typo here should be a compile error, not a silent 422. */
+  audioToggleParam?: "generate_audio" | "keep_audio" | "keep_original_sound";
   /** True for endpoints with no prompt param at all (upscalers, lipsync) — the UI
    *  doesn't require prompt text and buildVideoInput omits the key entirely. */
   noPrompt?: boolean;
@@ -76,11 +84,14 @@ export interface VideoModelDef {
 export interface VideoSettings {
   durationSec: number; // requested seconds of output
   aspectRatio: string; // "" = model default
+  generateAudio: boolean; // operator-facing audio on/off; only sent when the model declares audioToggleParam
 }
 
 export const DEFAULT_VIDEO_SETTINGS: VideoSettings = {
   durationSec: 5,
   aspectRatio: "",
+  // true matches every endpoint's own server-side default, so leaving this alone changes nothing.
+  generateAudio: true,
 };
 
 // --- field option sets --------------------------------------------------
@@ -158,6 +169,7 @@ export const VIDEO_MODELS: VideoModelDef[] = [
     blurb: "Google's flagship. Cinematic text-to-video with native audio, up to 8s.",
     tier: "flagship",
     fields: [duration(VEO_DUR_OPTS), aspect(VEO_ASPECT_OPTS)],
+    audioToggleParam: "generate_audio", // VERIFIED (schema): boolean, default true
     priceUnit: "second",
   },
   {
@@ -173,6 +185,7 @@ export const VIDEO_MODELS: VideoModelDef[] = [
     tier: "flagship",
     fields: [duration(VEO_DUR_OPTS), aspect(VEO_ASPECT_OPTS)],
     startParam: "image_url", // VERIFIED (schema)
+    audioToggleParam: "generate_audio", // VERIFIED (schema): boolean, default true
     priceUnit: "second",
   },
   {
@@ -185,6 +198,7 @@ export const VIDEO_MODELS: VideoModelDef[] = [
     blurb: "Faster, cheaper Veo 3.1 — same native-audio text-to-video, lower cost.",
     tier: "quality",
     fields: [duration(VEO_DUR_OPTS), aspect(VEO_ASPECT_OPTS)],
+    audioToggleParam: "generate_audio", // VERIFIED (schema): boolean, default true
     priceUnit: "second",
   },
   {
@@ -198,6 +212,7 @@ export const VIDEO_MODELS: VideoModelDef[] = [
     tier: "quality",
     fields: [duration(VEO_DUR_OPTS), aspect(VEO_ASPECT_OPTS)],
     startParam: "image_url", // VERIFIED (search)
+    audioToggleParam: "generate_audio", // VERIFIED (schema): boolean, default true
     priceUnit: "second",
   },
 
@@ -212,6 +227,7 @@ export const VIDEO_MODELS: VideoModelDef[] = [
     blurb: "Kling 3.0 Pro text-to-video with native audio.",
     tier: "flagship",
     fields: [duration(KLING_DUR_OPTS), aspect(KLING_ASPECT_OPTS)],
+    audioToggleParam: "generate_audio", // VERIFIED (schema): boolean, default true
     priceUnit: "second",
   },
   {
@@ -227,6 +243,7 @@ export const VIDEO_MODELS: VideoModelDef[] = [
     fields: [duration(KLING_DUR_OPTS)], // VERIFIED: i2v has no aspect_ratio param
     startParam: "start_image_url", // VERIFIED
     endParam: "end_image_url", // VERIFIED
+    audioToggleParam: "generate_audio", // VERIFIED (schema): boolean, default true
     priceUnit: "second",
   },
   {
@@ -241,6 +258,7 @@ export const VIDEO_MODELS: VideoModelDef[] = [
     fields: [duration(KLING_DUR_OPTS)], // VERIFIED (search): start/end frames + duration; no aspect_ratio, mirrors Pro
     startParam: "start_image_url", // VERIFIED (search)
     endParam: "end_image_url", // VERIFIED (search)
+    audioToggleParam: "generate_audio", // VERIFIED (schema): boolean, default true
     priceUnit: "second",
   },
   {
@@ -256,6 +274,7 @@ export const VIDEO_MODELS: VideoModelDef[] = [
     fields: [], // VERIFIED (search): output duration follows the input video; no duration control
     videoParam: "video_url", // VERIFIED (search): confirmed on the sibling o1/video-to-video/edit endpoint;
     // o3's own /api page was blocked by fal.ai's bot checkpoint, so this is verified by family analogy, not direct fetch.
+    audioToggleParam: "keep_audio", // VERIFIED (schema): boolean, default true — preserves the source video's audio
     priceUnit: "second",
   },
   {
@@ -270,6 +289,7 @@ export const VIDEO_MODELS: VideoModelDef[] = [
     fields: [], // VERIFIED (schema): no duration/aspect params — output follows the reference video
     startParam: "image_url", // VERIFIED (schema): character reference image (required)
     videoParam: "video_url", // VERIFIED (schema): reference motion video (required)
+    audioToggleParam: "keep_original_sound", // VERIFIED (schema): boolean, default true — preserves the source video's audio
     // VERIFIED (schema): `character_orientation` is required and has NO default — without it
     // every request 422s. "image" follows the reference image's orientation (max 10s output);
     // "video" follows the reference video (max 30s, better for complex motion).
@@ -289,6 +309,7 @@ export const VIDEO_MODELS: VideoModelDef[] = [
     blurb: "ByteDance Seedance 2.0 — strong quality at a lower price. Audio included.",
     tier: "quality",
     fields: [duration(SEEDANCE_DUR_OPTS), aspect(SEEDANCE_ASPECT_OPTS)],
+    audioToggleParam: "generate_audio", // VERIFIED (schema): boolean, default true
     priceUnit: "second",
   },
   {
@@ -303,6 +324,7 @@ export const VIDEO_MODELS: VideoModelDef[] = [
     fields: [duration(SEEDANCE_DUR_OPTS), aspect(SEEDANCE_ASPECT_OPTS)],
     startParam: "image_url", // VERIFIED
     endParam: "end_image_url", // VERIFIED
+    audioToggleParam: "generate_audio", // VERIFIED (schema): boolean, default true
     priceUnit: "second",
   },
   {
@@ -318,6 +340,7 @@ export const VIDEO_MODELS: VideoModelDef[] = [
     startParam: "image_urls", // VERIFIED (search) via fal-ai/seedance-2.0-api: an ARRAY (up to 9), not a single
     // image_url. The UI offers one upload slot; we send it as a 1-element array (startParamIsArray).
     startParamIsArray: true,
+    audioToggleParam: "generate_audio", // VERIFIED (schema): boolean, default true
     priceUnit: "second",
   },
   {
@@ -330,6 +353,7 @@ export const VIDEO_MODELS: VideoModelDef[] = [
     blurb: "Faster, cheaper Seedance 2.0 tier — same schema, lower latency and cost.",
     tier: "budget",
     fields: [duration(SEEDANCE_DUR_OPTS), aspect(SEEDANCE_ASPECT_OPTS)],
+    audioToggleParam: "generate_audio", // VERIFIED (schema): boolean, default true
     priceUnit: "second",
   },
   {
@@ -344,6 +368,7 @@ export const VIDEO_MODELS: VideoModelDef[] = [
     fields: [duration(SEEDANCE_DUR_OPTS), aspect(SEEDANCE_ASPECT_OPTS)],
     startParam: "image_url", // VERIFIED (search)
     endParam: "end_image_url", // VERIFIED (search)
+    audioToggleParam: "generate_audio", // VERIFIED (schema): boolean, default true
     priceUnit: "second",
   },
   {
@@ -358,6 +383,7 @@ export const VIDEO_MODELS: VideoModelDef[] = [
     fields: [duration(SEEDANCE_DUR_OPTS), aspect(SEEDANCE_ASPECT_OPTS)],
     startParam: "image_urls", // VERIFIED (search): same array param as the standard-tier reference endpoint
     startParamIsArray: true,
+    audioToggleParam: "generate_audio", // VERIFIED (schema): boolean, default true
     priceUnit: "second",
   },
 
@@ -568,6 +594,14 @@ export function buildVideoInput(
   // Source audio — independent of inputMode (only sync-lipsync uses it today).
   if (model.audioParam && frames.audioUrl) {
     input[model.audioParam] = frames.audioUrl;
+  }
+
+  // Audio on/off toggle — always sent (not just when false) when the model declares
+  // one, so the request-preview panel never hides an operator-set value. Semantics
+  // differ by param name (generate_audio = synthesize new; keep_audio/keep_original_sound
+  // = preserve source), but the boolean itself is the one on/off switch we expose.
+  if (model.audioToggleParam) {
+    input[model.audioToggleParam] = s.generateAudio;
   }
 
   // Duration — schema-gated, and the wire type differs per family (VERIFIED against each

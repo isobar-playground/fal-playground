@@ -170,6 +170,77 @@ for (const m of VIDEO_MODELS) {
   }
 }
 
+// --- audioToggleParam is set on exactly the expected 15 endpoints, nowhere else ----
+// Hardcoded (mirrors CLIENT_IDS above) so an added/removed model has to touch this
+// list on purpose — the invariant that rots silently otherwise.
+const AUDIO_TOGGLE_KEYS = [
+  // generate_audio (13): all four Veo 3.1, all six Seedance 2.0, three Kling v3 text/image
+  "veo3.1-text",
+  "veo3.1-start",
+  "veo3.1-fast-text",
+  "veo3.1-fast-start",
+  "seedance2-text",
+  "seedance2-start-end",
+  "seedance2-reference",
+  "seedance2-fast-text",
+  "seedance2-fast-start-end",
+  "seedance2-fast-reference",
+  "kling3-text",
+  "kling3-start-end",
+  "kling3-standard-start-end",
+  // keep_audio (1)
+  "kling-o3-edit",
+  // keep_original_sound (1)
+  "kling3-motion-control",
+].sort();
+const actualAudioToggleKeys = VIDEO_MODELS.filter((m) => m.audioToggleParam).map((m) => m.key).sort();
+assert.deepEqual(
+  actualAudioToggleKeys,
+  AUDIO_TOGGLE_KEYS,
+  "audioToggleParam must be declared on exactly the 15 audio-capable endpoints, no more no less",
+);
+// The five endpoints with no audio parameter at all must not declare one either.
+const NO_AUDIO_PARAM_IDS = [
+  "xai/grok-imagine-video/text-to-video",
+  "xai/grok-imagine-video/v1.5/image-to-video",
+  "xai/grok-imagine-video/edit-video",
+  "fal-ai/topaz/upscale/video",
+  "fal-ai/sync-lipsync/v3",
+];
+for (const id of NO_AUDIO_PARAM_IDS) {
+  const m = VIDEO_MODELS.find((m) => m.id === id);
+  assert.ok(m, `expected a catalog entry for no-audio-param endpoint "${id}"`);
+  assert.ok(!m!.audioToggleParam, `"${m!.key}" (${id}) must not declare audioToggleParam — its schema has no audio param`);
+}
+
+// --- buildVideoInput sends generateAudio:false on the right param, per param name ---
+const audioOffSettings = { ...DEFAULT_VIDEO_SETTINGS, generateAudio: false };
+for (const [param, wantKey] of [
+  ["generate_audio", "veo3.1-text"],
+  ["keep_audio", "kling-o3-edit"],
+  ["keep_original_sound", "kling3-motion-control"],
+] as const) {
+  const m = VIDEO_MODELS.find((m) => m.key === wantKey);
+  assert.ok(m, `expected model "${wantKey}" for audioToggleParam "${param}" check`);
+  assert.equal(m!.audioToggleParam, param, `"${wantKey}" must declare audioToggleParam "${param}"`);
+  const built = buildVideoInput(m!, "a prompt", noFrames, audioOffSettings);
+  assert.equal(built[param], false, `"${wantKey}" must send "${param}": false when generateAudio is false`);
+  // Also confirm the toggle is sent (not omitted) when true — the request-preview
+  // panel must never make an on-by-default value silently vanish from the payload.
+  const builtOn = buildVideoInput(m!, "a prompt", noFrames, DEFAULT_VIDEO_SETTINGS);
+  assert.equal(builtOn[param], true, `"${wantKey}" must send "${param}": true when generateAudio is true (never omitted)`);
+}
+
+// --- the five no-audio-param endpoints emit no audio key at all, either name --------
+const ALL_AUDIO_KEYS = ["generate_audio", "keep_audio", "keep_original_sound"];
+for (const id of NO_AUDIO_PARAM_IDS) {
+  const m = VIDEO_MODELS.find((m) => m.id === id)!;
+  const built = buildVideoInput(m, "a prompt", noFrames, DEFAULT_VIDEO_SETTINGS);
+  for (const k of ALL_AUDIO_KEYS) {
+    assert.ok(!(k in built), `"${m.key}" (${id}) must not emit "${k}" — its schema has no audio parameter`);
+  }
+}
+
 // --- Grok v1.5 image-to-video has no aspect_ratio param ----------------------
 const grokI2v = VIDEO_MODELS.find((m) => m.id === "xai/grok-imagine-video/v1.5/image-to-video");
 assert.ok(grokI2v, "expected the Grok v1.5 image-to-video model");

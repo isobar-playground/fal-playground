@@ -155,6 +155,16 @@ const VIDEO_MODE_BADGE: Record<string, string> = {
   video: "Video",
 };
 
+// Audio-toggle checkbox label, per param semantics: `generate_audio` synthesizes a new
+// soundtrack; `keep_audio` / `keep_original_sound` preserve the source video's existing
+// audio. One neutral-ish switch to the operator, but the copy shouldn't lie about which
+// half of the catalog it's describing.
+const AUDIO_TOGGLE_LABEL: Record<"generate_audio" | "keep_audio" | "keep_original_sound", string> = {
+  generate_audio: "Generate audio",
+  keep_audio: "Keep source audio",
+  keep_original_sound: "Keep source audio",
+};
+
 export default function Page() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
@@ -2813,7 +2823,7 @@ function VideoModelRow({
         </div>
       </div>
 
-      {selected && model.fields.length > 0 && (
+      {selected && (model.fields.length > 0 || model.audioToggleParam) && (
         <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-amber-200/70 pt-3 pl-7 text-sm">
           {hasVideoField(model, "durationSec") && (
             <Select
@@ -2836,6 +2846,20 @@ function VideoModelRow({
                 label: o.label,
               }))}
             />
+          )}
+          {/* ponytail: a standalone checkbox rather than a new VideoField "checkbox" kind —
+              audioToggleParam is the only boolean control in the catalog today, so a generic
+              boolean-field system would be speculative machinery for a single caller. */}
+          {model.audioToggleParam && (
+            <label className="flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={settings.generateAudio}
+                onChange={(e) => onPatch({ generateAudio: e.target.checked })}
+                className="size-4 accent-amber-500"
+              />
+              <span className="text-neutral-500">{AUDIO_TOGGLE_LABEL[model.audioToggleParam]}</span>
+            </label>
           )}
         </div>
       )}

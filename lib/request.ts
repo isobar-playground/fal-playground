@@ -149,6 +149,9 @@ export function videoRequestSchema(model: VideoModelDef): RequestSchema {
   if (model.audioParam) {
     keys[model.audioParam] = { key: model.audioParam, type: "string" };
   }
+  if (model.audioToggleParam) {
+    keys[model.audioToggleParam] = { key: model.audioToggleParam, type: "boolean" };
+  }
   // Required-but-uncontrolled params (e.g. motion-control's character_orientation) are
   // part of the payload, so the override validator must not flag them as unknown.
   for (const k of Object.keys(model.extraInput ?? {})) {
