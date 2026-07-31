@@ -130,19 +130,29 @@ function imageFieldKey(f: Field): string | null {
 }
 
 /**
- * Known input keys for a video model — prompt, frame params (per-model names),
- * and the declarative duration/aspect fields. Mirrors `buildVideoInput`.
+ * Known input keys for a video model — prompt, frame/video/audio params (per-model
+ * names), and the declarative duration/aspect fields. Mirrors `buildVideoInput`.
  */
 export function videoRequestSchema(model: VideoModelDef): RequestSchema {
-  const keys: Record<string, KnownKey> = {
-    prompt: { key: "prompt", type: "string" },
-  };
+  const keys: Record<string, KnownKey> = {};
+  if (!model.noPrompt) keys.prompt = { key: "prompt", type: "string" };
 
-  if (model.inputMode !== "text" && model.startParam) {
-    keys[model.startParam] = { key: model.startParam, type: "string" };
+  if (model.startParam) {
+    keys[model.startParam] = { key: model.startParam, type: model.startParamIsArray ? "array" : "string" };
   }
   if (model.inputMode === "start-end" && model.endParam) {
     keys[model.endParam] = { key: model.endParam, type: "string" };
+  }
+  if (model.inputMode === "video" && model.videoParam) {
+    keys[model.videoParam] = { key: model.videoParam, type: "string" };
+  }
+  if (model.audioParam) {
+    keys[model.audioParam] = { key: model.audioParam, type: "string" };
+  }
+  // Required-but-uncontrolled params (e.g. motion-control's character_orientation) are
+  // part of the payload, so the override validator must not flag them as unknown.
+  for (const k of Object.keys(model.extraInput ?? {})) {
+    keys[k] = { key: k };
   }
 
   for (const f of model.fields) {

@@ -102,18 +102,17 @@ function paramText(v: unknown): string {
   return String(v);
 }
 
-// Video param chips — drop prompt + frame URLs, keep the tunables (duration/aspect).
-function videoParamsOf(input: Record<string, unknown>): Record<string, unknown> {
-  const {
-    prompt: _p,
-    image_url: _i,
-    start_image_url: _s,
-    end_image_url: _e,
-    first_frame_url: _f,
-    last_frame_url: _l,
-    ...rest
-  } = input;
-  return rest;
+// Video param chips — drop prompt + the model's own media params (frame/video/audio
+// URLs — shown separately via dedicated slots/thumbnails), keep the tunables
+// (duration/aspect). Param names vary per model, so we strip by the model's
+// declared param names rather than a hardcoded list (mirrors buildVideoInput).
+function videoParamsOf(input: Record<string, unknown>, model: VideoModelDef): Record<string, unknown> {
+  const strip = new Set(
+    ["prompt", model.startParam, model.endParam, model.videoParam, model.audioParam].filter(
+      (k): k is string => Boolean(k),
+    ),
+  );
+  return Object.fromEntries(Object.entries(input).filter(([k]) => !strip.has(k)));
 }
 
 const VIDEO_PARAM_LABELS: Record<string, string> = {
@@ -135,10 +134,11 @@ interface GalleryImage {
   key: string;
 }
 
-// A video frame slot holds an uploaded File (with a local preview) or a URL
-// (a generated/manual image). Files are eager-uploaded to Fal storage on add; the
-// resulting URL is cached so the request preview shows real URLs and the send path
-// reuses them (no double-upload).
+// A video *media slot* holds an uploaded File (with a local preview) or a URL (a
+// generated/manual result). Used for start/end image frames, and — for the
+// video-to-video family — the source video and source audio too. Files are
+// eager-uploaded to Fal storage on add; the resulting URL is cached so the request
+// preview shows real URLs and the send path reuses them (no double-upload).
 type VideoFrame =
   | { kind: "file"; file: File; previewUrl: string; uploadedUrl?: string; uploading?: boolean; uploadError?: string }
   | { kind: "url"; url: string };
@@ -152,6 +152,7 @@ const VIDEO_MODE_BADGE: Record<string, string> = {
   text: "Text",
   start: "Start",
   "start-end": "Start+End",
+  video: "Video",
 };
 
 export default function Page() {
@@ -439,16 +440,22 @@ export default function Page() {
   );
 
   // --- Video state (separate code path; only used when mode === "video") ---
-  // Step 2 (video) — Start / End frame slots. Each holds an uploaded File (with a
-  // local preview) OR a URL (a generated/manual image), enabling "generate → animate".
+  // Step 3 (video) — media slots: Start / End image frames (text-to-video /
+  // start(-end) models), plus Source video / Source audio (the video-to-video
+  // family). Each holds an uploaded File (with a local preview) OR a URL (a
+  // generated/manual result), enabling "generate → animate" / "generate → edit".
   const [startFrame, setStartFrame] = useState<VideoFrame | null>(null);
   const [endFrame, setEndFrame] = useState<VideoFrame | null>(null);
+  const [sourceVideo, setSourceVideo] = useState<VideoFrame | null>(null);
+  const [sourceAudio, setSourceAudio] = useState<VideoFrame | null>(null);
+  type MediaSlot = "start" | "end" | "video" | "audio";
   const clearFrame = useCallback((frame: VideoFrame | null) => {
     if (frame?.kind === "file") URL.revokeObjectURL(frame.previewUrl);
   }, []);
   const setFrame = useCallback(
-    (slot: "start" | "end", next: VideoFrame | null) => {
-      const apply = slot === "start" ? setStartFrame : setEndFrame;
+    (slot: MediaSlot, next: VideoFrame | null) => {
+      const apply =
+        slot === "start" ? setStartFrame : slot === "end" ? setEndFrame : slot === "video" ? setSourceVideo : setSourceAudio;
       apply((prev) => {
         clearFrame(prev);
         return next;
@@ -457,19 +464,20 @@ export default function Page() {
     [clearFrame],
   );
   const setFrameFile = useCallback(
-    (slot: "start" | "end", file: File) => {
-      if (!file.type.startsWith("image/")) return;
+    (slot: MediaSlot, file: File, mimePrefix: string) => {
+      if (!file.type.startsWith(mimePrefix)) return;
       setFrame(slot, { kind: "file", file, previewUrl: URL.createObjectURL(file), uploading: true });
     },
     [setFrame],
   );
   const setFrameUrl = useCallback(
-    (slot: "start" | "end", url: string) => setFrame(slot, { kind: "url", url }),
+    (slot: MediaSlot, url: string) => setFrame(slot, { kind: "url", url }),
     [setFrame],
   );
 
   // Eager-upload a file frame on add, caching its Fal URL on the frame (mirrors the
-  // reference eager-upload). `apply` is the slot's setter.
+  // reference eager-upload). `apply` is the slot's setter. Media-type agnostic —
+  // fal.storage.upload takes any File, so this is reused for image/video/audio slots.
   const uploadFrame = useCallback(
     (frame: VideoFrame | null, apply: React.Dispatch<React.SetStateAction<VideoFrame | null>>) => {
       if (!apiKey || !frame || frame.kind !== "file" || frame.uploadedUrl || frame.uploadError || !frame.uploading) {
@@ -495,10 +503,14 @@ export default function Page() {
   );
   useEffect(() => uploadFrame(startFrame, setStartFrame), [startFrame, uploadFrame]);
   useEffect(() => uploadFrame(endFrame, setEndFrame), [endFrame, uploadFrame]);
+  useEffect(() => uploadFrame(sourceVideo, setSourceVideo), [sourceVideo, uploadFrame]);
+  useEffect(() => uploadFrame(sourceAudio, setSourceAudio), [sourceAudio, uploadFrame]);
 
   const framesUploading =
     (startFrame?.kind === "file" && startFrame.uploading) ||
     (endFrame?.kind === "file" && endFrame.uploading) ||
+    (sourceVideo?.kind === "file" && sourceVideo.uploading) ||
+    (sourceAudio?.kind === "file" && sourceAudio.uploading) ||
     false;
 
   // Step 4 (video) — single-select model + per-model duration/aspect settings.
@@ -536,7 +548,7 @@ export default function Page() {
   const videoFormRef = useRef<string | null>(null);
   const videoFormSig = `${promptByMode.video} ${frameUrl(startFrame ?? { kind: "url", url: "" }) ?? ""} ${
     frameUrl(endFrame ?? { kind: "url", url: "" }) ?? ""
-  }`;
+  } ${frameUrl(sourceVideo ?? { kind: "url", url: "" }) ?? ""} ${frameUrl(sourceAudio ?? { kind: "url", url: "" }) ?? ""}`;
   useEffect(() => {
     if (videoFormRef.current !== null && videoFormRef.current !== videoFormSig) {
       clearAllVideoOverrides();
@@ -773,9 +785,11 @@ export default function Page() {
   // Video block — same shape, for the single selected model.
   const startResolved = startFrame ? frameUrl(startFrame) : undefined;
   const endResolved = endFrame ? frameUrl(endFrame) : undefined;
+  const videoResolved = sourceVideo ? frameUrl(sourceVideo) : undefined;
+  const audioResolved = sourceAudio ? frameUrl(sourceAudio) : undefined;
   const videoBlock = useMemo(() => {
     const promptText = prompt.trim();
-    const frames = { startUrl: startResolved, endUrl: endResolved };
+    const frames = { startUrl: startResolved, endUrl: endResolved, videoUrl: videoResolved, audioUrl: audioResolved };
     const formInput = buildVideoInput(videoModel, promptText, frames, videoSettingsFor(videoModel.key));
     const overrideText = videoOverrides[videoModel.key];
     if (overrideText === undefined) {
@@ -797,7 +811,7 @@ export default function Page() {
       effectiveInput: validation.parsed,
       blocked: Boolean(validation.syntaxError),
     };
-  }, [videoModel, prompt, startResolved, endResolved, videoSettingsFor, videoOverrides]);
+  }, [videoModel, prompt, startResolved, endResolved, videoResolved, audioResolved, videoSettingsFor, videoOverrides]);
 
   // Send-readiness keys off the *effective* request: an override carrying its own
   // prompt is sendable even with an empty prompt textarea; a syntax-invalid override
@@ -817,15 +831,21 @@ export default function Page() {
   const videoOwnPrompt =
     typeof videoBlock.effectiveInput?.prompt === "string" &&
     (videoBlock.effectiveInput.prompt as string).trim().length > 0;
-  const videoSendReady = !videoBlock.blocked && (promptTyped || videoOwnPrompt);
+  // noPrompt models (upscale/lipsync) never need prompt text to be sendable.
+  const videoSendReady = !videoBlock.blocked && (Boolean(videoModel.noPrompt) || promptTyped || videoOwnPrompt);
 
-  // Video gate: a start/start-end model needs a start frame; end stays optional.
-  const videoStartMissing = videoModel.inputMode !== "text" && !startFrame;
+  // Video gates: a start/start-end model (or a video-to-video model that also pairs
+  // a reference image, e.g. motion-control) needs a start frame; a video-to-video
+  // model needs its source video; a model with an audioParam (lipsync) needs audio.
+  // End frame always stays optional.
+  const videoStartMissing = Boolean(videoModel.startParam) && !startFrame;
+  const videoSourceMissing = videoModel.inputMode === "video" && Boolean(videoModel.videoParam) && !sourceVideo;
+  const videoAudioMissing = Boolean(videoModel.audioParam) && !sourceAudio;
   const canGenerate =
     Boolean(apiKey) &&
     !generating &&
     (isVideo
-      ? videoSendReady && !videoStartMissing && !framesUploading
+      ? videoSendReady && !videoStartMissing && !videoSourceMissing && !videoAudioMissing && !framesUploading
       : imageSendReady && activeModels.length > 0 && !referencesUploading);
 
   const handleGenerate = useCallback(async () => {
@@ -933,23 +953,31 @@ export default function Page() {
 
     const m = videoModel;
 
-    // Frames are eager-uploaded on add. Reuse the cache; upload any straggler.
+    // Media is eager-uploaded on add. Reuse the cache; upload any straggler.
     let startUrl: string | undefined;
     let endUrl: string | undefined;
+    let videoUrl: string | undefined;
+    let audioUrl: string | undefined;
     try {
       configureFal(apiKey);
-      if (m.inputMode !== "text" && startFrame) {
+      if (m.startParam && startFrame) {
         startUrl = startFrame.kind === "file" ? startFrame.uploadedUrl ?? (await uploadReference(startFrame.file)) : startFrame.url;
       }
       if (m.inputMode === "start-end" && endFrame) {
         endUrl = endFrame.kind === "file" ? endFrame.uploadedUrl ?? (await uploadReference(endFrame.file)) : endFrame.url;
       }
+      if (m.inputMode === "video" && sourceVideo) {
+        videoUrl = sourceVideo.kind === "file" ? sourceVideo.uploadedUrl ?? (await uploadReference(sourceVideo.file)) : sourceVideo.url;
+      }
+      if (m.audioParam && sourceAudio) {
+        audioUrl = sourceAudio.kind === "file" ? sourceAudio.uploadedUrl ?? (await uploadReference(sourceAudio.file)) : sourceAudio.url;
+      }
     } catch (e) {
-      alert("Failed to upload frame images:\n" + errMsg(e));
+      alert("Failed to upload frame/video/audio media:\n" + errMsg(e));
       setGenerating(false);
       return;
     }
-    const frames = { startUrl, endUrl };
+    const frames = { startUrl, endUrl, videoUrl, audioUrl };
 
     // Price against fresh Fal numbers right before generating.
     const fresh = await refreshPrices([m.id]);
@@ -977,9 +1005,11 @@ export default function Page() {
         status: "running" as const,
         estimatedCost: estimateVideoCost(m, s, liveBase),
         settings: s,
-        params: videoParamsOf(input),
+        params: videoParamsOf(input, m),
         startUrl,
         endUrl,
+        videoUrl,
+        audioUrl,
         sentInput: input,
       })),
     };
@@ -1013,7 +1043,7 @@ export default function Page() {
 
     setGenerating(false);
     refreshCredits();
-  }, [canGenerate, apiKey, videoModel, videoBlock, startFrame, endFrame, prompt, videoSettingsFor, setVideoRuns, updateVideoItem, refreshPrices, livePrices, refreshCredits]);
+  }, [canGenerate, apiKey, videoModel, videoBlock, startFrame, endFrame, sourceVideo, sourceAudio, prompt, videoSettingsFor, setVideoRuns, updateVideoItem, refreshPrices, livePrices, refreshCredits]);
 
   const resetAll = useCallback(() => {
     if (!confirm("Reset everything? This clears your keys, prompt history, results, references and chat conversations.")) return;
@@ -1034,6 +1064,8 @@ export default function Page() {
     setVideoSettings({});
     setStartFrame((f) => (clearFrame(f), null));
     setEndFrame((f) => (clearFrame(f), null));
+    setSourceVideo((f) => (clearFrame(f), null));
+    setSourceAudio((f) => (clearFrame(f), null));
     setOverrides({});
     setVideoOverrides({});
     // chat path
@@ -1300,8 +1332,8 @@ export default function Page() {
       {isVideo && (
         <Section step={2} title="Model" done={Boolean(videoModel)}>
           <p className="mb-3 text-sm text-neutral-500">
-            Pick <b>one</b> video model. Selecting a <b>text</b> model hides the frame slots; an{" "}
-            <b>image</b> model reveals Start (and optional End) in step 3.
+            Pick <b>one</b> video model. A <b>text</b> model hides step 3; an <b>image</b> model reveals Start (and
+            optional End) frame slots; a <b>video</b> (edit/upscale/lipsync) model reveals a source-video slot instead.
           </p>
           <div className="space-y-5">
             {VIDEO_MODEL_GROUPS.map((group) => (
@@ -1407,18 +1439,91 @@ export default function Page() {
       </Section>
       )}
 
-      {/* STEP 3 — FRAMES (video mode only) */}
+      {/* STEP 3 — FRAMES / SOURCE (video mode only) */}
       {isVideo && (
         <Section
           step={3}
-          title="Frames"
-          done={videoModel.inputMode === "text" || Boolean(startFrame)}
+          title={videoModel.inputMode === "video" ? "Source" : "Frames"}
+          done={
+            videoModel.inputMode === "text"
+              ? true
+              : videoModel.inputMode === "video"
+                ? Boolean(sourceVideo) && !videoStartMissing && !videoAudioMissing
+                : Boolean(startFrame)
+          }
         >
           {videoModel.inputMode === "text" ? (
             <p className="text-sm text-neutral-500">
               <b>{videoModel.label}</b> is text-to-video — it needs no input frames. Pick an{" "}
               <b>image</b> model in step 2 to animate a start (and optional end) frame.
             </p>
+          ) : videoModel.inputMode === "video" ? (
+            <>
+              <p className="mb-3 text-sm text-neutral-500">
+                Drop or pick the <b>source video</b> for <b>{videoModel.label}</b>
+                {videoModel.startParam && (
+                  <>
+                    , a <b>reference image</b>
+                  </>
+                )}
+                {videoModel.audioParam && (
+                  <>
+                    , and the <b>audio</b> to sync
+                  </>
+                )}
+                . {videoModel.noPrompt ? "This model needs no text prompt." : "Describe the edit in the prompt below."}
+              </p>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <FrameSlot
+                  label="Source video"
+                  required
+                  kind="video"
+                  frame={sourceVideo}
+                  pickerUrls={[]}
+                  onFile={(f) => setFrameFile("video", f, "video/")}
+                  onUrl={(u) => setFrameUrl("video", u)}
+                  onClear={() => setFrame("video", null)}
+                />
+                {videoModel.startParam && (
+                  <FrameSlot
+                    label="Reference image"
+                    required
+                    frame={startFrame}
+                    pickerUrls={framePickerUrls}
+                    onFile={(f) => setFrameFile("start", f, "image/")}
+                    onUrl={(u) => setFrameUrl("start", u)}
+                    onClear={() => setFrame("start", null)}
+                  />
+                )}
+                {videoModel.audioParam && (
+                  <FrameSlot
+                    label="Audio"
+                    required
+                    kind="audio"
+                    frame={sourceAudio}
+                    pickerUrls={[]}
+                    onFile={(f) => setFrameFile("audio", f, "audio/")}
+                    onUrl={(u) => setFrameUrl("audio", u)}
+                    onClear={() => setFrame("audio", null)}
+                  />
+                )}
+              </div>
+              {(videoSourceMissing || videoStartMissing || videoAudioMissing) && (
+                <p className="mt-3 text-xs font-medium text-red-500">
+                  {[
+                    videoSourceMissing && "a source video",
+                    videoStartMissing && "a reference image",
+                    videoAudioMissing && "an audio track",
+                  ]
+                    .filter(Boolean)
+                    .join(" and ")}{" "}
+                  {[videoSourceMissing, videoStartMissing, videoAudioMissing].filter(Boolean).length > 1
+                    ? "are"
+                    : "is"}{" "}
+                  required to generate.
+                </p>
+              )}
+            </>
           ) : (
             <>
               <p className="mb-3 text-sm text-neutral-500">
@@ -1437,7 +1542,7 @@ export default function Page() {
                   required
                   frame={startFrame}
                   pickerUrls={framePickerUrls}
-                  onFile={(f) => setFrameFile("start", f)}
+                  onFile={(f) => setFrameFile("start", f, "image/")}
                   onUrl={(u) => setFrameUrl("start", u)}
                   onClear={() => setFrame("start", null)}
                 />
@@ -1446,7 +1551,7 @@ export default function Page() {
                     label="End frame (optional)"
                     frame={endFrame}
                     pickerUrls={framePickerUrls}
-                    onFile={(f) => setFrameFile("end", f)}
+                    onFile={(f) => setFrameFile("end", f, "image/")}
                     onUrl={(u) => setFrameUrl("end", u)}
                     onClear={() => setFrame("end", null)}
                   />
@@ -1463,7 +1568,17 @@ export default function Page() {
       )}
 
       {/* STEP 4 — PROMPT (both modes) */}
-      <Section step={4} title="Prompt" done={prompt.trim().length > 0}>
+      <Section
+        step={4}
+        title="Prompt"
+        done={isVideo && videoModel.noPrompt ? true : prompt.trim().length > 0}
+      >
+        {isVideo && videoModel.noPrompt && (
+          <p className="mb-2 text-sm text-neutral-500">
+            <b>{videoModel.label}</b> takes no text prompt — it works directly from the source media above. Anything
+            typed here is ignored for this model.
+          </p>
+        )}
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
@@ -2515,11 +2630,19 @@ function Lightbox({
 
 /* --------------------------- video subcomponents ------------------------- */
 
-// A Start / End frame slot: drag-drop or click to upload, or pick a generated
-// image from this session. Shows a thumbnail + clear when filled.
+// A Start / End frame slot (or, for the video-to-video family, a source video /
+// source audio slot): drag-drop or click to upload, or pick a generated image from
+// this session (image slots only). Shows a thumbnail/player + clear when filled.
+const SLOT_KIND_INFO: Record<"image" | "video" | "audio", { accept: string; hint: string; noun: string }> = {
+  image: { accept: "image/*", hint: "PNG, JPG, WebP", noun: "an image" },
+  video: { accept: "video/*", hint: "MP4, MOV, WebM", noun: "a video" },
+  audio: { accept: "audio/*", hint: "MP3, WAV, M4A", noun: "an audio file" },
+};
+
 function FrameSlot({
   label,
   required,
+  kind = "image",
   frame,
   pickerUrls,
   onFile,
@@ -2528,6 +2651,7 @@ function FrameSlot({
 }: {
   label: string;
   required?: boolean;
+  kind?: "image" | "video" | "audio";
   frame: VideoFrame | null;
   pickerUrls: string[];
   onFile: (file: File) => void;
@@ -2537,6 +2661,7 @@ function FrameSlot({
   const [over, setOver] = useState(false);
   const [picking, setPicking] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const info = SLOT_KIND_INFO[kind];
 
   return (
     <div className="flex flex-col gap-2">
@@ -2547,8 +2672,18 @@ function FrameSlot({
 
       {frame ? (
         <figure className="relative overflow-hidden rounded-xl border border-neutral-200">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={frameSrc(frame)} alt={label} className="aspect-video w-full object-cover" />
+          {kind === "image" && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={frameSrc(frame)} alt={label} className="aspect-video w-full object-cover" />
+          )}
+          {kind === "video" && (
+            // eslint-disable-next-line jsx-a11y/media-has-caption
+            <video src={frameSrc(frame)} controls className="aspect-video w-full bg-black" />
+          )}
+          {kind === "audio" && (
+            // eslint-disable-next-line jsx-a11y/media-has-caption
+            <audio src={frameSrc(frame)} controls className="w-full px-2 py-3" />
+          )}
           <button
             type="button"
             onClick={onClear}
@@ -2571,16 +2706,16 @@ function FrameSlot({
             if (f) onFile(f);
           }}
           onClick={() => inputRef.current?.click()}
-          className={`flex aspect-video cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-4 py-6 text-center text-sm transition ${
+          className={`flex ${kind === "audio" ? "" : "aspect-video"} cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-4 py-6 text-center text-sm transition ${
             over ? "border-amber-400 bg-amber-50" : "border-neutral-300 hover:border-amber-300"
           }`}
         >
-          <span className="text-neutral-600">Drop an image or click to choose</span>
-          <span className="mt-0.5 text-xs text-neutral-400">PNG, JPG, WebP</span>
+          <span className="text-neutral-600">Drop {info.noun} or click to choose</span>
+          <span className="mt-0.5 text-xs text-neutral-400">{info.hint}</span>
           <input
             ref={inputRef}
             type="file"
-            accept="image/*"
+            accept={info.accept}
             className="hidden"
             onChange={(e) => {
               const f = e.target.files?.[0];
@@ -2787,6 +2922,22 @@ function VideoRunCard({
                     ));
                   })()}
                 </div>
+              </div>
+            )}
+
+            {(item.videoUrl || item.audioUrl) && (
+              <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-neutral-400">
+                <span className="shrink-0">source:</span>
+                {item.videoUrl && (
+                  <a href={item.videoUrl} target="_blank" rel="noreferrer" className="text-amber-600 hover:underline">
+                    video ↗
+                  </a>
+                )}
+                {item.audioUrl && (
+                  <a href={item.audioUrl} target="_blank" rel="noreferrer" className="text-amber-600 hover:underline">
+                    audio ↗
+                  </a>
+                )}
               </div>
             )}
 

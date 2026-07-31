@@ -81,6 +81,8 @@ export interface VideoRunItem {
   params?: Record<string, unknown>; // input params sent to Fal (prompt/frame urls stripped)
   startUrl?: string; // start frame passed in (for the card)
   endUrl?: string; // optional end frame passed in
+  videoUrl?: string; // source video passed in (video-to-video models)
+  audioUrl?: string; // source audio passed in (e.g. lipsync)
   sentInput?: Record<string, unknown>; // exact JSON sent to Fal (incl. prompt/frames) — v3+
 }
 
