@@ -4,7 +4,8 @@
 // request. Tunable — extend/trim freely.
 //
 // Selection rule: per provider, for each quality tier, the newest model plus up to
-// four versions back. General-purpose chat models only — specialized variants
+// four versions back — five for GPT, since removing an in-use model would orphan
+// saved conversations. General-purpose chat models only — specialized variants
 // (codex, audio, search, image, -fast, o-series, Gemma, preview builds, dated
 // snapshots) are omitted. Slugs verified against the live OpenRouter catalog.
 //
@@ -43,6 +44,7 @@ const C_OPUS = "Claude Opus";
 const C_SONNET = "Claude Sonnet";
 const C_HAIKU = "Claude Haiku";
 // GPT — grouped by version (each bundles base / pro / mini / nano).
+const GPT_56 = "GPT-5.6";
 const GPT_55 = "GPT-5.5";
 const GPT_54 = "GPT-5.4";
 const GPT_52 = "GPT-5.2";
@@ -153,6 +155,62 @@ export const CHAT_MODELS: ChatModelDef[] = [
     group: C_HAIKU,
     blurb: "Earlier fast Haiku.",
     contextLength: 200_000,
+  },
+
+  // === GPT-5.6 — three price/performance tiers (sol/terra/luna), not versions ==
+  {
+    id: "openai/gpt-5.6-sol",
+    label: "GPT-5.6 Sol",
+    group: GPT_56,
+    blurb: "Top GPT-5.6 tier — highest quality, priced for it.",
+    contextLength: 1_050_000,
+    reasoning: true,
+    structuredOutput: true,
+  },
+  {
+    id: "openai/gpt-5.6-sol-pro",
+    label: "GPT-5.6 Sol Pro",
+    group: GPT_56,
+    blurb: "Sol's highest-effort reasoning mode — same tier, deeper thinking.",
+    contextLength: 1_050_000,
+    reasoning: true,
+    structuredOutput: true,
+  },
+  {
+    id: "openai/gpt-5.6-terra",
+    label: "GPT-5.6 Terra",
+    group: GPT_56,
+    blurb: "Mid GPT-5.6 tier — balanced cost and capability.",
+    contextLength: 1_050_000,
+    reasoning: true,
+    structuredOutput: true,
+  },
+  {
+    id: "openai/gpt-5.6-terra-pro",
+    label: "GPT-5.6 Terra Pro",
+    group: GPT_56,
+    blurb: "Terra's highest-effort reasoning mode.",
+    contextLength: 1_050_000,
+    reasoning: true,
+    structuredOutput: true,
+  },
+  {
+    id: "openai/gpt-5.6-luna",
+    label: "GPT-5.6 Luna",
+    group: GPT_56,
+    blurb: "Cheapest, fastest GPT-5.6 tier — high-volume, low-stakes tasks.",
+    contextLength: 1_050_000,
+    reasoning: true,
+    structuredOutput: true,
+  },
+  {
+    id: "openai/gpt-5.6-luna-pro",
+    label: "GPT-5.6 Luna Pro",
+    group: GPT_56,
+    blurb: "Luna's highest-effort reasoning mode.",
+    contextLength: 1_050_000,
+    reasoning: true,
+    structuredOutput: true,
   },
 
   // === GPT-5.5 ==============================================================
