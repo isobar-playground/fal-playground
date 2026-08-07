@@ -8,7 +8,7 @@
 // sends ONE non-streaming OpenRouter request through the /api/chat BYOK proxy and
 // renders raw response / parsed JSON / contract fields, all editable before later
 // stages consume them.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CHAT_MODELS, CHAT_MODEL_GROUPS } from "@/lib/chat/models";
 import { configureFal, runModel, uploadReference } from "@/lib/fal";
 import { DEFAULT_SETTINGS, MODELS, MODEL_BY_KEY, MODEL_GROUPS, buildInput } from "@/lib/models";
@@ -53,6 +53,7 @@ import {
   buildJoinInput,
   orderedClips,
   totalDurationSeconds,
+  type OrderedClip,
 } from "@/lib/maszynka-video/joinRequest";
 import { runJoinClips } from "@/lib/maszynka-video/joinClient";
 import type { VideoClipRecord, VideoCropRecord } from "@/lib/maszynka-video/api";
@@ -471,6 +472,12 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
 
+  // --- Run full flow (issue #31) -------------------------------------------------------
+  const [flowStage, setFlowStage] = useState<string | null>(null);
+  const [flowError, setFlowError] = useState<string | null>(null);
+  // Stop is checked between requests — it halts BEFORE the next one, never mid-flight.
+  const stopRef = useRef(false);
+
   const setCfg = useCallback(<K extends keyof PlannerConfig>(key: K, value: PlannerConfig[K]) => {
     setPlannerCfg((prev) => ({ ...prev, [key]: value }));
   }, []);
@@ -652,15 +659,20 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
     [run, adoptPatched],
   );
 
+  // --- stage cores -------------------------------------------------------------------
+  // The per-section handlers AND the Run full flow orchestration (issue #31) share
+  // these. Each core takes explicit inputs (never the possibly-stale `run` closure),
+  // persists its result, adopts the patched run and RETURNS it, so a sequential flow
+  // can thread the latest record from stage to stage.
+
   /** Cuts one generated grid into per-Scene Crops in the browser, uploads each panel
    *  to FAL storage and upserts the records by sceneId (issue #28). Mapping is by the
    *  batch's sceneIds in row-major slot order — never by position alone downstream. */
-  const cropAndStoreGrid = useCallback(
-    async (batch: PlannerGridBatch, imageUrl: string) => {
-      if (!run || !contract) return;
+  const cropGridCore = useCallback(
+    async (runId: string, batch: PlannerGridBatch, imageUrl: string, scenes: PlannerScene[]) => {
       configureFal(apiKey);
       const blobs = await cutGridPanels(imageUrl, batch.gridGenerationPayload, batch.sceneIds.length);
-      const sceneById = new Map(contract.scenes.map((s) => [s.sceneId, s]));
+      const sceneById = new Map(scenes.map((s) => [s.sceneId, s]));
       const records: VideoCropRecord[] = [];
       for (let slot = 0; slot < batch.sceneIds.length && slot < blobs.length; slot++) {
         const sceneId = batch.sceneIds[slot];
@@ -676,22 +688,30 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
         });
       }
       if (records.length === 0) throw new Error("The batch has no sceneIds to map panels onto.");
-      adoptPatched(await patchVideoRun(run.id, { cropRecords: records }));
+      const patched = await patchVideoRun(runId, { cropRecords: records });
+      adoptPatched(patched);
+      return patched;
     },
-    [run, contract, apiKey, adoptPatched],
+    [apiKey, adoptPatched],
   );
 
-  /** Runs ONE grid client-side against FAL and upserts its record — other grids'
-   *  results stay untouched (issue #27). */
-  const handleGenerateGrid = useCallback(
-    async (batch: PlannerGridBatch, modelKey: string, rawParamsText: string) => {
-      if (!run) return;
+  /** Runs ONE grid client-side against FAL, upserts its record (other grids' results
+   *  untouched — issue #27) and auto-cuts its Crops (issue #28). Throws on failure
+   *  AFTER persisting the failed record. */
+  const generateGridCore = useCallback(
+    async (
+      runId: string,
+      batch: PlannerGridBatch,
+      modelKey: string,
+      rawParamsText: string,
+      referenceUrls: string[],
+      scenes: PlannerScene[],
+    ) => {
       const model = MODEL_BY_KEY[modelKey];
       if (!model) throw new Error(`Unknown image model: ${modelKey}`);
       const { params, error } = parseRawParams(rawParamsText);
       if (error) throw new Error(error);
       configureFal(apiKey);
-      const referenceUrls = run.referenceFiles.map((f) => f.url);
       const input = mergeGridInput(
         buildInput(
           model,
@@ -718,26 +738,43 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
       } catch (e) {
         record.error = e instanceof Error ? e.message : String(e);
       }
-      adoptPatched(await patchVideoRun(run.id, { gridRecord: record }));
+      let patched = await patchVideoRun(runId, { gridRecord: record });
+      adoptPatched(patched);
       if (record.error) throw new Error(record.error);
       // Panels are cut automatically after a successful generation (issue #28) — a
       // crop failure must not mask the successful grid, so it surfaces separately.
       try {
-        await cropAndStoreGrid(batch, record.imageUrl!);
+        patched = await cropGridCore(runId, batch, record.imageUrl!, scenes);
       } catch (e) {
         throw new Error(`Grid generated, but auto-crop failed: ${e instanceof Error ? e.message : String(e)}`);
       }
+      return patched;
     },
-    [run, apiKey, adoptPatched, cropAndStoreGrid],
+    [apiKey, adoptPatched, cropGridCore],
+  );
+
+  const handleGenerateGrid = useCallback(
+    async (batch: PlannerGridBatch, modelKey: string, rawParamsText: string) => {
+      if (!run || !contract) return;
+      await generateGridCore(
+        run.id,
+        batch,
+        modelKey,
+        rawParamsText,
+        run.referenceFiles.map((f) => f.url),
+        contract.scenes,
+      );
+    },
+    [run, contract, generateGridCore],
   );
 
   const handleCropGrid = useCallback(
     async (batch: PlannerGridBatch) => {
       const imageUrl = run?.grids[batch.batchId]?.imageUrl;
-      if (!imageUrl) throw new Error("Generate the grid first.");
-      await cropAndStoreGrid(batch, imageUrl);
+      if (!run || !contract || !imageUrl) throw new Error("Generate the grid first.");
+      await cropGridCore(run.id, batch, imageUrl, contract.scenes);
     },
-    [run, cropAndStoreGrid],
+    [run, contract, cropGridCore],
   );
 
   /** Persists the run-level default image-to-video model (issue #29). */
@@ -755,10 +792,14 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
 
   /** Animates ONE Scene from its Crop (issue #29). The sceneId gate re-runs here as
    *  the last line of defense — no request is sent on a mismatch. */
-  const handleGenerateClip = useCallback(
-    async (scene: PlannerScene, modelKey: string, rawParamsText: string) => {
-      if (!run) return;
-      const crop = run.crops[scene.sceneId];
+  const generateClipCore = useCallback(
+    async (
+      runId: string,
+      scene: PlannerScene,
+      crop: VideoCropRecord | undefined,
+      modelKey: string,
+      rawParamsText: string,
+    ) => {
       const gateError = validateSceneClip(crop, scene);
       if (gateError) throw new Error(gateError);
       const model = VIDEO_MODEL_BY_KEY[modelKey];
@@ -771,7 +812,7 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
         durationSec: scene.targetClipDurationSeconds ?? DEFAULT_VIDEO_SETTINGS.durationSec,
       };
       const input = mergeGridInput(
-        buildVideoInput(model, clipPromptFromScene(scene.raw), { startUrl: crop.url }, settings),
+        buildVideoInput(model, clipPromptFromScene(scene.raw), { startUrl: crop!.url }, settings),
         params,
       );
       const record: VideoClipRecord = {
@@ -791,10 +832,20 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
       } catch (e) {
         record.error = e instanceof Error ? e.message : String(e);
       }
-      adoptPatched(await patchVideoRun(run.id, { clipRecord: record }));
+      const patched = await patchVideoRun(runId, { clipRecord: record });
+      adoptPatched(patched);
       if (record.error) throw new Error(record.error);
+      return patched;
     },
-    [run, apiKey, adoptPatched],
+    [apiKey, adoptPatched],
+  );
+
+  const handleGenerateClip = useCallback(
+    async (scene: PlannerScene, modelKey: string, rawParamsText: string) => {
+      if (!run) return;
+      await generateClipCore(run.id, scene, run.crops[scene.sceneId], modelKey, rawParamsText);
+    },
+    [run, generateClipCore],
   );
 
   /** Replace crop (issue #28): the operator's upload swaps THIS Scene's crop only. */
@@ -815,29 +866,134 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
 
   /** Join clips (issue #30): hard concatenation of the full clips in global order
    *  via the verified FAL ffmpeg merge-videos endpoint — no trims, no transitions. */
+  const joinClipsCore = useCallback(
+    async (runId: string, clips: OrderedClip[]) => {
+      configureFal(apiKey);
+      const input = buildJoinInput(clips);
+      const requestRecord = { endpoint: FFMPEG_MERGE_VIDEOS_ENDPOINT, input };
+      try {
+        const { videoUrl, raw } = await runJoinClips(input);
+        const patched = await patchVideoRun(runId, {
+          joinRequest: requestRecord,
+          joinResponse: raw,
+          finalVideoUrl: videoUrl,
+        });
+        adoptPatched(patched);
+        return patched;
+      } catch (e) {
+        try {
+          adoptPatched(await patchVideoRun(runId, { joinRequest: requestRecord }));
+        } catch {
+          /* keep the primary error */
+        }
+        throw e;
+      }
+    },
+    [apiKey, adoptPatched],
+  );
+
   const handleJoinClips = useCallback(async () => {
     if (!run || !joinPlan || joinPlan.clips.length === 0) return;
     setJoining(true);
     setJoinError(null);
-    configureFal(apiKey);
-    const input = buildJoinInput(joinPlan.clips);
-    const requestRecord = { endpoint: FFMPEG_MERGE_VIDEOS_ENDPOINT, input };
     try {
-      const { videoUrl, raw } = await runJoinClips(input);
-      adoptPatched(
-        await patchVideoRun(run.id, { joinRequest: requestRecord, joinResponse: raw, finalVideoUrl: videoUrl }),
-      );
+      await joinClipsCore(run.id, joinPlan.clips);
     } catch (e) {
       setJoinError(e instanceof Error ? e.message : "Join clips failed");
-      try {
-        adoptPatched(await patchVideoRun(run.id, { joinRequest: requestRecord }));
-      } catch {
-        /* keep the primary error */
-      }
     } finally {
       setJoining(false);
     }
-  }, [run, joinPlan, apiKey, adoptPatched]);
+  }, [run, joinPlan, joinClipsCore]);
+
+  /** Run full flow (issue #31): Planner → grids (+ auto-Crops) → Scenes → Final
+   *  video, sequentially, auto-accepting each stage's output. Halts on the two hard
+   *  validation failures (planner validationError, crop/scene sceneId mismatch) and
+   *  on any stage whose output the next stage cannot exist without; Stop halts
+   *  before the next request. A stopped or failed flow resumes manually per section
+   *  without rerunning finished stages — every section stays independently runnable. */
+  const handleRunFullFlow = useCallback(async () => {
+    if (!run) return;
+    stopRef.current = false;
+    setFlowError(null);
+    try {
+      // 1. Planner — same request the manual button sends.
+      setFlowStage("Planner");
+      const body = buildPlannerRequestBody(
+        plannerCfg,
+        { globalRules, priorityLogic },
+        run.referenceFiles.map((f) => f.url),
+      );
+      const { raw, content } = await callPlanner(orKey, body);
+      const parsed = parsePlannerContent(content);
+      let current = await patchVideoRun(run.id, {
+        plannerConfig: plannerCfg,
+        plannerRequest: body,
+        plannerResponse: raw,
+        ...(parsed.validationError
+          ? { plannerValidationError: parsed.validationError }
+          : { plannerOutput: parsed.parsed, plannerValidationError: "" }),
+      });
+      adoptPatched(current);
+      if (parsed.validationError) throw new Error(`Planner validationError: ${parsed.validationError}`);
+
+      // 2. Grids + Crops — one at a time, in batch order. Auto-accepts the planner's
+      // payloads; model/raw-params reuse each section's stored choice when present.
+      const batches = parsed.batches;
+      for (let i = 0; i < batches.length; i++) {
+        if (stopRef.current) return;
+        const batch = batches[i];
+        setFlowStage(`Grid ${i + 1}/${batches.length} (${batch.batchId})`);
+        const storedGrid = current.grids[batch.batchId];
+        current = await generateGridCore(
+          current.id,
+          batch,
+          storedGrid?.modelKey ?? MODELS[0].key,
+          storedGrid?.rawParams ?? "",
+          current.referenceFiles.map((f) => f.url),
+          parsed.scenes,
+        );
+      }
+
+      // 3. Scenes — run-level default model, per-scene stored overrides respected.
+      for (let i = 0; i < parsed.scenes.length; i++) {
+        if (stopRef.current) return;
+        const scene = parsed.scenes[i];
+        setFlowStage(`Scene ${i + 1}/${parsed.scenes.length} (${scene.sceneId || `order ${scene.order}`})`);
+        const storedClip = current.clips[scene.sceneId];
+        current = await generateClipCore(
+          current.id,
+          scene,
+          current.crops[scene.sceneId],
+          storedClip?.modelKey ?? defaultVideoModelKey,
+          storedClip?.rawParams ?? "",
+        );
+      }
+
+      // 4. Final video.
+      if (stopRef.current) return;
+      setFlowStage("Final video (join clips)");
+      const ordered = orderedClips(parsed.scenes, current.clips);
+      if (ordered.missingSceneIds.length > 0) {
+        throw new Error(`Missing clips for: ${ordered.missingSceneIds.join(", ")}`);
+      }
+      await joinClipsCore(current.id, ordered.clips);
+    } catch (e) {
+      setFlowError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFlowStage(null);
+    }
+  }, [
+    run,
+    plannerCfg,
+    globalRules,
+    priorityLogic,
+    orKey,
+    adoptPatched,
+    generateGridCore,
+    generateClipCore,
+    joinClipsCore,
+    defaultVideoModelKey,
+  ]);
 
   const handleApplyOutputEdits = useCallback(async () => {
     if (!run) return;
@@ -1003,6 +1159,48 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
             ))}
           </ul>
         )}
+      </section>
+
+      {/* RUN FULL FLOW (issue #31) — every stage in order with one click; Stop halts
+         before the next request; manual per-section reruns stay available. */}
+      <section className="mb-5 rounded-2xl border border-amber-200 bg-amber-50/50 p-5 shadow-sm">
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => void handleRunFullFlow()}
+            disabled={plannerBlockers.length > 0 || !apiKey || flowStage !== null}
+            className={PRIMARY_BTN_CLS}
+          >
+            {flowStage !== null ? "Running…" : "Run full flow"}
+          </button>
+          {flowStage !== null && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  stopRef.current = true;
+                }}
+                className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-sm text-red-600 hover:bg-red-50"
+              >
+                Stop
+              </button>
+              <span className="text-sm text-neutral-600">
+                <span className="mr-1 inline-block h-2 w-2 animate-pulse rounded-full bg-amber-500" />
+                {flowStage}
+              </span>
+            </>
+          )}
+          {flowStage === null && plannerBlockers.length + (apiKey ? 0 : 1) > 0 && (
+            <span className="text-xs text-neutral-400">
+              {[...plannerBlockers, ...(apiKey ? [] : ["Fal.ai key missing"])].join(" · ")}
+            </span>
+          )}
+        </div>
+        <p className="mt-2 text-xs text-neutral-500">
+          Planner → grids → Crops → Scenes → Final video, auto-accepting each stage&apos;s output. Halts only on hard
+          validation failures; a stopped or failed flow resumes manually per section below.
+        </p>
+        {flowError && <p className="mt-2 text-sm text-red-600">{flowError}</p>}
       </section>
 
       {/* PLANNER (issue #25) — one non-streaming OpenRouter call; every output is
