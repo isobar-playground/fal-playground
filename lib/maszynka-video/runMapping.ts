@@ -40,6 +40,21 @@ export interface VideoCropRecord {
   replaced: boolean;
 }
 
+/** One generated Clip (issue #29, CONTEXT.md "Clip"), keyed by `sceneId` in
+ *  `VideoRun.clips`. `modelKey` is the video model actually used (run default or the
+ *  Scene's override); `durationSeconds` is the Scene's target duration at generation
+ *  time — the Final video stage sums these. */
+export interface VideoClipRecord {
+  sceneId: string;
+  modelKey: string;
+  rawParams: string;
+  request: unknown;
+  response: unknown;
+  videoUrl: string | null;
+  error: string | null;
+  durationSeconds: number | null;
+}
+
 export interface VideoRun {
   id: string;
   createdAt: string;
@@ -69,6 +84,11 @@ export interface VideoRun {
   /** Crops by sceneId (issue #28) — upserted per scene; Replace crop swaps one
    *  scene's entry without touching any other crop. */
   crops: Record<string, VideoCropRecord>;
+  /** Run-level default image-to-video model (issue #29) — applied to every Scene
+   *  unless the Scene overrides it. A lib/video/models.ts catalog key. */
+  defaultVideoModelKey: string | null;
+  /** Clips by sceneId (issue #29) — upserted per scene, other clips untouched. */
+  clips: Record<string, VideoClipRecord>;
 }
 
 export interface VideoRunRow {
@@ -86,6 +106,8 @@ export interface VideoRunRow {
   reference_files: VideoReferenceFile[] | null;
   grids: Record<string, VideoGridRecord> | null;
   crops: Record<string, VideoCropRecord> | null;
+  default_video_model_key: string | null;
+  clips: Record<string, VideoClipRecord> | null;
 }
 
 export function rowToVideoRun(row: VideoRunRow): VideoRun {
@@ -105,5 +127,7 @@ export function rowToVideoRun(row: VideoRunRow): VideoRun {
     referenceFiles: row.reference_files ?? [],
     grids: row.grids ?? {},
     crops: row.crops ?? {},
+    defaultVideoModelKey: row.default_video_model_key ?? null,
+    clips: row.clips ?? {},
   };
 }

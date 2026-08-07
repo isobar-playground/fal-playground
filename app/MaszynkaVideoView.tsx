@@ -47,7 +47,21 @@ import {
   panelRects,
   snapCutLines,
 } from "@/lib/maszynka-video/crop";
-import type { VideoCropRecord } from "@/lib/maszynka-video/api";
+import { clipPromptFromScene, validateSceneClip } from "@/lib/maszynka-video/clipRequest";
+import type { VideoClipRecord, VideoCropRecord } from "@/lib/maszynka-video/api";
+import { runVideoModel } from "@/lib/video/fal";
+import {
+  DEFAULT_VIDEO_SETTINGS,
+  VIDEO_MODELS,
+  VIDEO_MODEL_BY_KEY,
+  buildVideoInput,
+} from "@/lib/video/models";
+import type { PlannerScene } from "@/lib/maszynka-video/plannerContract";
+
+/** The Scene stage's model catalog: image-to-video only (issue #29 — a Clip is
+ *  animated from a Crop, so text-only / start-end / video-to-video modes are out). */
+const I2V_MODELS = VIDEO_MODELS.filter((m) => m.inputMode === "start");
+const I2V_MODEL_GROUPS = [...new Set(I2V_MODELS.map((m) => m.group))];
 
 const INPUT_CLS =
   "w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100";
@@ -289,6 +303,125 @@ function GridSection({
   );
 }
 
+/** One Scene section (issue #29): crop preview + scene JSON + per-Scene model
+ *  override + Generate scene. The sceneId gate renders its error INSTEAD of the
+ *  Generate button being usable — no request leaves on a mismatch. */
+function SceneSection({
+  scene,
+  crop,
+  stored,
+  defaultModelKey,
+  canGenerate,
+  onGenerate,
+}: {
+  scene: PlannerScene;
+  crop: VideoCropRecord | undefined;
+  stored: VideoClipRecord | undefined;
+  defaultModelKey: string;
+  canGenerate: boolean;
+  onGenerate: (scene: PlannerScene, modelKey: string, rawParamsText: string) => Promise<void>;
+}) {
+  // "" = follow the run-level default (issue #29: default with per-Scene override).
+  const [overrideKey, setOverrideKey] = useState(
+    stored && stored.modelKey !== defaultModelKey ? stored.modelKey : "",
+  );
+  const [rawParams, setRawParams] = useState(stored?.rawParams ?? "");
+  const [genError, setGenError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const effectiveModelKey = overrideKey || defaultModelKey;
+  const validationError = validateSceneClip(crop, scene);
+  const rawParamsError = parseRawParams(rawParams).error;
+
+  const handleGenerate = async () => {
+    setGenError(null);
+    setBusy(true);
+    try {
+      await onGenerate(scene, effectiveModelKey, rawParams);
+    } catch (e) {
+      setGenError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mb-4 rounded-xl border border-neutral-200 p-4 last:mb-0">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h3 className="font-mono text-sm font-semibold text-neutral-700">{scene.sceneId || "(no sceneId)"}</h3>
+        <span className="text-xs text-neutral-400">
+          order {scene.order} · target {scene.targetClipDurationSeconds ?? "—"}s
+        </span>
+      </div>
+
+      <div className="mb-3 grid grid-cols-2 gap-3">
+        <div>
+          {crop ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={crop.url} alt={`Crop ${scene.sceneId}`} className="w-full rounded-lg border border-neutral-200" />
+          ) : (
+            <p className="rounded-lg border border-dashed border-neutral-300 p-3 text-xs text-neutral-400">
+              No Crop yet.
+            </p>
+          )}
+        </div>
+        <JsonPre value={scene.raw} />
+      </div>
+
+      <div className="mb-3 grid grid-cols-2 gap-3">
+        <div>
+          <label className={LABEL_CLS}>Video model</label>
+          <select value={overrideKey} onChange={(e) => setOverrideKey(e.target.value)} className={INPUT_CLS}>
+            <option value="">
+              Run default ({VIDEO_MODEL_BY_KEY[defaultModelKey]?.label ?? defaultModelKey})
+            </option>
+            {I2V_MODEL_GROUPS.map((group) => (
+              <optgroup key={group} label={group}>
+                {I2V_MODELS.filter((m) => m.group === group).map((m) => (
+                  <option key={m.key} value={m.key}>
+                    {m.label}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className={LABEL_CLS}>Raw model parameters (JSON pass-through)</label>
+          <input
+            value={rawParams}
+            onChange={(e) => setRawParams(e.target.value)}
+            placeholder='e.g. {"generate_audio": false}'
+            className={`${INPUT_CLS} font-mono`}
+          />
+        </div>
+      </div>
+      {rawParamsError && <p className="mb-2 text-sm text-red-600">{rawParamsError}</p>}
+
+      {validationError ? (
+        <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{validationError}</p>
+      ) : (
+        <button
+          type="button"
+          onClick={() => void handleGenerate()}
+          disabled={!canGenerate || Boolean(rawParamsError) || busy}
+          className={PRIMARY_BTN_CLS}
+        >
+          {busy ? "Animating…" : "Generate scene"}
+        </button>
+      )}
+      {genError && <p className="mt-2 text-sm text-red-600">{genError}</p>}
+      {stored?.error && !genError && <p className="mt-2 text-sm text-red-600">{stored.error}</p>}
+
+      {stored?.videoUrl && (
+        <video src={stored.videoUrl} controls className="mt-3 w-full rounded-lg border border-neutral-200" />
+      )}
+      <DebugDetails label="Raw request" value={stored?.request} />
+      <DebugDetails label="Raw response" value={stored?.response} />
+    </div>
+  );
+}
+
 interface Props {
   apiKey: string;
   setApiKey: (key: string) => void;
@@ -338,6 +471,10 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
 
   /** Crop cards ordered by global `order` (issue #28). */
   const cropList = useMemo(() => (run ? Object.values(run.crops).sort((a, b) => a.order - b.order) : []), [run]);
+
+  /** Run-level default image-to-video model (issue #29) — stored on the run; the
+   *  catalog's first image-to-video entry until the operator picks one. */
+  const defaultVideoModelKey = run?.defaultVideoModelKey ?? I2V_MODELS[0].key;
 
   const refreshRuns = useCallback(async () => {
     try {
@@ -583,6 +720,63 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
       await cropAndStoreGrid(batch, imageUrl);
     },
     [run, cropAndStoreGrid],
+  );
+
+  /** Persists the run-level default image-to-video model (issue #29). */
+  const handleSetDefaultVideoModel = useCallback(
+    async (modelKey: string) => {
+      if (!run) return;
+      try {
+        adoptPatched(await patchVideoRun(run.id, { defaultVideoModelKey: modelKey }));
+      } catch (e) {
+        setSaveError(e instanceof Error ? e.message : "Failed to save default video model");
+      }
+    },
+    [run, adoptPatched],
+  );
+
+  /** Animates ONE Scene from its Crop (issue #29). The sceneId gate re-runs here as
+   *  the last line of defense — no request is sent on a mismatch. */
+  const handleGenerateClip = useCallback(
+    async (scene: PlannerScene, modelKey: string, rawParamsText: string) => {
+      if (!run) return;
+      const crop = run.crops[scene.sceneId];
+      const gateError = validateSceneClip(crop, scene);
+      if (gateError) throw new Error(gateError);
+      const model = VIDEO_MODEL_BY_KEY[modelKey];
+      if (!model) throw new Error(`Unknown video model: ${modelKey}`);
+      const { params, error } = parseRawParams(rawParamsText);
+      if (error) throw new Error(error);
+      configureFal(apiKey);
+      const settings = {
+        ...DEFAULT_VIDEO_SETTINGS,
+        durationSec: scene.targetClipDurationSeconds ?? DEFAULT_VIDEO_SETTINGS.durationSec,
+      };
+      const input = mergeGridInput(
+        buildVideoInput(model, clipPromptFromScene(scene.raw), { startUrl: crop.url }, settings),
+        params,
+      );
+      const record: VideoClipRecord = {
+        sceneId: scene.sceneId,
+        modelKey,
+        rawParams: rawParamsText,
+        request: { endpoint: model.id, input },
+        response: null,
+        videoUrl: null,
+        error: null,
+        durationSeconds: scene.targetClipDurationSeconds,
+      };
+      try {
+        const result = await runVideoModel(model, input);
+        record.response = result.raw;
+        record.videoUrl = result.video.url;
+      } catch (e) {
+        record.error = e instanceof Error ? e.message : String(e);
+      }
+      adoptPatched(await patchVideoRun(run.id, { clipRecord: record }));
+      if (record.error) throw new Error(record.error);
+    },
+    [run, apiKey, adoptPatched],
   );
 
   /** Replace crop (issue #28): the operator's upload swaps THIS Scene's crop only. */
@@ -969,6 +1163,44 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
               </div>
             ))}
           </div>
+        </section>
+      )}
+
+      {/* SCENES (issue #29) — one section per Scene: image-to-video from its Crop,
+         run-level default model with per-Scene override, hard sceneId gate. */}
+      {run && contract && !contract.validationError && contract.scenes.length > 0 && (
+        <section className="mb-5 rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
+          <h2 className="mb-3 font-semibold">Scenes (image-to-video)</h2>
+          <div className="mb-4">
+            <label className={LABEL_CLS}>Default video model (applies to every Scene unless overridden)</label>
+            <select
+              value={defaultVideoModelKey}
+              onChange={(e) => void handleSetDefaultVideoModel(e.target.value)}
+              className={INPUT_CLS}
+            >
+              {I2V_MODEL_GROUPS.map((group) => (
+                <optgroup key={group} label={group}>
+                  {I2V_MODELS.filter((m) => m.group === group).map((m) => (
+                    <option key={m.key} value={m.key}>
+                      {m.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+          {!apiKey && <p className="mb-3 text-xs text-neutral-400">Fal.ai key missing — generation disabled.</p>}
+          {contract.scenes.map((scene) => (
+            <SceneSection
+              key={`${run.id}:${scene.sceneId || scene.order}`}
+              scene={scene}
+              crop={run.crops[scene.sceneId]}
+              stored={run.clips[scene.sceneId]}
+              defaultModelKey={defaultVideoModelKey}
+              canGenerate={Boolean(apiKey)}
+              onGenerate={handleGenerateClip}
+            />
+          ))}
         </section>
       )}
 

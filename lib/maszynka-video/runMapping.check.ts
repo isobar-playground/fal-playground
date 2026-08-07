@@ -42,6 +42,19 @@ const full = rowToVideoRun({
       replaced: false,
     },
   },
+  default_video_model_key: "kling3-pro-start",
+  clips: {
+    "scene-01": {
+      sceneId: "scene-01",
+      modelKey: "kling3-pro-start",
+      rawParams: "",
+      request: { endpoint: "fal-ai/kling-video/v3/pro/image-to-video" },
+      response: { video: {} },
+      videoUrl: "https://v3.fal.media/files/clip-01.mp4",
+      error: null,
+      durationSeconds: 4,
+    },
+  },
 });
 assert.deepEqual(full, {
   id: "vr-1",
@@ -77,6 +90,19 @@ assert.deepEqual(full, {
       replaced: false,
     },
   },
+  defaultVideoModelKey: "kling3-pro-start",
+  clips: {
+    "scene-01": {
+      sceneId: "scene-01",
+      modelKey: "kling3-pro-start",
+      rawParams: "",
+      request: { endpoint: "fal-ai/kling-video/v3/pro/image-to-video" },
+      response: { video: {} },
+      videoUrl: "https://v3.fal.media/files/clip-01.mp4",
+      error: null,
+      durationSeconds: 4,
+    },
+  },
 });
 
 // --- NULL paste fields (pre-fill rows / never-pasted runs) surface as "" -------------
@@ -95,6 +121,8 @@ const sparse = rowToVideoRun({
   reference_files: null,
   grids: null,
   crops: null,
+  default_video_model_key: null,
+  clips: null,
 });
 assert.equal(sparse.globalRules, "");
 assert.equal(sparse.priorityLogic, "");
@@ -104,6 +132,8 @@ assert.equal(sparse.plannerValidationError, null);
 assert.deepEqual(sparse.referenceFiles, [], "NULL reference_files surfaces as an empty list");
 assert.deepEqual(sparse.grids, {}, "NULL grids surfaces as an empty map");
 assert.deepEqual(sparse.crops, {}, "NULL crops surfaces as an empty map");
+assert.equal(sparse.defaultVideoModelKey, null);
+assert.deepEqual(sparse.clips, {}, "NULL clips surfaces as an empty map");
 
 // --- "" (cleared after a successful planner re-run) reads back as "no error" --------
 const cleared = rowToVideoRun({
@@ -121,6 +151,8 @@ const cleared = rowToVideoRun({
   reference_files: null,
   grids: null,
   crops: null,
+  default_video_model_key: null,
+  clips: null,
 });
 assert.equal(cleared.plannerValidationError, null);
 

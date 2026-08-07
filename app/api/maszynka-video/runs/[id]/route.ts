@@ -2,6 +2,7 @@ import {
   ensureVideoSchema,
   getSql,
   rowToVideoRun,
+  type VideoClipRecord,
   type VideoCropRecord,
   type VideoGridRecord,
   type VideoReferenceFile,
@@ -32,6 +33,10 @@ interface PatchVideoRunBody {
    *  auto-crop sends its panels together; Replace crop sends a single record). Other
    *  scenes' crops stay untouched. */
   cropRecords?: VideoCropRecord[];
+  /** Run-level default image-to-video model (issue #29). */
+  defaultVideoModelKey?: string;
+  /** One Clip result (issue #29) — upserted into `clips` keyed by its sceneId. */
+  clipRecord?: VideoClipRecord;
 }
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -88,6 +93,12 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       body.cropRecords.every((c) => c && typeof c.sceneId === "string" && c.sceneId && typeof c.url === "string" && c.url);
     if (!ok) return Response.json({ error: "each crop record must carry a sceneId and a url" }, { status: 400 });
   }
+  if (body.clipRecord !== undefined) {
+    const c = body.clipRecord;
+    if (!c || typeof c.sceneId !== "string" || !c.sceneId || typeof c.modelKey !== "string") {
+      return Response.json({ error: "clipRecord must carry a sceneId and a modelKey" }, { status: 400 });
+    }
+  }
 
   const sql = getSql();
   if (!sql) {
@@ -110,6 +121,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       body.cropRecords !== undefined
         ? JSON.stringify(Object.fromEntries(body.cropRecords.map((c) => [c.sceneId, c])))
         : null;
+    const clipRecordJson =
+      body.clipRecord !== undefined ? JSON.stringify({ [body.clipRecord.sceneId]: body.clipRecord }) : null;
     const rows = await sql`
       UPDATE maszynka_video_runs SET
         name = COALESCE(${body.name?.trim() ?? null}, name),
@@ -125,6 +138,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
           THEN grids || ${gridRecordJson}::jsonb ELSE grids END,
         crops = CASE WHEN ${cropRecordsJson}::jsonb IS NOT NULL
           THEN crops || ${cropRecordsJson}::jsonb ELSE crops END,
+        default_video_model_key = COALESCE(${body.defaultVideoModelKey ?? null}, default_video_model_key),
+        clips = CASE WHEN ${clipRecordJson}::jsonb IS NOT NULL
+          THEN clips || ${clipRecordJson}::jsonb ELSE clips END,
         updated_at = now()
       WHERE id = ${id}
       RETURNING *

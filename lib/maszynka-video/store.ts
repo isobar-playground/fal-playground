@@ -10,6 +10,7 @@ import type { NeonQueryFunction } from "@neondatabase/serverless";
 export { getSql } from "../maszynka/store";
 export {
   rowToVideoRun,
+  type VideoClipRecord,
   type VideoCropRecord,
   type VideoGridRecord,
   type VideoReferenceFile,
@@ -52,6 +53,10 @@ export function ensureVideoSchema(sql: NeonQueryFunction<false, false>) {
     // Slice 5 (issue #28) adds Crops — a jsonb map keyed by sceneId (spec: mapping is
     // by sceneId ONLY), upserted per scene so Replace crop swaps a single entry.
     await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS crops jsonb NOT NULL DEFAULT '{}'::jsonb`;
+    // Slice 6 (issue #29) adds Clips (same per-sceneId upsert map as crops) and the
+    // run-level default image-to-video model.
+    await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS default_video_model_key text`;
+    await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS clips jsonb NOT NULL DEFAULT '{}'::jsonb`;
   })()
     .then(() => undefined)
     .catch((e) => {

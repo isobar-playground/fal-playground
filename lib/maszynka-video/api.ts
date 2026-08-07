@@ -2,9 +2,15 @@
 
 // Thin fetch wrappers around app/api/maszynka-video/runs — the only way the browser
 // talks to the Neon-backed Video run store (ADR 0001 rationale; PRD 0003).
-import type { VideoCropRecord, VideoGridRecord, VideoReferenceFile, VideoRun } from "./runMapping";
+import type { VideoClipRecord, VideoCropRecord, VideoGridRecord, VideoReferenceFile, VideoRun } from "./runMapping";
 
-export type { VideoCropRecord, VideoGridRecord, VideoReferenceFile, VideoRun } from "./runMapping";
+export type {
+  VideoClipRecord,
+  VideoCropRecord,
+  VideoGridRecord,
+  VideoReferenceFile,
+  VideoRun,
+} from "./runMapping";
 
 async function asJson(res: Response): Promise<unknown> {
   try {
@@ -36,6 +42,10 @@ export interface VideoRunPatch {
   gridRecord?: VideoGridRecord;
   /** Crops (issue #28) — upserted by sceneId, other scenes' crops untouched. */
   cropRecords?: VideoCropRecord[];
+  /** Run-level default image-to-video model (issue #29). */
+  defaultVideoModelKey?: string;
+  /** One Clip result (issue #29) — upserted by sceneId, other clips untouched. */
+  clipRecord?: VideoClipRecord;
 }
 
 export async function createVideoRun(input: {
