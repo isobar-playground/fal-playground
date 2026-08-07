@@ -68,9 +68,24 @@ const stagePromptsSeed = CONFIG_SEEDS.stage_prompts as StagePromptsConfig;
 
 assert.ok(validateConfigBody("stage_prompts", "not-an-object").length, "stage_prompts body must be an object");
 assert.ok(validateConfigBody("stage_prompts", {}).length, "stage_prompts body must have every stage key");
+// Blank is a real, valid choice for every stage_prompts text field: it hands that stage
+// back to its code-owned default (stagePromptResolver.ts's `textOrFallback`). Rejecting
+// "" left operators with no way to undo an override — the reason a literal "N/A" ended up
+// in four live fields. The key must still be there and still be a string.
+assert.equal(
+  validateConfigBody("stage_prompts", {
+    ...stagePromptsSeed,
+    contentSafety: { systemPrompt: "" },
+    promptBuilder: { systemPrompt: "", revisionInstructionTemplate: "" },
+    promptReviewer: { systemPrompt: "   " },
+    assetAnalysis: { baseInstructions: "", roleInstructions: { packshot: "", style_reference: "", brand_reference: "", campaign_reference: "" } },
+  }).length,
+  0,
+  "blank stage_prompts text fields are valid (they fall back to the code-owned default)",
+);
 assert.ok(
-  validateConfigBody("stage_prompts", { ...stagePromptsSeed, contentSafety: { systemPrompt: "" } }).length,
-  "stage_prompts systemPrompt fields must be non-empty",
+  validateConfigBody("stage_prompts", { ...stagePromptsSeed, contentSafety: { systemPrompt: null } }).length,
+  "stage_prompts text fields must still be strings — a missing/null field is not a blank one",
 );
 assert.ok(
   validateConfigBody("stage_prompts", {

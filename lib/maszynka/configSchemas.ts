@@ -180,6 +180,13 @@ function isFiniteNumber(v: unknown): v is number {
 function checkStringFields(item: Record<string, unknown>, keys: string[], path: string): string[] {
   return keys.filter((k) => !isNonEmptyString(item[k])).map((k) => `${path}.${k} must be a non-empty string`);
 }
+/** Required-but-blankable string fields: the key must be present and a string, but "" is
+ *  allowed. Used only by `stage_prompts`, where a blank field means "use the stage
+ *  module's code-owned default text" (see stagePromptResolver.ts's `textOrFallback`) —
+ *  the only way an operator can hand a stage back to the code after overriding it. */
+function checkTextFields(item: Record<string, unknown>, keys: string[], path: string): string[] {
+  return keys.filter((k) => typeof item[k] !== "string").map((k) => `${path}.${k} must be a string`);
+}
 /** Required string-array fields (may be empty arrays, just must be arrays of strings). */
 function checkStringArrayFields(item: Record<string, unknown>, keys: string[], path: string): string[] {
   return keys.filter((k) => !isStringArray(item[k])).map((k) => `${path}.${k} must be an array of strings`);
@@ -345,7 +352,7 @@ function validateModelCapabilityMatrix(body: unknown): string[] {
 
 function checkSystemPromptObject(value: unknown, path: string): string[] {
   if (!isPlainObject(value)) return [`${path} must be an object`];
-  return checkStringFields(value, ["systemPrompt"], path);
+  return checkTextFields(value, ["systemPrompt"], path);
 }
 
 function validateStagePrompts(body: unknown): string[] {
@@ -360,19 +367,19 @@ function validateStagePrompts(body: unknown): string[] {
     errors.push("promptBuilder must be an object");
   } else {
     errors.push(
-      ...checkStringFields(body.promptBuilder, ["systemPrompt", "revisionInstructionTemplate"], "promptBuilder"),
+      ...checkTextFields(body.promptBuilder, ["systemPrompt", "revisionInstructionTemplate"], "promptBuilder"),
     );
   }
 
   if (!isPlainObject(body.assetAnalysis)) {
     errors.push("assetAnalysis must be an object");
   } else {
-    errors.push(...checkStringFields(body.assetAnalysis, ["baseInstructions"], "assetAnalysis"));
+    errors.push(...checkTextFields(body.assetAnalysis, ["baseInstructions"], "assetAnalysis"));
     if (!isPlainObject(body.assetAnalysis.roleInstructions)) {
       errors.push("assetAnalysis.roleInstructions must be an object");
     } else {
       errors.push(
-        ...checkStringFields(
+        ...checkTextFields(
           body.assetAnalysis.roleInstructions,
           STAGE_PROMPT_ASSET_ROLES,
           "assetAnalysis.roleInstructions",
