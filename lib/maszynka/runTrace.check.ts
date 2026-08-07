@@ -87,7 +87,7 @@ const fullContract: Contract = {
     },
   },
   stagePrompts: { version: 6, snapshot: STAGE_PROMPTS },
-  generationSettings: { targetLanguage: "Polish", aspectRatio: "1:1", variantsCount: 1 },
+  generationSettings: { aspectRatio: "1:1", variantsCount: 1 },
 };
 
 const full = summarizeSelectedConfigs(fullContract);
@@ -154,5 +154,16 @@ assert.deepEqual(
 // style/cameraSetting/lighting/modelCapability were untouched by the spread above — still resolved
 assert.equal(partial.find((i) => i.kind === "style")?.resolved, true);
 assert.equal(partial.find((i) => i.kind === "lighting")?.resolved, true);
+
+// --- a "none" selection (empty id, null snapshot) is a deliberate choice, not a broken
+// reference: labeled "(none)" and still resolved ---------------------------------------
+const noneSelected = summarizeSelectedConfigs({
+  ...fullContract,
+  style: { id: "", version: 4, snapshot: null },
+});
+assert.deepEqual(
+  noneSelected.find((i) => i.kind === "style"),
+  { kind: "style", id: "", version: 4, label: "(none)", resolved: true },
+);
 
 console.log("lib/maszynka/runTrace.ts — all checks passed");

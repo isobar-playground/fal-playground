@@ -20,7 +20,7 @@
 // `prompt_builder_contract_validation_failed`, but the trace view must still render such a
 // contract without crashing since it IS recorded) shows that kind as unresolved rather than
 // throwing.
-import type { Contract } from "./contract";
+import type { Contract, ContractConfigRef } from "./contract";
 
 export type SelectedConfigKind =
   | "hook"
@@ -34,8 +34,9 @@ export type SelectedConfigKind =
 
 export interface SelectedConfigSummaryItem {
   kind: SelectedConfigKind;
-  /** Selected config id — empty string for the two kinds with no per-run selection id
-   *  (globalRules/priorityLogic apply wholesale, not by id). */
+  /** Selected config id — empty string for the kinds with no per-run selection id
+   *  (globalRules/priorityLogic apply wholesale), and for a hook/style/camera setting/
+   *  lighting the operator explicitly set to "none". */
   id: string;
   version: number;
   /** Human-readable summary of what that version snapshot actually contained. */
@@ -43,6 +44,25 @@ export interface SelectedConfigSummaryItem {
   /** False when the id couldn't be resolved against its version's snapshot body (or the
    *  snapshot is otherwise empty) — see module header. */
   resolved: boolean;
+}
+
+/** One row for a per-run config selection (hook/style/camera setting/lighting). An empty
+ *  `id` means the operator picked "none" for that layer — a deliberate choice, not a
+ *  broken reference, so it stays `resolved` (see contract.ts's `ContractConfigRef`). */
+function refItem<T>(
+  kind: SelectedConfigKind,
+  ref: ContractConfigRef<T> | undefined,
+  labelOf: (snapshot: T) => string,
+): SelectedConfigSummaryItem {
+  const id = ref?.id ?? "";
+  const snapshot = ref?.snapshot ?? null;
+  return {
+    kind,
+    id,
+    version: ref?.version ?? 0,
+    label: snapshot ? labelOf(snapshot) : id ? "(unresolved)" : "(none)",
+    resolved: snapshot != null || !id,
+  };
 }
 
 /** Builds the "selected configs + versions" summary from a run's Contract snapshot.
@@ -61,34 +81,10 @@ export function summarizeSelectedConfigs(contract: Contract | null | undefined):
   const stagePromptsCount = contract.stagePrompts?.snapshot ? Object.keys(contract.stagePrompts.snapshot).length : 0;
 
   return [
-    {
-      kind: "hook",
-      id: contract.hook?.id ?? "",
-      version: contract.hook?.version ?? 0,
-      label: contract.hook?.snapshot?.text ?? "(unresolved)",
-      resolved: contract.hook?.snapshot != null,
-    },
-    {
-      kind: "style",
-      id: contract.style?.id ?? "",
-      version: contract.style?.version ?? 0,
-      label: contract.style?.snapshot?.styleName ?? "(unresolved)",
-      resolved: contract.style?.snapshot != null,
-    },
-    {
-      kind: "cameraSetting",
-      id: contract.cameraSetting?.id ?? "",
-      version: contract.cameraSetting?.version ?? 0,
-      label: contract.cameraSetting?.snapshot?.cameraSettingName ?? "(unresolved)",
-      resolved: contract.cameraSetting?.snapshot != null,
-    },
-    {
-      kind: "lighting",
-      id: contract.lighting?.id ?? "",
-      version: contract.lighting?.version ?? 0,
-      label: contract.lighting?.snapshot?.name ?? "(unresolved)",
-      resolved: contract.lighting?.snapshot != null,
-    },
+    refItem("hook", contract.hook, (h) => h.text),
+    refItem("style", contract.style, (s) => s.styleName),
+    refItem("cameraSetting", contract.cameraSetting, (c) => c.cameraSettingName),
+    refItem("lighting", contract.lighting, (l) => l.name),
     {
       kind: "globalRules",
       id: "",

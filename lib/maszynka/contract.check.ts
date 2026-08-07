@@ -116,7 +116,6 @@ function baseInput(overrides: Partial<AssembleContractInput> = {}): AssembleCont
     modelCapabilityMatrix: { version: 1, body: CAPABILITY },
     stagePrompts: { version: 4, body: STAGE_PROMPTS },
     modelKey: "nano-banana",
-    targetLanguage: "Polish",
     aspectRatio: "1:1",
     variantsCount: 2,
     ...overrides,
@@ -191,6 +190,19 @@ assert.ok(validateContract(badCamera).length, "an unresolved camera setting id m
 
 const badLighting = assembleContract(baseInput({ selectedLightingId: "does-not-exist" }));
 assert.ok(validateContract(badLighting).length, "an unresolved lighting id must fail validation");
+
+// --- "none" ("") for any of the four per-run selections is a valid Contract (client
+// feedback: none must be selectable, and is the Run form's default) ------------------
+const allNone = assembleContract(
+  baseInput({ selectedHookId: "", selectedStyleId: "", selectedCameraSettingId: "", selectedLightingId: "" }),
+);
+assert.equal(allNone.style.snapshot, null);
+assert.equal(allNone.style.version, 1, "a 'none' selection still records the config version it was made against");
+assert.deepEqual(
+  validateContract(allNone),
+  [],
+  "hook/style/camera setting/lighting set to 'none' must pass validation, not fail the run",
+);
 
 const badModel = assembleContract(baseInput({ modelKey: "unknown-model" }));
 assert.ok(

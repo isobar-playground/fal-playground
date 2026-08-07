@@ -53,8 +53,9 @@ export interface ContractAsset {
 }
 
 /** A selected config reference, carrying the exact version used and a snapshot of its
- *  content — `snapshot` is `null` when `id` couldn't be resolved in that version's body,
- *  which `validateContract` treats as a hard failure. */
+ *  content. `id: ""` means the operator explicitly picked "none" for that layer (the
+ *  default in the Run form) — a valid Contract with a `null` snapshot. A non-empty `id`
+ *  that couldn't be resolved in that version's body is still a hard validation failure. */
 export interface ContractConfigRef<T> {
   id: string;
   version: number;
@@ -85,7 +86,6 @@ export interface Contract {
    *  same config snapshot into those stages' request builders directly instead. */
   stagePrompts: { version: number; snapshot: StagePromptsConfig | null };
   generationSettings: {
-    targetLanguage: string;
     aspectRatio: string;
     variantsCount: number;
   };
@@ -113,7 +113,6 @@ export interface AssembleContractInput {
   modelCapabilityMatrix: { version: number; body: ModelCapabilityEntry[] };
   stagePrompts: { version: number; body: StagePromptsConfig };
   modelKey: string;
-  targetLanguage: string;
   aspectRatio: string;
   variantsCount: number;
 }
@@ -147,7 +146,6 @@ export function assembleContract(input: AssembleContractInput): Contract {
     modelCapability: { modelKey: input.modelKey, version: input.modelCapabilityMatrix.version, snapshot: modelCapability },
     stagePrompts: { version: input.stagePrompts.version, snapshot: input.stagePrompts.body ?? null },
     generationSettings: {
-      targetLanguage: input.targetLanguage,
       aspectRatio: input.aspectRatio,
       variantsCount: input.variantsCount,
     },
@@ -197,9 +195,11 @@ export function validateContract(contract: Contract): string[] {
     ["lighting", contract.lighting],
   ];
   for (const [name, ref] of namedRefs) {
-    if (!ref || !isNonEmptyString(ref.id) || !isFiniteNumber(ref.version)) {
+    if (!ref || typeof ref.id !== "string" || !isFiniteNumber(ref.version)) {
       errors.push(`${name} must have an id and a version`);
-    } else if (ref.snapshot == null) {
+    } else if (ref.id && ref.snapshot == null) {
+      // `id: ""` = operator chose "none" for this layer, which is allowed; only a
+      // non-empty id that resolves to nothing means a stale/broken selection.
       errors.push(`${name} "${ref.id}" was not found in config version ${ref.version}`);
     }
   }
@@ -238,14 +238,8 @@ export function validateContract(contract: Contract): string[] {
   }
 
   const gs = contract.generationSettings;
-  if (
-    !gs ||
-    !isNonEmptyString(gs.targetLanguage) ||
-    !isNonEmptyString(gs.aspectRatio) ||
-    !isFiniteNumber(gs.variantsCount) ||
-    gs.variantsCount < 1
-  ) {
-    errors.push("generationSettings must have a targetLanguage, an aspectRatio and a variantsCount >= 1");
+  if (!gs || !isNonEmptyString(gs.aspectRatio) || !isFiniteNumber(gs.variantsCount) || gs.variantsCount < 1) {
+    errors.push("generationSettings must have an aspectRatio and a variantsCount >= 1");
   }
 
   return errors;

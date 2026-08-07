@@ -59,7 +59,7 @@ const CONTRACT_WITH_PACKSHOT: Contract = {
   priorityLogic: { version: 1, snapshot: null },
   modelCapability: { modelKey: "nano-banana", version: 1, snapshot: null },
   stagePrompts: { version: 1, snapshot: STAGE_PROMPTS },
-  generationSettings: { targetLanguage: "Polish", aspectRatio: "1:1", variantsCount: 1 },
+  generationSettings: { aspectRatio: "1:1", variantsCount: 1 },
 };
 
 const BUILDER_OUTPUT: PromptBuilderOutput = {

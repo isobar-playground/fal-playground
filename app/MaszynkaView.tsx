@@ -118,17 +118,14 @@ const cameraSettingId = (c: CameraSettingConfig) => c.cameraSettingId;
 const lightingId = (l: LightingConfig) => l.id;
 
 /** Shared "keep the operator's selection if it still exists after a Config refetch,
- *  otherwise fall back to the first still-available item, or to none if the kind is now
- *  empty" rule (issue #17) — one hook instead of three copy-pasted effects for the
- *  Hook/Style/Camera setting dropdowns, which only differ in which field carries the
- *  item's id. */
+ *  otherwise fall back to none" rule (issue #17) — one hook instead of four copy-pasted
+ *  effects for the Hook/Style/Camera setting/Lighting dropdowns, which only differ in
+ *  which field carries the item's id. "None" ("") is a real, valid choice here (client
+ *  feedback), so a deleted/renamed item falls back to it rather than to the first
+ *  remaining item — never silently swapping in a preset the operator didn't pick. */
 function useConfigSelectionFallback<T>(items: T[], selectedId: string, idOf: (item: T) => string, setSelectedId: (id: string) => void) {
   useEffect(() => {
-    if (!items.length) {
-      if (selectedId) setSelectedId("");
-      return;
-    }
-    if (!items.some((item) => idOf(item) === selectedId)) setSelectedId(idOf(items[0]));
+    if (selectedId && !items.some((item) => idOf(item) === selectedId)) setSelectedId("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, selectedId]);
 }
@@ -293,7 +290,7 @@ export default function MaszynkaView({
   }, []);
   useEffect(() => refreshHistory(), [refreshHistory]);
 
-  // --- Creative config (slice 3): hook/style/camera setting/language/aspect/variants,
+  // --- Creative config (slice 3): hook/style/camera setting/lighting/aspect/variants,
   // fed from Neon config storage (never hardcoded) — see lib/maszynka/contract.ts.
   const [configs, setConfigs] = useState<Partial<Record<ConfigKind, MaszynkaConfigVersion>>>({});
   const [configsState, setConfigsState] = useState<"idle" | "loading" | "error">("loading");
@@ -340,7 +337,6 @@ export default function MaszynkaView({
   const [selectedStyleId, setSelectedStyleId] = useState("");
   const [selectedCameraSettingId, setSelectedCameraSettingId] = useState("");
   const [selectedLightingId, setSelectedLightingId] = useState("");
-  const [targetLanguage, setTargetLanguage] = useState("Polish");
   const [aspectRatio, setAspectRatio] = useState(ASPECT_RATIO_OPTIONS[0]);
   const [variantsCount, setVariantsCount] = useState(1);
   // FAL request mapper (issue #10): operator-provided seed text, same convention as the
@@ -351,7 +347,7 @@ export default function MaszynkaView({
 
   // Model recommendation (issue #9 / PRD section 12): the two creative-config signals
   // the six-rule table needs beyond packshot/reference presence — operator-set per run,
-  // same footing as target language/aspect ratio above (not a Neon config; per-run
+  // same footing as aspect ratio above (not a Neon config; per-run
   // creative intent, not a versioned preset). See lib/maszynka/recommend.ts.
   const [hasHeavyTextOrPoster, setHasHeavyTextOrPoster] = useState(false);
   const [hasSocialNativeUgc, setHasSocialNativeUgc] = useState(false);
@@ -371,13 +367,12 @@ export default function MaszynkaView({
   const recommendedModelDef = MODEL_BY_KEY[recommendation.recommendedModelKey];
   const modelOverrideUsed = modelKey !== recommendation.recommendedModelKey;
 
-  // Default each dropdown to the first available option once its config loads, so a
-  // fresh Run is usable without the operator having to touch every field. Also re-run
-  // after a Config save refetches `configs` (issue #17): a selection whose id still
-  // exists in the new body is left alone (preserved); one that no longer exists (the
-  // operator deleted/renamed that item) falls back to the first still-available item,
-  // or to "none selected" if the kind is now empty — same predictable rule for all
-  // three dropdowns, factored into one hook below rather than copy-pasted per kind.
+  // Every dropdown starts on "none" (client feedback: none must be an option AND the
+  // default), so a fresh Run applies no preset the operator didn't explicitly pick.
+  // Re-runs after a Config save refetches `configs` (issue #17): a selection whose id
+  // still exists in the new body is preserved; one that no longer exists (the operator
+  // deleted/renamed that item) drops back to "none" — same predictable rule for all
+  // four dropdowns, factored into one hook below rather than copy-pasted per kind.
   useConfigSelectionFallback(hooks, selectedHookId, hookId, setSelectedHookId);
   useConfigSelectionFallback(styles, selectedStyleId, styleId, setSelectedStyleId);
   useConfigSelectionFallback(cameraSettings, selectedCameraSettingId, cameraSettingId, setSelectedCameraSettingId);
@@ -504,11 +499,6 @@ export default function MaszynkaView({
     improvement.status !== "loading" &&
     !anyAssetUploading &&
     configsState === "idle" &&
-    Boolean(selectedHookId) &&
-    Boolean(selectedStyleId) &&
-    Boolean(selectedCameraSettingId) &&
-    Boolean(selectedLightingId) &&
-    Boolean(targetLanguage.trim()) &&
     Boolean(aspectRatio);
 
   const handleRun = useCallback(async () => {
@@ -721,7 +711,6 @@ export default function MaszynkaView({
         },
         stagePrompts: { version: configs.stage_prompts?.version ?? 0, body: stagePromptsConfig ?? EMPTY_STAGE_PROMPTS },
         modelKey: model.key,
-        targetLanguage: targetLanguage.trim(),
         aspectRatio,
         variantsCount,
       });
@@ -1019,7 +1008,6 @@ export default function MaszynkaView({
     selectedStyleId,
     selectedCameraSettingId,
     selectedLightingId,
-    targetLanguage,
     aspectRatio,
     variantsCount,
     seed,
@@ -1301,7 +1289,7 @@ export default function MaszynkaView({
           disabled={configsState !== "idle"}
           className="mb-4 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 disabled:bg-neutral-50 disabled:text-neutral-400"
         >
-          {hooks.length === 0 && <option value="">— none available —</option>}
+          <option value="">— none —</option>
           {hooks.map((h) => (
             <option key={h.id} value={h.id}>
               {h.text}
@@ -1320,7 +1308,7 @@ export default function MaszynkaView({
               disabled={configsState !== "idle"}
               className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 disabled:bg-neutral-50 disabled:text-neutral-400"
             >
-              {styles.length === 0 && <option value="">— none available —</option>}
+              <option value="">— none —</option>
               {styles.map((s) => (
                 <option key={s.styleId} value={s.styleId}>
                   {s.styleName}
@@ -1338,7 +1326,7 @@ export default function MaszynkaView({
               disabled={configsState !== "idle"}
               className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 disabled:bg-neutral-50 disabled:text-neutral-400"
             >
-              {cameraSettings.length === 0 && <option value="">— none available —</option>}
+              <option value="">— none —</option>
               {cameraSettings.map((c) => (
                 <option key={c.cameraSettingId} value={c.cameraSettingId}>
                   {c.cameraSettingName}
@@ -1356,24 +1344,13 @@ export default function MaszynkaView({
               disabled={configsState !== "idle"}
               className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 disabled:bg-neutral-50 disabled:text-neutral-400"
             >
-              {lightings.length === 0 && <option value="">— none available —</option>}
+              <option value="">— none —</option>
               {lightings.map((l) => (
                 <option key={l.id} value={l.id}>
                   {l.name}
                 </option>
               ))}
             </select>
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
-              Target language
-            </label>
-            <input
-              value={targetLanguage}
-              onChange={(e) => setTargetLanguage(e.target.value)}
-              placeholder="e.g. Polish"
-              className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
-            />
           </div>
           <div>
             <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
