@@ -58,3 +58,40 @@ The LLM step that gates a built prompt before FAL: returns `pass` / `revise` / `
 
 **Manual scoring**:
 The operator's per-asset quality verdict after generation: decision (accept/reject/mixed), blocker issues, comment, next action.
+
+### Maszynka Video (video pipeline test bench)
+
+**Video run**:
+One Maszynka Video test execution, from Planner configuration through grid generation, Crops, and per-Scene Clips to the joined Final video. Recorded server-side with every stage's inputs and outputs. Distinct from the (image) Run above.
+_Avoid_: run (unqualified), session
+
+**Planner**:
+The LLM stage that turns an operator-pasted system prompt plus input JSON into a Scene plan (short video) or Master scene plan with Grid batches (long video). Owns all scene-splitting and layout decisions; the app only displays and validates its output.
+_Avoid_: brief generator, director
+
+**Scene**:
+One planned shot of the final video (roughly four seconds), identified by a globally unique `sceneId` with a global `order`. A Scene belongs to exactly one Grid batch and yields exactly one Crop and one Clip.
+_Avoid_: frame, shot, segment
+
+**Scene plan**:
+The Planner output for a short video (5–30 s): all Scenes plus a single grid payload.
+
+**Master scene plan**:
+The Planner output for a long video (31–180 s): all Scenes, spanning multiple Grid batches.
+_Avoid_: storyboard
+
+**Grid batch**:
+A group of at most four Scenes generated together as one grid image, identified by `batchId` and run independently of other batches.
+_Avoid_: sheet, page, tile set
+
+**Crop**:
+The panel cut out of a generated grid for exactly one Scene, matched by `sceneId` — never by position alone. The operator may replace it before animation (Replace crop).
+_Avoid_: panel, tile, cell
+
+**Clip**:
+The video generated from one Crop by an image-to-video model; its duration comes from the Scene's JSON.
+_Avoid_: fragment, cut
+
+**Final video**:
+The hard concatenation of all Clips in global `order` — no trimming, no transitions, no re-encoding decisions.
+_Avoid_: montage, edit, export
