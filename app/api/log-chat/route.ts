@@ -1,3 +1,4 @@
+import "@/lib/neonLocal";
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 
 export const runtime = "nodejs";

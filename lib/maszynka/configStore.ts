@@ -2,6 +2,7 @@
 // versioned rows, stored server-side so the UX operator can iterate them without a
 // developer deploy). Mirrors lib/maszynka/store.ts's shape: schema-on-first-write,
 // `getSql()` returns null when DATABASE_URL isn't set so routes can turn that into 503.
+import "../neonLocal";
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 import { CONFIG_KINDS, type ConfigKind } from "./configSchemas";
 import { CONFIG_SEEDS } from "./configSeeds";

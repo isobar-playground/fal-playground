@@ -58,6 +58,8 @@ import { useImageLightbox } from "./ImageLightbox";
 import type { Conversation } from "@/lib/chat/store";
 // --- maszynka (separate code path; see lib/maszynka/* + MaszynkaView) ---
 import MaszynkaView from "./MaszynkaView";
+// --- maszynka video (separate code path; see lib/maszynka-video/* + MaszynkaVideoView) ---
+import MaszynkaVideoView from "./MaszynkaVideoView";
 
 // Sub-dollar amounts keep up to 4 decimals (so $0.0398 isn't rounded to $0.04),
 // trailing zeros trimmed but at least 2 shown; $1+ uses plain 2-decimal currency.
@@ -175,6 +177,7 @@ export default function Page() {
   const isVideo = mode === "video";
   const isChat = mode === "chat";
   const isMaszynka = mode === "maszynka";
+  const isMaszynkaVideo = mode === "maszynka-video";
 
   // Chat state lives in localStorage here (centralized) so it's covered by
   // "Reset all" and session export/import. The chat UI itself is isolated in
@@ -298,6 +301,7 @@ export default function Page() {
     video: "",
     chat: "",
     maszynka: "",
+    "maszynka-video": "",
   });
   const prompt = promptByMode[mode];
   const setPrompt = useCallback(
@@ -316,6 +320,7 @@ export default function Page() {
     video: null,
     chat: null,
     maszynka: null,
+    "maszynka-video": null,
   });
   const stashedPrompt = stashedPromptByMode[mode];
   const setStashedPrompt = useCallback(
@@ -1233,11 +1238,13 @@ export default function Page() {
               ? "Chat with an LLM via OpenRouter (your own key). Everything stays in your browser."
               : isMaszynka
                 ? "Maszynka — Content Factory test bench. Runs are recorded server-side and shared across operators."
-                : `Test prompts on Fal.ai ${isVideo ? "video" : "image"} models — no code. Everything stays in your browser.`}
+                : isMaszynkaVideo
+                  ? "Maszynka Video — video pipeline test bench. Video runs are recorded server-side and shared across operators."
+                  : `Test prompts on Fal.ai ${isVideo ? "video" : "image"} models — no code. Everything stays in your browser.`}
           </p>
           {/* Top-level mode toggle — Images | Video | Chat | Maszynka. Persisted across reloads. */}
           <div className="mt-3 inline-flex overflow-hidden rounded-lg border border-neutral-300">
-            {(["image", "video", "chat", "maszynka"] as const).map((md) => (
+            {(["image", "video", "chat", "maszynka", "maszynka-video"] as const).map((md) => (
               <button
                 key={md}
                 type="button"
@@ -1246,7 +1253,15 @@ export default function Page() {
                   mode === md ? "bg-amber-400 text-amber-950" : "bg-white text-neutral-600 hover:bg-amber-50"
                 }`}
               >
-                {md === "image" ? "🖼 Images" : md === "video" ? "🎬 Video" : md === "chat" ? "💬 Chat" : "🧪 Maszynka"}
+                {md === "image"
+                  ? "🖼 Images"
+                  : md === "video"
+                    ? "🎬 Video"
+                    : md === "chat"
+                      ? "💬 Chat"
+                      : md === "maszynka"
+                        ? "🧪 Maszynka"
+                        : "🎞 Maszynka Video"}
               </button>
             ))}
           </div>
@@ -1308,8 +1323,11 @@ export default function Page() {
         <MaszynkaView apiKey={apiKey} setApiKey={setApiKey} orKey={orKey} setOrKey={setOrKey} prompt={prompt} setPrompt={setPrompt} />
       )}
 
+      {/* MASZYNKA VIDEO MODE — isolated panel (lib/maszynka-video/* + MaszynkaVideoView). */}
+      {isMaszynkaVideo && <MaszynkaVideoView apiKey={apiKey} setApiKey={setApiKey} orKey={orKey} setOrKey={setOrKey} />}
+
       {/* IMAGE / VIDEO WIZARD — unchanged; hidden in chat/maszynka mode. */}
-      {!isChat && !isMaszynka && (
+      {!isChat && !isMaszynka && !isMaszynkaVideo && (
       <>
       {/* STEP 1 — API KEY */}
       <Section step={1} title="Fal.ai key" done={Boolean(apiKey)}>

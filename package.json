@@ -23,7 +23,14 @@
     "check:maszynka-run-trace": "node lib/maszynka/runTrace.check.ts",
     "check:maszynka-stage-prompt-resolver": "node lib/maszynka/stagePromptResolver.check.ts",
     "check:maszynka-stage-prompt-restore": "node lib/maszynka/stagePromptRestore.check.ts",
-    "check:video-models": "node lib/video/models.check.ts"
+    "check:video-models": "node lib/video/models.check.ts",
+    "check:maszynka-video-run-mapping": "node lib/maszynka-video/runMapping.check.ts",
+    "check:maszynka-video-planner": "node lib/maszynka-video/planner.check.ts",
+    "check:maszynka-video-planner-contract": "node lib/maszynka-video/plannerContract.check.ts",
+    "check:maszynka-video-grid-request": "node lib/maszynka-video/gridRequest.check.ts",
+    "check:maszynka-video-crop": "node lib/maszynka-video/crop.check.ts",
+    "check:maszynka-video-clip-request": "node lib/maszynka-video/clipRequest.check.ts",
+    "check:maszynka-video-join-request": "node lib/maszynka-video/joinRequest.check.ts"
   },
   "dependencies": {
     "@fal-ai/client": "^1.10.1",

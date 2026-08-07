@@ -244,15 +244,28 @@ assert.ok(
 );
 
 // --- issue #19: stagePrompts is schema-checked the same way a config save is (re-using
-// configSchemas.validateConfigBody) — a body missing a required stage field must fail
-// Contract validation, never silently produce a runnable Contract -------------------
+// configSchemas.validateConfigBody) — a body MISSING a required stage field must fail
+// Contract validation, never silently produce a runnable Contract. A BLANK ("") field
+// is legal since the blankable-fields fix (see configSchemas.checkTextFields): it means
+// "use the stage module's code-owned default" via stagePromptResolver.textOrFallback —
+// the operator's only way to hand a stage back to the code after overriding it. ------
 assert.ok(
+  validateContract(
+    assembleContract(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      baseInput({ stagePrompts: { version: 1, body: { ...STAGE_PROMPTS, contentSafety: {} as any } } }),
+    ),
+  ).length,
+  "a stage_prompts snapshot missing a required field must fail Contract validation",
+);
+assert.deepEqual(
   validateContract(
     assembleContract(
       baseInput({ stagePrompts: { version: 1, body: { ...STAGE_PROMPTS, contentSafety: { systemPrompt: "" } } } }),
     ),
-  ).length,
-  "a stage_prompts snapshot with a blank required field must fail Contract validation",
+  ),
+  [],
+  'a blanked stage prompt is valid — "" means the stage falls back to its code default',
 );
 assert.deepEqual(
   validateContract(assembleContract(baseInput({ stagePrompts: { version: 7, body: STAGE_PROMPTS } }))),
