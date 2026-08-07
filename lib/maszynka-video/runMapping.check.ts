@@ -55,6 +55,9 @@ const full = rowToVideoRun({
       durationSeconds: 4,
     },
   },
+  join_request: { endpoint: "fal-ai/ffmpeg-api/merge-videos" },
+  join_response: { video: {} },
+  final_video_url: "https://v3.fal.media/files/final.mp4",
 });
 assert.deepEqual(full, {
   id: "vr-1",
@@ -103,6 +106,9 @@ assert.deepEqual(full, {
       durationSeconds: 4,
     },
   },
+  joinRequest: { endpoint: "fal-ai/ffmpeg-api/merge-videos" },
+  joinResponse: { video: {} },
+  finalVideoUrl: "https://v3.fal.media/files/final.mp4",
 });
 
 // --- NULL paste fields (pre-fill rows / never-pasted runs) surface as "" -------------
@@ -123,6 +129,9 @@ const sparse = rowToVideoRun({
   crops: null,
   default_video_model_key: null,
   clips: null,
+  join_request: null,
+  join_response: null,
+  final_video_url: null,
 });
 assert.equal(sparse.globalRules, "");
 assert.equal(sparse.priorityLogic, "");
@@ -134,6 +143,7 @@ assert.deepEqual(sparse.grids, {}, "NULL grids surfaces as an empty map");
 assert.deepEqual(sparse.crops, {}, "NULL crops surfaces as an empty map");
 assert.equal(sparse.defaultVideoModelKey, null);
 assert.deepEqual(sparse.clips, {}, "NULL clips surfaces as an empty map");
+assert.equal(sparse.finalVideoUrl, null);
 
 // --- "" (cleared after a successful planner re-run) reads back as "no error" --------
 const cleared = rowToVideoRun({
@@ -153,6 +163,9 @@ const cleared = rowToVideoRun({
   crops: null,
   default_video_model_key: null,
   clips: null,
+  join_request: null,
+  join_response: null,
+  final_video_url: null,
 });
 assert.equal(cleared.plannerValidationError, null);
 

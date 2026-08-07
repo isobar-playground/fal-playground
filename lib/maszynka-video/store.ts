@@ -57,6 +57,10 @@ export function ensureVideoSchema(sql: NeonQueryFunction<false, false>) {
     // run-level default image-to-video model.
     await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS default_video_model_key text`;
     await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS clips jsonb NOT NULL DEFAULT '{}'::jsonb`;
+    // Slice 7 (issue #30) adds the Final video join — request/response + result URL.
+    await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS join_request jsonb`;
+    await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS join_response jsonb`;
+    await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS final_video_url text`;
   })()
     .then(() => undefined)
     .catch((e) => {

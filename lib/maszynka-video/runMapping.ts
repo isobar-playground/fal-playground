@@ -89,6 +89,11 @@ export interface VideoRun {
   defaultVideoModelKey: string | null;
   /** Clips by sceneId (issue #29) — upserted per scene, other clips untouched. */
   clips: Record<string, VideoClipRecord>;
+  // Final video (issue #30) — the FAL ffmpeg merge-videos request/response (the
+  // verified endpoint id rides inside joinRequest) and the hosted result URL.
+  joinRequest: unknown;
+  joinResponse: unknown;
+  finalVideoUrl: string | null;
 }
 
 export interface VideoRunRow {
@@ -108,6 +113,9 @@ export interface VideoRunRow {
   crops: Record<string, VideoCropRecord> | null;
   default_video_model_key: string | null;
   clips: Record<string, VideoClipRecord> | null;
+  join_request: unknown;
+  join_response: unknown;
+  final_video_url: string | null;
 }
 
 export function rowToVideoRun(row: VideoRunRow): VideoRun {
@@ -129,5 +137,8 @@ export function rowToVideoRun(row: VideoRunRow): VideoRun {
     crops: row.crops ?? {},
     defaultVideoModelKey: row.default_video_model_key ?? null,
     clips: row.clips ?? {},
+    joinRequest: row.join_request ?? null,
+    joinResponse: row.join_response ?? null,
+    finalVideoUrl: row.final_video_url ?? null,
   };
 }

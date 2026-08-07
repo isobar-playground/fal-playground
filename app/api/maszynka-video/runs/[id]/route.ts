@@ -37,6 +37,10 @@ interface PatchVideoRunBody {
   defaultVideoModelKey?: string;
   /** One Clip result (issue #29) — upserted into `clips` keyed by its sceneId. */
   clipRecord?: VideoClipRecord;
+  /** Final video (issue #30) — full replace per field. */
+  joinRequest?: unknown;
+  joinResponse?: unknown;
+  finalVideoUrl?: string;
 }
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -123,6 +127,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         : null;
     const clipRecordJson =
       body.clipRecord !== undefined ? JSON.stringify({ [body.clipRecord.sceneId]: body.clipRecord }) : null;
+    const joinRequestJson = body.joinRequest !== undefined ? JSON.stringify(body.joinRequest) : null;
+    const joinResponseJson = body.joinResponse !== undefined ? JSON.stringify(body.joinResponse) : null;
     const rows = await sql`
       UPDATE maszynka_video_runs SET
         name = COALESCE(${body.name?.trim() ?? null}, name),
@@ -141,6 +147,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         default_video_model_key = COALESCE(${body.defaultVideoModelKey ?? null}, default_video_model_key),
         clips = CASE WHEN ${clipRecordJson}::jsonb IS NOT NULL
           THEN clips || ${clipRecordJson}::jsonb ELSE clips END,
+        join_request = COALESCE(${joinRequestJson}::jsonb, join_request),
+        join_response = COALESCE(${joinResponseJson}::jsonb, join_response),
+        final_video_url = COALESCE(${body.finalVideoUrl ?? null}, final_video_url),
         updated_at = now()
       WHERE id = ${id}
       RETURNING *

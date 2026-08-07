@@ -46,6 +46,10 @@ export interface VideoRunPatch {
   defaultVideoModelKey?: string;
   /** One Clip result (issue #29) — upserted by sceneId, other clips untouched. */
   clipRecord?: VideoClipRecord;
+  /** Final video (issue #30) — full replace per field. */
+  joinRequest?: unknown;
+  joinResponse?: unknown;
+  finalVideoUrl?: string;
 }
 
 export async function createVideoRun(input: {

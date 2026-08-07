@@ -48,6 +48,13 @@ import {
   snapCutLines,
 } from "@/lib/maszynka-video/crop";
 import { clipPromptFromScene, validateSceneClip } from "@/lib/maszynka-video/clipRequest";
+import {
+  FFMPEG_MERGE_VIDEOS_ENDPOINT,
+  buildJoinInput,
+  orderedClips,
+  totalDurationSeconds,
+} from "@/lib/maszynka-video/joinRequest";
+import { runJoinClips } from "@/lib/maszynka-video/joinClient";
 import type { VideoClipRecord, VideoCropRecord } from "@/lib/maszynka-video/api";
 import { runVideoModel } from "@/lib/video/fal";
 import {
@@ -460,6 +467,10 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
   // --- Crops (issue #28) ---------------------------------------------------------------
   const [cropError, setCropError] = useState<string | null>(null);
 
+  // --- Final video (issue #30) ---------------------------------------------------------
+  const [joining, setJoining] = useState(false);
+  const [joinError, setJoinError] = useState<string | null>(null);
+
   const setCfg = useCallback(<K extends keyof PlannerConfig>(key: K, value: PlannerConfig[K]) => {
     setPlannerCfg((prev) => ({ ...prev, [key]: value }));
   }, []);
@@ -475,6 +486,13 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
   /** Run-level default image-to-video model (issue #29) — stored on the run; the
    *  catalog's first image-to-video entry until the operator picks one. */
   const defaultVideoModelKey = run?.defaultVideoModelKey ?? I2V_MODELS[0].key;
+
+  /** The Final video's ordered clip list + total duration (issue #30). */
+  const joinPlan = useMemo(() => {
+    if (!run || !contract || contract.validationError) return null;
+    const ordered = orderedClips(contract.scenes, run.clips);
+    return { ...ordered, total: totalDurationSeconds(ordered.clips) };
+  }, [run, contract]);
 
   const refreshRuns = useCallback(async () => {
     try {
@@ -794,6 +812,32 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
     },
     [run, apiKey, adoptPatched],
   );
+
+  /** Join clips (issue #30): hard concatenation of the full clips in global order
+   *  via the verified FAL ffmpeg merge-videos endpoint — no trims, no transitions. */
+  const handleJoinClips = useCallback(async () => {
+    if (!run || !joinPlan || joinPlan.clips.length === 0) return;
+    setJoining(true);
+    setJoinError(null);
+    configureFal(apiKey);
+    const input = buildJoinInput(joinPlan.clips);
+    const requestRecord = { endpoint: FFMPEG_MERGE_VIDEOS_ENDPOINT, input };
+    try {
+      const { videoUrl, raw } = await runJoinClips(input);
+      adoptPatched(
+        await patchVideoRun(run.id, { joinRequest: requestRecord, joinResponse: raw, finalVideoUrl: videoUrl }),
+      );
+    } catch (e) {
+      setJoinError(e instanceof Error ? e.message : "Join clips failed");
+      try {
+        adoptPatched(await patchVideoRun(run.id, { joinRequest: requestRecord }));
+      } catch {
+        /* keep the primary error */
+      }
+    } finally {
+      setJoining(false);
+    }
+  }, [run, joinPlan, apiKey, adoptPatched]);
 
   const handleApplyOutputEdits = useCallback(async () => {
     if (!run) return;
@@ -1201,6 +1245,70 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
               onGenerate={handleGenerateClip}
             />
           ))}
+        </section>
+      )}
+
+      {/* FINAL VIDEO (issue #30) — ordered clip list by global order, total duration
+         as the sum, Join clips via the verified FAL ffmpeg merge-videos endpoint. */}
+      {run && joinPlan && (joinPlan.clips.length > 0 || joinPlan.missingSceneIds.length > 0) && (
+        <section className="mb-5 rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
+          <h2 className="mb-3 font-semibold">Final video</h2>
+          <table className="mb-3 w-full text-left text-xs text-neutral-600">
+            <thead>
+              <tr className="text-neutral-400">
+                <th className="py-1 pr-2 font-medium">order</th>
+                <th className="py-1 pr-2 font-medium">sceneId</th>
+                <th className="py-1 pr-2 font-medium">duration (s)</th>
+                <th className="py-1 font-medium">clip</th>
+              </tr>
+            </thead>
+            <tbody>
+              {joinPlan.clips.map((c) => (
+                <tr key={c.sceneId} className="border-t border-neutral-200">
+                  <td className="py-1 pr-2">{c.order}</td>
+                  <td className="py-1 pr-2 font-mono">{c.sceneId}</td>
+                  <td className="py-1 pr-2">{c.durationSeconds ?? "—"}</td>
+                  <td className="py-1">
+                    <a href={c.videoUrl} target="_blank" rel="noreferrer" className="text-amber-700 underline">
+                      open
+                    </a>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="mb-3 text-sm text-neutral-600">
+            Total duration: <span className="font-semibold">{joinPlan.total.seconds}s</span>
+            {!joinPlan.total.allKnown && " (some clip durations unknown — sum covers the known ones)"}
+          </p>
+          {joinPlan.missingSceneIds.length > 0 && (
+            <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+              Missing clips for: {joinPlan.missingSceneIds.join(", ")} — generate every Scene before joining.
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={() => void handleJoinClips()}
+            disabled={!apiKey || joining || joinPlan.clips.length === 0 || joinPlan.missingSceneIds.length > 0}
+            className={PRIMARY_BTN_CLS}
+          >
+            {joining ? "Joining…" : "Join clips"}
+          </button>
+          {joinError && <p className="mt-2 text-sm text-red-600">{joinError}</p>}
+
+          {run.finalVideoUrl && (
+            <div className="mt-4">
+              <video src={run.finalVideoUrl} controls className="w-full rounded-lg border border-neutral-200" />
+              <p className="mt-1 break-all font-mono text-xs text-neutral-500">
+                finalVideoUrl:{" "}
+                <a href={run.finalVideoUrl} target="_blank" rel="noreferrer" className="text-amber-700 underline">
+                  {run.finalVideoUrl}
+                </a>
+              </p>
+            </div>
+          )}
+          <DebugDetails label="Raw request" value={run.joinRequest} />
+          <DebugDetails label="Raw response" value={run.joinResponse} />
         </section>
       )}
 
