@@ -32,7 +32,7 @@ export function parseRawParams(text: string): { params: Record<string, unknown>;
 /** Raw params merge LAST — they are the operator's explicit override of anything
  *  the catalog builder produced (issue #27: "raw model parameters merge into the
  *  FAL request"). */
-export function mergeGridInput(
+export function mergeRawParams(
   base: Record<string, unknown>,
   rawParams: Record<string, unknown>,
 ): Record<string, unknown> {

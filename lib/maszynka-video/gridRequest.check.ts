@@ -4,7 +4,7 @@
 //   node lib/maszynka-video/gridRequest.check.ts   (or: npm run check:maszynka-video-grid-request)
 // No test framework in this repo by design — Node 22+ strips TS types natively.
 import assert from "node:assert/strict";
-import { canvasSizeLabel, gridPromptFromPayload, mergeGridInput, parseRawParams } from "./gridRequest.ts";
+import { canvasSizeLabel, gridPromptFromPayload, mergeRawParams, parseRawParams } from "./gridRequest.ts";
 
 // --- prompt: the payload's own `prompt` wins; otherwise the payload verbatim ---------
 assert.equal(gridPromptFromPayload({ prompt: "a 2x2 grid of scenes", layout: "2x2" }), "a 2x2 grid of scenes");
@@ -21,7 +21,7 @@ assert.ok(parseRawParams("[1,2]").error, "a non-object must error");
 assert.deepEqual(parseRawParams("[1,2]").params, {}, "params stay empty alongside an error");
 
 // --- merge: raw params are the operator's explicit override — they win ---------------
-const merged = mergeGridInput(
+const merged = mergeRawParams(
   { prompt: "grid", num_images: 1, image_size: "landscape_16_9" },
   { image_size: { width: 1920, height: 960 }, seed: 7 },
 );

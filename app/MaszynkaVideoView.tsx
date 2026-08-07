@@ -37,7 +37,7 @@ import {
 import {
   canvasSizeLabel,
   gridPromptFromPayload,
-  mergeGridInput,
+  mergeRawParams,
   parseRawParams,
 } from "@/lib/maszynka-video/gridRequest";
 import {
@@ -712,7 +712,7 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
       const { params, error } = parseRawParams(rawParamsText);
       if (error) throw new Error(error);
       configureFal(apiKey);
-      const input = mergeGridInput(
+      const input = mergeRawParams(
         buildInput(
           model,
           gridPromptFromPayload(batch.gridGenerationPayload),
@@ -811,7 +811,7 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
         ...DEFAULT_VIDEO_SETTINGS,
         durationSec: scene.targetClipDurationSeconds ?? DEFAULT_VIDEO_SETTINGS.durationSec,
       };
-      const input = mergeGridInput(
+      const input = mergeRawParams(
         buildVideoInput(model, clipPromptFromScene(scene.raw), { startUrl: crop!.url }, settings),
         params,
       );
@@ -915,9 +915,16 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
     if (!run) return;
     stopRef.current = false;
     setFlowError(null);
+    // Tracked alongside the state so a failure can NAME the failing stage in the
+    // error banner (issue #31) after the progress indicator clears.
+    let stage = "Planner";
+    const setStage = (s: string) => {
+      stage = s;
+      setFlowStage(s);
+    };
     try {
       // 1. Planner — same request the manual button sends.
-      setFlowStage("Planner");
+      setStage("Planner");
       const body = buildPlannerRequestBody(
         plannerCfg,
         { globalRules, priorityLogic },
@@ -942,7 +949,7 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
       for (let i = 0; i < batches.length; i++) {
         if (stopRef.current) return;
         const batch = batches[i];
-        setFlowStage(`Grid ${i + 1}/${batches.length} (${batch.batchId})`);
+        setStage(`Grid ${i + 1}/${batches.length} (${batch.batchId})`);
         const storedGrid = current.grids[batch.batchId];
         current = await generateGridCore(
           current.id,
@@ -958,7 +965,7 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
       for (let i = 0; i < parsed.scenes.length; i++) {
         if (stopRef.current) return;
         const scene = parsed.scenes[i];
-        setFlowStage(`Scene ${i + 1}/${parsed.scenes.length} (${scene.sceneId || `order ${scene.order}`})`);
+        setStage(`Scene ${i + 1}/${parsed.scenes.length} (${scene.sceneId || `order ${scene.order}`})`);
         const storedClip = current.clips[scene.sceneId];
         current = await generateClipCore(
           current.id,
@@ -971,14 +978,14 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
 
       // 4. Final video.
       if (stopRef.current) return;
-      setFlowStage("Final video (join clips)");
+      setStage("Final video (join clips)");
       const ordered = orderedClips(parsed.scenes, current.clips);
       if (ordered.missingSceneIds.length > 0) {
         throw new Error(`Missing clips for: ${ordered.missingSceneIds.join(", ")}`);
       }
       await joinClipsCore(current.id, ordered.clips);
     } catch (e) {
-      setFlowError(e instanceof Error ? e.message : String(e));
+      setFlowError(`${stage}: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setFlowStage(null);
     }
