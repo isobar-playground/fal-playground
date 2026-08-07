@@ -8,7 +8,13 @@ import type { NeonQueryFunction } from "@neondatabase/serverless";
 
 // The DATABASE_URL accessor is identical for both stores — reuse it rather than copy it.
 export { getSql } from "../maszynka/store";
-export { rowToVideoRun, type VideoReferenceFile, type VideoRun, type VideoRunRow } from "./runMapping";
+export {
+  rowToVideoRun,
+  type VideoGridRecord,
+  type VideoReferenceFile,
+  type VideoRun,
+  type VideoRunRow,
+} from "./runMapping";
 
 export const runtime = "nodejs";
 
@@ -38,6 +44,10 @@ export function ensureVideoSchema(sql: NeonQueryFunction<false, false>) {
     // Slice 3 (issue #26) adds reference files — uploaded once via FAL storage, reused
     // by the Planner (image parts) and the grid stage. Full-replace jsonb array.
     await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS reference_files jsonb NOT NULL DEFAULT '[]'::jsonb`;
+    // Slice 4 (issue #27) adds grid results — a jsonb MAP keyed by batchId (same
+    // upsert-one-key pattern as maszynka_runs.manual_scores) so regenerating one grid
+    // never touches another grid's stored result.
+    await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS grids jsonb NOT NULL DEFAULT '{}'::jsonb`;
   })()
     .then(() => undefined)
     .catch((e) => {

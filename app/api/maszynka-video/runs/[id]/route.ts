@@ -2,6 +2,7 @@ import {
   ensureVideoSchema,
   getSql,
   rowToVideoRun,
+  type VideoGridRecord,
   type VideoReferenceFile,
   type VideoRunRow,
 } from "@/lib/maszynka-video/store";
@@ -23,6 +24,9 @@ interface PatchVideoRunBody {
   plannerValidationError?: string;
   /** Reference files (issue #26) — full replace of the run's list. */
   referenceFiles?: VideoReferenceFile[];
+  /** One grid result (issue #27) — upserted into `grids` keyed by its batchId, never
+   *  replacing the whole map, so other grids' stored results stay untouched. */
+  gridRecord?: VideoGridRecord;
 }
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -66,6 +70,12 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       );
     if (!ok) return Response.json({ error: "each reference file must have an id, a url and a name" }, { status: 400 });
   }
+  if (body.gridRecord !== undefined) {
+    const r = body.gridRecord;
+    if (!r || typeof r.batchId !== "string" || !r.batchId || typeof r.modelKey !== "string") {
+      return Response.json({ error: "gridRecord must carry a batchId and a modelKey" }, { status: 400 });
+    }
+  }
 
   const sql = getSql();
   if (!sql) {
@@ -82,6 +92,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     const plannerResponseJson = body.plannerResponse !== undefined ? JSON.stringify(body.plannerResponse) : null;
     const plannerOutputJson = body.plannerOutput !== undefined ? JSON.stringify(body.plannerOutput) : null;
     const referenceFilesJson = body.referenceFiles !== undefined ? JSON.stringify(body.referenceFiles) : null;
+    const gridRecordJson =
+      body.gridRecord !== undefined ? JSON.stringify({ [body.gridRecord.batchId]: body.gridRecord }) : null;
     const rows = await sql`
       UPDATE maszynka_video_runs SET
         name = COALESCE(${body.name?.trim() ?? null}, name),
@@ -93,6 +105,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         planner_output = COALESCE(${plannerOutputJson}::jsonb, planner_output),
         planner_validation_error = COALESCE(${body.plannerValidationError ?? null}, planner_validation_error),
         reference_files = COALESCE(${referenceFilesJson}::jsonb, reference_files),
+        grids = CASE WHEN ${gridRecordJson}::jsonb IS NOT NULL
+          THEN grids || ${gridRecordJson}::jsonb ELSE grids END,
         updated_at = now()
       WHERE id = ${id}
       RETURNING *

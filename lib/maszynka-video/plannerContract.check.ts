@@ -5,7 +5,7 @@
 //   node lib/maszynka-video/plannerContract.check.ts   (or: npm run check:maszynka-video-planner-contract)
 // No test framework in this repo by design — Node 22+ strips TS types natively.
 import assert from "node:assert/strict";
-import { derivePlannerContract, parsePlannerContent } from "./plannerContract.ts";
+import { derivePlannerContract, parsePlannerContent, withUpdatedGridPayload } from "./plannerContract.ts";
 
 // --- non-JSON response → validationError, everything else empty (hard block) ---------
 const bad = parsePlannerContent("Sorry, I cannot produce a plan.");
@@ -100,5 +100,24 @@ assert.deepEqual(sloppy.batches[0].gridGenerationPayload, {}, "missing payload b
 const planless = derivePlannerContract({ scenePlan: { scenes: [] } });
 assert.equal(planless.validationError, null);
 assert.deepEqual(planless.batches, []);
+
+// --- withUpdatedGridPayload: grid-section edits write back into the planner output ---
+// Long video: the matching gridBatches entry (by derived-batch index), siblings kept.
+const longParsed = long.parsed as Record<string, unknown>;
+const editedLong = withUpdatedGridPayload(longParsed, 1, { layout: "2x2", edited: true });
+const editedBatches = derivePlannerContract(editedLong).batches;
+assert.deepEqual(editedBatches[1].gridGenerationPayload, { layout: "2x2", edited: true });
+assert.deepEqual(editedBatches[0].gridGenerationPayload, { layout: "2x2" }, "other batches untouched");
+assert.equal(editedBatches[1].batchId, "grid-02", "sibling fields on the batch entry survive the edit");
+assert.deepEqual(longParsed.gridBatches, (long.parsed as Record<string, unknown>).gridBatches, "input not mutated");
+// Short video: index 0 targets the top-level payload.
+const shortParsed = short.parsed as Record<string, unknown>;
+const editedShort = withUpdatedGridPayload(shortParsed, 0, { layout: "1x2", edited: true });
+assert.deepEqual(derivePlannerContract(editedShort).batches[0].gridGenerationPayload, { layout: "1x2", edited: true });
+assert.deepEqual(
+  (editedShort as { somethingCustom: unknown }).somethingCustom,
+  { passes: "through" },
+  "unknown top-level fields survive the edit",
+);
 
 console.log("lib/maszynka-video/plannerContract.ts — all checks passed");

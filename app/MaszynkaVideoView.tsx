@@ -10,12 +10,14 @@
 // stages consume them.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CHAT_MODELS, CHAT_MODEL_GROUPS } from "@/lib/chat/models";
-import { configureFal, uploadReference } from "@/lib/fal";
+import { configureFal, runModel, uploadReference } from "@/lib/fal";
+import { DEFAULT_SETTINGS, MODELS, MODEL_BY_KEY, MODEL_GROUPS, buildInput } from "@/lib/models";
 import {
   createVideoRun,
   getVideoRun,
   listVideoRuns,
   patchVideoRun,
+  type VideoGridRecord,
   type VideoReferenceFile,
   type VideoRun,
 } from "@/lib/maszynka-video/api";
@@ -26,7 +28,18 @@ import {
   type PlannerConfig,
   type PlannerReasoningEffort,
 } from "@/lib/maszynka-video/planner";
-import { derivePlannerContract, parsePlannerContent } from "@/lib/maszynka-video/plannerContract";
+import {
+  derivePlannerContract,
+  parsePlannerContent,
+  withUpdatedGridPayload,
+  type PlannerGridBatch,
+} from "@/lib/maszynka-video/plannerContract";
+import {
+  canvasSizeLabel,
+  gridPromptFromPayload,
+  mergeGridInput,
+  parseRawParams,
+} from "@/lib/maszynka-video/gridRequest";
 
 const INPUT_CLS =
   "w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100";
@@ -54,6 +67,152 @@ function DebugDetails({ label, value }: { label: string; value: unknown }) {
       <summary className="cursor-pointer text-xs font-medium text-neutral-500 hover:text-amber-700">{label}</summary>
       <JsonPre value={value} />
     </details>
+  );
+}
+
+function isPlainRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** One Grid batch section (issue #27) — independently runnable; its payload edits
+ *  write back into the planner output (single source of truth for grids AND crops).
+ *  Keyed by run+batch in the parent so reopening another run remounts fresh state. */
+function GridSection({
+  batch,
+  batchIndex,
+  stored,
+  referenceFiles,
+  canGenerate,
+  onApplyPayload,
+  onGenerate,
+}: {
+  batch: PlannerGridBatch;
+  batchIndex: number;
+  stored: VideoGridRecord | undefined;
+  referenceFiles: VideoReferenceFile[];
+  canGenerate: boolean;
+  onApplyPayload: (batchIndex: number, payload: Record<string, unknown>) => Promise<void>;
+  onGenerate: (batch: PlannerGridBatch, modelKey: string, rawParamsText: string) => Promise<void>;
+}) {
+  const [modelKey, setModelKey] = useState(stored?.modelKey ?? MODELS[0].key);
+  const [rawParams, setRawParams] = useState(stored?.rawParams ?? "");
+  const pretty = useMemo(() => JSON.stringify(batch.gridGenerationPayload, null, 2), [batch.gridGenerationPayload]);
+  const [payloadDraft, setPayloadDraft] = useState(pretty);
+  const [payloadError, setPayloadError] = useState<string | null>(null);
+  const [genError, setGenError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  // Re-sync the editor when the stored payload text actually changes (planner rerun /
+  // applied edit) — string-keyed so a mere refetch never clobbers in-progress edits.
+  useEffect(() => {
+    setPayloadDraft(pretty);
+    setPayloadError(null);
+  }, [pretty]);
+
+  const rawParamsError = parseRawParams(rawParams).error;
+  const canvas = canvasSizeLabel(batch.gridGenerationPayload);
+
+  const handleApplyPayload = async () => {
+    setPayloadError(null);
+    try {
+      const parsed: unknown = JSON.parse(payloadDraft);
+      if (!isPlainRecord(parsed)) throw new Error("payload must be a JSON object");
+      await onApplyPayload(batchIndex, parsed);
+    } catch (e) {
+      setPayloadError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const handleGenerate = async () => {
+    setGenError(null);
+    setBusy(true);
+    try {
+      await onGenerate(batch, modelKey, rawParams);
+    } catch (e) {
+      setGenError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mb-4 rounded-xl border border-neutral-200 p-4 last:mb-0">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h3 className="font-mono text-sm font-semibold text-neutral-700">{batch.batchId}</h3>
+        <span className="text-xs text-neutral-400">
+          {batch.sceneIds.join(", ") || "no sceneIds"}
+          {canvas ? ` · canvasSize ${canvas}` : ""}
+        </span>
+      </div>
+
+      <label className={LABEL_CLS}>gridGenerationPayload (editable — also drives the Crops layout)</label>
+      <textarea
+        value={payloadDraft}
+        onChange={(e) => setPayloadDraft(e.target.value)}
+        rows={6}
+        className={MONO_AREA_CLS}
+      />
+      <div className="mb-3 mt-1 flex items-center gap-3">
+        <button type="button" onClick={() => void handleApplyPayload()} className={GHOST_BTN_CLS}>
+          Apply payload edits
+        </button>
+        {payloadError && <span className="text-sm text-red-600">{payloadError}</span>}
+      </div>
+
+      <div className="mb-3 grid grid-cols-2 gap-3">
+        <div>
+          <label className={LABEL_CLS}>Image model</label>
+          <select value={modelKey} onChange={(e) => setModelKey(e.target.value)} className={INPUT_CLS}>
+            {MODEL_GROUPS.map((group) => (
+              <optgroup key={group} label={group}>
+                {MODELS.filter((m) => m.group === group).map((m) => (
+                  <option key={m.key} value={m.key}>
+                    {m.label}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className={LABEL_CLS}>Raw model parameters (JSON pass-through)</label>
+          <input
+            value={rawParams}
+            onChange={(e) => setRawParams(e.target.value)}
+            placeholder='e.g. {"image_size": {"width": 1920, "height": 960}}'
+            className={`${INPUT_CLS} font-mono`}
+          />
+        </div>
+      </div>
+      {rawParamsError && <p className="mb-2 text-sm text-red-600">{rawParamsError}</p>}
+
+      {referenceFiles.length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-2">
+          {referenceFiles.map((f) => (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img key={f.id} src={f.url} alt={f.name} title={f.name} className="h-10 w-10 rounded object-cover" />
+          ))}
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={() => void handleGenerate()}
+        disabled={!canGenerate || Boolean(rawParamsError) || busy}
+        className={PRIMARY_BTN_CLS}
+      >
+        {busy ? "Generating…" : "Generate grid"}
+      </button>
+      {genError && <p className="mt-2 text-sm text-red-600">{genError}</p>}
+      {stored?.error && !genError && <p className="mt-2 text-sm text-red-600">{stored.error}</p>}
+
+      {stored?.imageUrl && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={stored.imageUrl} alt={`Grid ${batch.batchId}`} className="mt-3 w-full rounded-lg border border-neutral-200" />
+      )}
+      <DebugDetails label="Raw request" value={stored?.request} />
+      <DebugDetails label="Raw response" value={stored?.response} />
+    </div>
   );
 }
 
@@ -247,6 +406,60 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
       setPlannerRunning(false);
     }
   }, [run, plannerCfg, globalRules, priorityLogic, orKey, adoptPatched]);
+
+  /** Grid-section payload edits write back into the planner output (issue #27) —
+   *  the SAME JSON the crop stage later reads its layout from. */
+  const handleApplyGridPayload = useCallback(
+    async (batchIndex: number, payload: Record<string, unknown>) => {
+      if (!run || !isPlainRecord(run.plannerOutput)) return;
+      const updated = withUpdatedGridPayload(run.plannerOutput, batchIndex, payload);
+      adoptPatched(await patchVideoRun(run.id, { plannerOutput: updated }));
+    },
+    [run, adoptPatched],
+  );
+
+  /** Runs ONE grid client-side against FAL and upserts its record — other grids'
+   *  results stay untouched (issue #27). */
+  const handleGenerateGrid = useCallback(
+    async (batch: PlannerGridBatch, modelKey: string, rawParamsText: string) => {
+      if (!run) return;
+      const model = MODEL_BY_KEY[modelKey];
+      if (!model) throw new Error(`Unknown image model: ${modelKey}`);
+      const { params, error } = parseRawParams(rawParamsText);
+      if (error) throw new Error(error);
+      configureFal(apiKey);
+      const referenceUrls = run.referenceFiles.map((f) => f.url);
+      const input = mergeGridInput(
+        buildInput(
+          model,
+          gridPromptFromPayload(batch.gridGenerationPayload),
+          model.mode === "edit" ? referenceUrls : [],
+          DEFAULT_SETTINGS,
+        ),
+        params,
+      );
+      const record: VideoGridRecord = {
+        batchId: batch.batchId,
+        modelKey,
+        rawParams: rawParamsText,
+        request: { endpoint: model.id, input },
+        response: null,
+        imageUrl: null,
+        error: null,
+      };
+      try {
+        const result = await runModel(model, input);
+        record.response = result.raw;
+        record.imageUrl = result.images[0]?.url ?? null;
+        if (!record.imageUrl) record.error = "FAL returned no image.";
+      } catch (e) {
+        record.error = e instanceof Error ? e.message : String(e);
+      }
+      adoptPatched(await patchVideoRun(run.id, { gridRecord: record }));
+      if (record.error) throw new Error(record.error);
+    },
+    [run, apiKey, adoptPatched],
+  );
 
   const handleApplyOutputEdits = useCallback(async () => {
     if (!run) return;
@@ -559,6 +772,27 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
           </div>
         )}
       </section>
+
+      {/* GRIDS (issue #27) — one independent section per Grid batch (a short video
+         has exactly one); blocked while the planner has a validationError. */}
+      {run && contract && !contract.validationError && contract.batches.length > 0 && (
+        <section className="mb-5 rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
+          <h2 className="mb-3 font-semibold">Grids</h2>
+          {!apiKey && <p className="mb-3 text-xs text-neutral-400">Fal.ai key missing — generation disabled.</p>}
+          {contract.batches.map((batch, i) => (
+            <GridSection
+              key={`${run.id}:${batch.batchId}`}
+              batch={batch}
+              batchIndex={i}
+              stored={run.grids[batch.batchId]}
+              referenceFiles={run.referenceFiles}
+              canGenerate={Boolean(apiKey)}
+              onApplyPayload={handleApplyGridPayload}
+              onGenerate={handleGenerateGrid}
+            />
+          ))}
+        </section>
+      )}
 
       <section className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
         <h2 className="mb-3 font-semibold">Run history</h2>

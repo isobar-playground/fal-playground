@@ -115,6 +115,30 @@ export function derivePlannerContract(parsed: unknown): PlannerContract {
   return { parsed, validationError: null, scenePlan, masterScenePlan, batches, scenes };
 }
 
+/** Writes an edited grid payload back into the parsed planner output — the payload
+ *  STAYS part of the planner output (one source of truth for the grid stage AND the
+ *  crop stage's layout), so a grid-section payload edit is a planner-output edit
+ *  (PRD story 8). `batchIndex` is the position in the DERIVED batches list: for a
+ *  long video that's the matching plain-object entry of `gridBatches` (in order);
+ *  for a short video (index 0) it's the top-level `gridGenerationPayload`. Unknown
+ *  sibling fields on the batch entry are preserved. */
+export function withUpdatedGridPayload(
+  parsed: Record<string, unknown>,
+  batchIndex: number,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  if (Array.isArray(parsed.gridBatches)) {
+    let objIndex = -1;
+    const gridBatches = parsed.gridBatches.map((b) => {
+      if (!isPlainObject(b)) return b;
+      objIndex += 1;
+      return objIndex === batchIndex ? { ...b, gridGenerationPayload: payload } : b;
+    });
+    return { ...parsed, gridBatches };
+  }
+  return { ...parsed, gridGenerationPayload: payload };
+}
+
 /** Parses the planner's raw message content. A non-JSON response is the spec's
  *  `validationError` case (PRD: "a non-JSON planner response surfaces as
  *  validationError") — it blocks later stages. */

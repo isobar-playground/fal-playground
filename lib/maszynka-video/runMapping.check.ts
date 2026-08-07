@@ -21,6 +21,17 @@ const full = rowToVideoRun({
   planner_output: { scenePlan: {} },
   planner_validation_error: "response was not valid JSON",
   reference_files: [{ id: "ref-1", url: "https://v3.fal.media/files/a.png", name: "a.png" }],
+  grids: {
+    "grid-01": {
+      batchId: "grid-01",
+      modelKey: "nano-banana-2",
+      rawParams: "",
+      request: { endpoint: "fal-ai/nano-banana-2" },
+      response: { images: [] },
+      imageUrl: "https://v3.fal.media/files/grid.png",
+      error: null,
+    },
+  },
 });
 assert.deepEqual(full, {
   id: "vr-1",
@@ -35,6 +46,17 @@ assert.deepEqual(full, {
   plannerOutput: { scenePlan: {} },
   plannerValidationError: "response was not valid JSON",
   referenceFiles: [{ id: "ref-1", url: "https://v3.fal.media/files/a.png", name: "a.png" }],
+  grids: {
+    "grid-01": {
+      batchId: "grid-01",
+      modelKey: "nano-banana-2",
+      rawParams: "",
+      request: { endpoint: "fal-ai/nano-banana-2" },
+      response: { images: [] },
+      imageUrl: "https://v3.fal.media/files/grid.png",
+      error: null,
+    },
+  },
 });
 
 // --- NULL paste fields (pre-fill rows / never-pasted runs) surface as "" -------------
@@ -51,6 +73,7 @@ const sparse = rowToVideoRun({
   planner_output: null,
   planner_validation_error: null,
   reference_files: null,
+  grids: null,
 });
 assert.equal(sparse.globalRules, "");
 assert.equal(sparse.priorityLogic, "");
@@ -58,6 +81,7 @@ assert.equal(sparse.plannerConfig, null);
 assert.equal(sparse.plannerOutput, null);
 assert.equal(sparse.plannerValidationError, null);
 assert.deepEqual(sparse.referenceFiles, [], "NULL reference_files surfaces as an empty list");
+assert.deepEqual(sparse.grids, {}, "NULL grids surfaces as an empty map");
 
 // --- "" (cleared after a successful planner re-run) reads back as "no error" --------
 const cleared = rowToVideoRun({
@@ -73,6 +97,7 @@ const cleared = rowToVideoRun({
   planner_output: { scenePlan: {} },
   planner_validation_error: "",
   reference_files: null,
+  grids: null,
 });
 assert.equal(cleared.plannerValidationError, null);
 

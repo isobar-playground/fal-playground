@@ -2,9 +2,9 @@
 
 // Thin fetch wrappers around app/api/maszynka-video/runs — the only way the browser
 // talks to the Neon-backed Video run store (ADR 0001 rationale; PRD 0003).
-import type { VideoReferenceFile, VideoRun } from "./runMapping";
+import type { VideoGridRecord, VideoReferenceFile, VideoRun } from "./runMapping";
 
-export type { VideoReferenceFile, VideoRun } from "./runMapping";
+export type { VideoGridRecord, VideoReferenceFile, VideoRun } from "./runMapping";
 
 async function asJson(res: Response): Promise<unknown> {
   try {
@@ -32,6 +32,8 @@ export interface VideoRunPatch {
   plannerValidationError?: string;
   /** Reference files (issue #26) — full replace of the run's list. */
   referenceFiles?: VideoReferenceFile[];
+  /** One grid result (issue #27) — upserted by batchId, other grids untouched. */
+  gridRecord?: VideoGridRecord;
 }
 
 export async function createVideoRun(input: {

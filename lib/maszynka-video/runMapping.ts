@@ -12,6 +12,20 @@ export interface VideoReferenceFile {
   name: string;
 }
 
+/** One grid generation result (issue #27), keyed by `batchId` in `VideoRun.grids` so
+ *  regenerating one grid upserts its own entry and leaves every other grid untouched.
+ *  `request` is the exact FAL endpoint + input sent; `rawParams` is the operator's
+ *  raw-model-parameters text as entered (re-shown when the run reopens). */
+export interface VideoGridRecord {
+  batchId: string;
+  modelKey: string;
+  rawParams: string;
+  request: unknown;
+  response: unknown;
+  imageUrl: string | null;
+  error: string | null;
+}
+
 export interface VideoRun {
   id: string;
   createdAt: string;
@@ -35,6 +49,9 @@ export interface VideoRun {
   /** Reference files (issue #26) — full-replace list, removing one before running the
    *  planner excludes it from the request. */
   referenceFiles: VideoReferenceFile[];
+  /** Grid results by batchId (issue #27) — server-side upsert per grid, never a full
+   *  replace, so parallel operators can't clobber each other's grids. */
+  grids: Record<string, VideoGridRecord>;
 }
 
 export interface VideoRunRow {
@@ -50,6 +67,7 @@ export interface VideoRunRow {
   planner_output: unknown;
   planner_validation_error: string | null;
   reference_files: VideoReferenceFile[] | null;
+  grids: Record<string, VideoGridRecord> | null;
 }
 
 export function rowToVideoRun(row: VideoRunRow): VideoRun {
@@ -67,5 +85,6 @@ export function rowToVideoRun(row: VideoRunRow): VideoRun {
     // "" (cleared on a successful run) and NULL (never ran) both mean "no error".
     plannerValidationError: row.planner_validation_error || null,
     referenceFiles: row.reference_files ?? [],
+    grids: row.grids ?? {},
   };
 }
