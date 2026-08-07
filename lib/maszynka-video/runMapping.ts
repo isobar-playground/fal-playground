@@ -12,6 +12,17 @@ export interface VideoRun {
   /** Pasted verbatim by the operator — the app never authors this content (PRD 0003). */
   globalRules: string;
   priorityLogic: string;
+  // Planner stage (issue #25) — see lib/maszynka-video/planner.ts / plannerContract.ts.
+  // `plannerConfig` is the operator's PlannerConfig as entered; request/response are the
+  // raw OpenRouter wire records; `plannerOutput` is the CURRENT parsed planner JSON —
+  // possibly operator-edited (PRD story 8) — that later stages re-derive the contract
+  // from. `plannerValidationError` non-null blocks every later stage (issue #25); it is
+  // cleared (set "") on a successful planner run, never left stale.
+  plannerConfig: unknown;
+  plannerRequest: unknown;
+  plannerResponse: unknown;
+  plannerOutput: unknown;
+  plannerValidationError: string | null;
 }
 
 export interface VideoRunRow {
@@ -21,6 +32,11 @@ export interface VideoRunRow {
   name: string;
   global_rules: string | null;
   priority_logic: string | null;
+  planner_config: unknown;
+  planner_request: unknown;
+  planner_response: unknown;
+  planner_output: unknown;
+  planner_validation_error: string | null;
 }
 
 export function rowToVideoRun(row: VideoRunRow): VideoRun {
@@ -31,5 +47,11 @@ export function rowToVideoRun(row: VideoRunRow): VideoRun {
     name: row.name,
     globalRules: row.global_rules ?? "",
     priorityLogic: row.priority_logic ?? "",
+    plannerConfig: row.planner_config ?? null,
+    plannerRequest: row.planner_request ?? null,
+    plannerResponse: row.planner_response ?? null,
+    plannerOutput: row.planner_output ?? null,
+    // "" (cleared on a successful run) and NULL (never ran) both mean "no error".
+    plannerValidationError: row.planner_validation_error || null,
   };
 }

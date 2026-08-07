@@ -24,6 +24,12 @@ export interface VideoRunPatch {
   name?: string;
   globalRules?: string;
   priorityLogic?: string;
+  /** Planner stage (issue #25) — see the PATCH route for replace/clear semantics. */
+  plannerConfig?: unknown;
+  plannerRequest?: unknown;
+  plannerResponse?: unknown;
+  plannerOutput?: unknown;
+  plannerValidationError?: string;
 }
 
 export async function createVideoRun(input: {

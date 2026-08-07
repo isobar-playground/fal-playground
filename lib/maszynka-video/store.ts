@@ -28,6 +28,13 @@ export function ensureVideoSchema(sql: NeonQueryFunction<false, false>) {
         priority_logic text        NOT NULL DEFAULT ''
       )
     `;
+    // Slice 2 (issue #25) adds the Planner stage — idempotent per-column additions,
+    // same "created on first write" story as lib/maszynka/store.ts.
+    await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS planner_config jsonb`;
+    await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS planner_request jsonb`;
+    await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS planner_response jsonb`;
+    await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS planner_output jsonb`;
+    await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS planner_validation_error text`;
   })()
     .then(() => undefined)
     .catch((e) => {
