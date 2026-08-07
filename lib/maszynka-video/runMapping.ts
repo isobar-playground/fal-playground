@@ -26,6 +26,20 @@ export interface VideoGridRecord {
   error: string | null;
 }
 
+/** One Crop (issue #28, CONTEXT.md "Crop") — the panel cut out of a generated grid
+ *  for exactly ONE Scene, keyed by `sceneId` in `VideoRun.crops` (never by position
+ *  alone). `url` is a FAL-storage URL (browser-cut panel or the operator's Replace
+ *  crop upload — `replaced` tells them apart); `order`/`gridSlot` are display
+ *  snapshots from the scene plan at crop time. */
+export interface VideoCropRecord {
+  sceneId: string;
+  batchId: string;
+  order: number;
+  gridSlot: unknown;
+  url: string;
+  replaced: boolean;
+}
+
 export interface VideoRun {
   id: string;
   createdAt: string;
@@ -52,6 +66,9 @@ export interface VideoRun {
   /** Grid results by batchId (issue #27) — server-side upsert per grid, never a full
    *  replace, so parallel operators can't clobber each other's grids. */
   grids: Record<string, VideoGridRecord>;
+  /** Crops by sceneId (issue #28) — upserted per scene; Replace crop swaps one
+   *  scene's entry without touching any other crop. */
+  crops: Record<string, VideoCropRecord>;
 }
 
 export interface VideoRunRow {
@@ -68,6 +85,7 @@ export interface VideoRunRow {
   planner_validation_error: string | null;
   reference_files: VideoReferenceFile[] | null;
   grids: Record<string, VideoGridRecord> | null;
+  crops: Record<string, VideoCropRecord> | null;
 }
 
 export function rowToVideoRun(row: VideoRunRow): VideoRun {
@@ -86,5 +104,6 @@ export function rowToVideoRun(row: VideoRunRow): VideoRun {
     plannerValidationError: row.planner_validation_error || null,
     referenceFiles: row.reference_files ?? [],
     grids: row.grids ?? {},
+    crops: row.crops ?? {},
   };
 }

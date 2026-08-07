@@ -32,6 +32,16 @@ const full = rowToVideoRun({
       error: null,
     },
   },
+  crops: {
+    "scene-01": {
+      sceneId: "scene-01",
+      batchId: "grid-01",
+      order: 1,
+      gridSlot: 1,
+      url: "https://v3.fal.media/files/crop-01.png",
+      replaced: false,
+    },
+  },
 });
 assert.deepEqual(full, {
   id: "vr-1",
@@ -57,6 +67,16 @@ assert.deepEqual(full, {
       error: null,
     },
   },
+  crops: {
+    "scene-01": {
+      sceneId: "scene-01",
+      batchId: "grid-01",
+      order: 1,
+      gridSlot: 1,
+      url: "https://v3.fal.media/files/crop-01.png",
+      replaced: false,
+    },
+  },
 });
 
 // --- NULL paste fields (pre-fill rows / never-pasted runs) surface as "" -------------
@@ -74,6 +94,7 @@ const sparse = rowToVideoRun({
   planner_validation_error: null,
   reference_files: null,
   grids: null,
+  crops: null,
 });
 assert.equal(sparse.globalRules, "");
 assert.equal(sparse.priorityLogic, "");
@@ -82,6 +103,7 @@ assert.equal(sparse.plannerOutput, null);
 assert.equal(sparse.plannerValidationError, null);
 assert.deepEqual(sparse.referenceFiles, [], "NULL reference_files surfaces as an empty list");
 assert.deepEqual(sparse.grids, {}, "NULL grids surfaces as an empty map");
+assert.deepEqual(sparse.crops, {}, "NULL crops surfaces as an empty map");
 
 // --- "" (cleared after a successful planner re-run) reads back as "no error" --------
 const cleared = rowToVideoRun({
@@ -98,6 +120,7 @@ const cleared = rowToVideoRun({
   planner_validation_error: "",
   reference_files: null,
   grids: null,
+  crops: null,
 });
 assert.equal(cleared.plannerValidationError, null);
 

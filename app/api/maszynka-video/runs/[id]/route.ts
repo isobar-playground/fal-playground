@@ -2,6 +2,7 @@ import {
   ensureVideoSchema,
   getSql,
   rowToVideoRun,
+  type VideoCropRecord,
   type VideoGridRecord,
   type VideoReferenceFile,
   type VideoRunRow,
@@ -27,6 +28,10 @@ interface PatchVideoRunBody {
   /** One grid result (issue #27) — upserted into `grids` keyed by its batchId, never
    *  replacing the whole map, so other grids' stored results stay untouched. */
   gridRecord?: VideoGridRecord;
+  /** Crops (issue #28) — each upserted into `crops` keyed by its sceneId (one grid's
+   *  auto-crop sends its panels together; Replace crop sends a single record). Other
+   *  scenes' crops stay untouched. */
+  cropRecords?: VideoCropRecord[];
 }
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -76,6 +81,13 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       return Response.json({ error: "gridRecord must carry a batchId and a modelKey" }, { status: 400 });
     }
   }
+  if (body.cropRecords !== undefined) {
+    const ok =
+      Array.isArray(body.cropRecords) &&
+      body.cropRecords.length > 0 &&
+      body.cropRecords.every((c) => c && typeof c.sceneId === "string" && c.sceneId && typeof c.url === "string" && c.url);
+    if (!ok) return Response.json({ error: "each crop record must carry a sceneId and a url" }, { status: 400 });
+  }
 
   const sql = getSql();
   if (!sql) {
@@ -94,6 +106,10 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     const referenceFilesJson = body.referenceFiles !== undefined ? JSON.stringify(body.referenceFiles) : null;
     const gridRecordJson =
       body.gridRecord !== undefined ? JSON.stringify({ [body.gridRecord.batchId]: body.gridRecord }) : null;
+    const cropRecordsJson =
+      body.cropRecords !== undefined
+        ? JSON.stringify(Object.fromEntries(body.cropRecords.map((c) => [c.sceneId, c])))
+        : null;
     const rows = await sql`
       UPDATE maszynka_video_runs SET
         name = COALESCE(${body.name?.trim() ?? null}, name),
@@ -107,6 +123,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         reference_files = COALESCE(${referenceFilesJson}::jsonb, reference_files),
         grids = CASE WHEN ${gridRecordJson}::jsonb IS NOT NULL
           THEN grids || ${gridRecordJson}::jsonb ELSE grids END,
+        crops = CASE WHEN ${cropRecordsJson}::jsonb IS NOT NULL
+          THEN crops || ${cropRecordsJson}::jsonb ELSE crops END,
         updated_at = now()
       WHERE id = ${id}
       RETURNING *

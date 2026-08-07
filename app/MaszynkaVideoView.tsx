@@ -40,6 +40,14 @@ import {
   mergeGridInput,
   parseRawParams,
 } from "@/lib/maszynka-video/gridRequest";
+import {
+  gradientProfile,
+  gridLayoutFromPayload,
+  luminanceFromRgba,
+  panelRects,
+  snapCutLines,
+} from "@/lib/maszynka-video/crop";
+import type { VideoCropRecord } from "@/lib/maszynka-video/api";
 
 const INPUT_CLS =
   "w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100";
@@ -74,6 +82,51 @@ function isPlainRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+function loadImage(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    // v3.fal.media serves access-control-allow-origin:* (ADR 0002) — without this
+    // the canvas would taint and getImageData below would throw.
+    img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Failed to load the grid image (network or CORS)"));
+    img.src = url;
+  });
+}
+
+/** Cuts a generated grid into panel blobs in the browser (ADR 0002): equal-fraction
+ *  cuts per the payload's declared layout, each cut line snapped to a detected
+ *  gutter within the ±5% window (lib/maszynka-video/crop.ts). Returns the panel
+ *  blobs in row-major slot order. */
+async function cutGridPanels(imageUrl: string, payload: Record<string, unknown>, sceneCount: number): Promise<Blob[]> {
+  const img = await loadImage(imageUrl);
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas 2D context unavailable");
+  ctx.drawImage(img, 0, 0);
+  const { width, height } = canvas;
+  const layout = gridLayoutFromPayload(payload, sceneCount);
+  const lum = luminanceFromRgba(ctx.getImageData(0, 0, width, height).data, width, height);
+  const colCuts =
+    layout.cols > 1 ? snapCutLines(gradientProfile(lum, width, height, "vertical"), width, layout.cols) : [];
+  const rowCuts =
+    layout.rows > 1 ? snapCutLines(gradientProfile(lum, width, height, "horizontal"), height, layout.rows) : [];
+  const rects = panelRects(width, height, colCuts, rowCuts);
+  return Promise.all(
+    rects.map((rect) => {
+      const panel = document.createElement("canvas");
+      panel.width = rect.width;
+      panel.height = rect.height;
+      panel.getContext("2d")!.drawImage(canvas, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+      return new Promise<Blob>((resolve, reject) =>
+        panel.toBlob((b) => (b ? resolve(b) : reject(new Error("Canvas produced no blob"))), "image/png"),
+      );
+    }),
+  );
+}
+
 /** One Grid batch section (issue #27) — independently runnable; its payload edits
  *  write back into the planner output (single source of truth for grids AND crops).
  *  Keyed by run+batch in the parent so reopening another run remounts fresh state. */
@@ -85,6 +138,7 @@ function GridSection({
   canGenerate,
   onApplyPayload,
   onGenerate,
+  onCrop,
 }: {
   batch: PlannerGridBatch;
   batchIndex: number;
@@ -93,6 +147,7 @@ function GridSection({
   canGenerate: boolean;
   onApplyPayload: (batchIndex: number, payload: Record<string, unknown>) => Promise<void>;
   onGenerate: (batch: PlannerGridBatch, modelKey: string, rawParamsText: string) => Promise<void>;
+  onCrop: (batch: PlannerGridBatch) => Promise<void>;
 }) {
   const [modelKey, setModelKey] = useState(stored?.modelKey ?? MODELS[0].key);
   const [rawParams, setRawParams] = useState(stored?.rawParams ?? "");
@@ -195,14 +250,32 @@ function GridSection({
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={() => void handleGenerate()}
-        disabled={!canGenerate || Boolean(rawParamsError) || busy}
-        className={PRIMARY_BTN_CLS}
-      >
-        {busy ? "Generating…" : "Generate grid"}
-      </button>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => void handleGenerate()}
+          disabled={!canGenerate || Boolean(rawParamsError) || busy}
+          className={PRIMARY_BTN_CLS}
+        >
+          {busy ? "Generating…" : "Generate grid"}
+        </button>
+        {stored?.imageUrl && (
+          <button
+            type="button"
+            onClick={() => {
+              setGenError(null);
+              setBusy(true);
+              onCrop(batch)
+                .catch((e) => setGenError(e instanceof Error ? e.message : String(e)))
+                .finally(() => setBusy(false));
+            }}
+            disabled={busy}
+            className={GHOST_BTN_CLS}
+          >
+            Recut crops
+          </button>
+        )}
+      </div>
       {genError && <p className="mt-2 text-sm text-red-600">{genError}</p>}
       {stored?.error && !genError && <p className="mt-2 text-sm text-red-600">{stored.error}</p>}
 
@@ -251,6 +324,9 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
   const [uploadingRefs, setUploadingRefs] = useState(false);
   const [refError, setRefError] = useState<string | null>(null);
 
+  // --- Crops (issue #28) ---------------------------------------------------------------
+  const [cropError, setCropError] = useState<string | null>(null);
+
   const setCfg = useCallback(<K extends keyof PlannerConfig>(key: K, value: PlannerConfig[K]) => {
     setPlannerCfg((prev) => ({ ...prev, [key]: value }));
   }, []);
@@ -259,6 +335,9 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
     () => (run && run.plannerOutput != null ? derivePlannerContract(run.plannerOutput) : null),
     [run],
   );
+
+  /** Crop cards ordered by global `order` (issue #28). */
+  const cropList = useMemo(() => (run ? Object.values(run.crops).sort((a, b) => a.order - b.order) : []), [run]);
 
   const refreshRuns = useCallback(async () => {
     try {
@@ -418,6 +497,35 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
     [run, adoptPatched],
   );
 
+  /** Cuts one generated grid into per-Scene Crops in the browser, uploads each panel
+   *  to FAL storage and upserts the records by sceneId (issue #28). Mapping is by the
+   *  batch's sceneIds in row-major slot order — never by position alone downstream. */
+  const cropAndStoreGrid = useCallback(
+    async (batch: PlannerGridBatch, imageUrl: string) => {
+      if (!run || !contract) return;
+      configureFal(apiKey);
+      const blobs = await cutGridPanels(imageUrl, batch.gridGenerationPayload, batch.sceneIds.length);
+      const sceneById = new Map(contract.scenes.map((s) => [s.sceneId, s]));
+      const records: VideoCropRecord[] = [];
+      for (let slot = 0; slot < batch.sceneIds.length && slot < blobs.length; slot++) {
+        const sceneId = batch.sceneIds[slot];
+        const scene = sceneById.get(sceneId);
+        const file = new File([blobs[slot]], `${batch.batchId}-${sceneId}.png`, { type: "image/png" });
+        records.push({
+          sceneId,
+          batchId: batch.batchId,
+          order: scene?.order ?? slot + 1,
+          gridSlot: scene?.gridSlot ?? slot + 1,
+          url: await uploadReference(file),
+          replaced: false,
+        });
+      }
+      if (records.length === 0) throw new Error("The batch has no sceneIds to map panels onto.");
+      adoptPatched(await patchVideoRun(run.id, { cropRecords: records }));
+    },
+    [run, contract, apiKey, adoptPatched],
+  );
+
   /** Runs ONE grid client-side against FAL and upserts its record — other grids'
    *  results stay untouched (issue #27). */
   const handleGenerateGrid = useCallback(
@@ -457,6 +565,38 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
       }
       adoptPatched(await patchVideoRun(run.id, { gridRecord: record }));
       if (record.error) throw new Error(record.error);
+      // Panels are cut automatically after a successful generation (issue #28) — a
+      // crop failure must not mask the successful grid, so it surfaces separately.
+      try {
+        await cropAndStoreGrid(batch, record.imageUrl!);
+      } catch (e) {
+        throw new Error(`Grid generated, but auto-crop failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+    [run, apiKey, adoptPatched, cropAndStoreGrid],
+  );
+
+  const handleCropGrid = useCallback(
+    async (batch: PlannerGridBatch) => {
+      const imageUrl = run?.grids[batch.batchId]?.imageUrl;
+      if (!imageUrl) throw new Error("Generate the grid first.");
+      await cropAndStoreGrid(batch, imageUrl);
+    },
+    [run, cropAndStoreGrid],
+  );
+
+  /** Replace crop (issue #28): the operator's upload swaps THIS Scene's crop only. */
+  const handleReplaceCrop = useCallback(
+    async (crop: VideoCropRecord, file: File) => {
+      if (!run) return;
+      setCropError(null);
+      try {
+        configureFal(apiKey);
+        const url = await uploadReference(file);
+        adoptPatched(await patchVideoRun(run.id, { cropRecords: [{ ...crop, url, replaced: true }] }));
+      } catch (e) {
+        setCropError(e instanceof Error ? e.message : "Replace crop failed");
+      }
     },
     [run, apiKey, adoptPatched],
   );
@@ -789,8 +929,46 @@ export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }
               canGenerate={Boolean(apiKey)}
               onApplyPayload={handleApplyGridPayload}
               onGenerate={handleGenerateGrid}
+              onCrop={handleCropGrid}
             />
           ))}
+        </section>
+      )}
+
+      {/* CROPS (issue #28) — every cut panel as a Crop card ordered by global order;
+         mapping is by sceneId only. Replace crop swaps one Scene's panel. */}
+      {run && cropList.length > 0 && (
+        <section className="mb-5 rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
+          <h2 className="mb-3 font-semibold">Crops</h2>
+          {cropError && <p className="mb-2 text-sm text-red-600">{cropError}</p>}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {cropList.map((crop) => (
+              <div key={crop.sceneId} className="rounded-xl border border-neutral-200 p-2">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={crop.url} alt={crop.sceneId} className="mb-2 w-full rounded-lg object-cover" />
+                <p className="font-mono text-xs font-semibold text-neutral-700">
+                  {crop.sceneId}
+                  {crop.replaced && <span className="ml-1 rounded bg-amber-100 px-1 text-[10px] text-amber-800">replaced</span>}
+                </p>
+                <p className="text-[11px] text-neutral-400">
+                  {crop.batchId} · order {crop.order} · slot {crop.gridSlot == null ? "—" : String(crop.gridSlot)}
+                </p>
+                <label className="mt-1 inline-block cursor-pointer text-xs text-amber-700 hover:text-amber-900">
+                  Replace crop
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) void handleReplaceCrop(crop, f);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
+              </div>
+            ))}
+          </div>
         </section>
       )}
 
