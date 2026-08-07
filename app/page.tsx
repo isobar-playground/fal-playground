@@ -1324,7 +1324,7 @@ export default function Page() {
       )}
 
       {/* MASZYNKA VIDEO MODE — isolated panel (lib/maszynka-video/* + MaszynkaVideoView). */}
-      {isMaszynkaVideo && <MaszynkaVideoView orKey={orKey} setOrKey={setOrKey} />}
+      {isMaszynkaVideo && <MaszynkaVideoView apiKey={apiKey} setApiKey={setApiKey} orKey={orKey} setOrKey={setOrKey} />}
 
       {/* IMAGE / VIDEO WIZARD — unchanged; hidden in chat/maszynka mode. */}
       {!isChat && !isMaszynka && !isMaszynkaVideo && (

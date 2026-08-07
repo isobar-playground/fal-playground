@@ -8,7 +8,7 @@ import type { NeonQueryFunction } from "@neondatabase/serverless";
 
 // The DATABASE_URL accessor is identical for both stores — reuse it rather than copy it.
 export { getSql } from "../maszynka/store";
-export { rowToVideoRun, type VideoRun, type VideoRunRow } from "./runMapping";
+export { rowToVideoRun, type VideoReferenceFile, type VideoRun, type VideoRunRow } from "./runMapping";
 
 export const runtime = "nodejs";
 
@@ -35,6 +35,9 @@ export function ensureVideoSchema(sql: NeonQueryFunction<false, false>) {
     await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS planner_response jsonb`;
     await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS planner_output jsonb`;
     await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS planner_validation_error text`;
+    // Slice 3 (issue #26) adds reference files — uploaded once via FAL storage, reused
+    // by the Planner (image parts) and the grid stage. Full-replace jsonb array.
+    await sql`ALTER TABLE maszynka_video_runs ADD COLUMN IF NOT EXISTS reference_files jsonb NOT NULL DEFAULT '[]'::jsonb`;
   })()
     .then(() => undefined)
     .catch((e) => {

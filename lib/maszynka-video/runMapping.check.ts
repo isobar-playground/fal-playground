@@ -20,6 +20,7 @@ const full = rowToVideoRun({
   planner_response: { id: "gen-1" },
   planner_output: { scenePlan: {} },
   planner_validation_error: "response was not valid JSON",
+  reference_files: [{ id: "ref-1", url: "https://v3.fal.media/files/a.png", name: "a.png" }],
 });
 assert.deepEqual(full, {
   id: "vr-1",
@@ -33,6 +34,7 @@ assert.deepEqual(full, {
   plannerResponse: { id: "gen-1" },
   plannerOutput: { scenePlan: {} },
   plannerValidationError: "response was not valid JSON",
+  referenceFiles: [{ id: "ref-1", url: "https://v3.fal.media/files/a.png", name: "a.png" }],
 });
 
 // --- NULL paste fields (pre-fill rows / never-pasted runs) surface as "" -------------
@@ -48,12 +50,14 @@ const sparse = rowToVideoRun({
   planner_response: null,
   planner_output: null,
   planner_validation_error: null,
+  reference_files: null,
 });
 assert.equal(sparse.globalRules, "");
 assert.equal(sparse.priorityLogic, "");
 assert.equal(sparse.plannerConfig, null);
 assert.equal(sparse.plannerOutput, null);
 assert.equal(sparse.plannerValidationError, null);
+assert.deepEqual(sparse.referenceFiles, [], "NULL reference_files surfaces as an empty list");
 
 // --- "" (cleared after a successful planner re-run) reads back as "no error" --------
 const cleared = rowToVideoRun({
@@ -68,6 +72,7 @@ const cleared = rowToVideoRun({
   planner_response: null,
   planner_output: { scenePlan: {} },
   planner_validation_error: "",
+  reference_files: null,
 });
 assert.equal(cleared.plannerValidationError, null);
 

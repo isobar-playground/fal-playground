@@ -3,6 +3,15 @@
 // `node` (store.ts pulls in the Neon driver via an extensionless import node can't
 // resolve). The Video run field list lives here; store.ts owns the DDL and SQL.
 
+/** One uploaded reference image (issue #26): uploaded ONCE through FAL storage, then
+ *  reused by both the Planner (as a multimodal image part) and the grid generation
+ *  stage (as its referenceFiles). `name` is the original filename, display only. */
+export interface VideoReferenceFile {
+  id: string;
+  url: string;
+  name: string;
+}
+
 export interface VideoRun {
   id: string;
   createdAt: string;
@@ -23,6 +32,9 @@ export interface VideoRun {
   plannerResponse: unknown;
   plannerOutput: unknown;
   plannerValidationError: string | null;
+  /** Reference files (issue #26) — full-replace list, removing one before running the
+   *  planner excludes it from the request. */
+  referenceFiles: VideoReferenceFile[];
 }
 
 export interface VideoRunRow {
@@ -37,6 +49,7 @@ export interface VideoRunRow {
   planner_response: unknown;
   planner_output: unknown;
   planner_validation_error: string | null;
+  reference_files: VideoReferenceFile[] | null;
 }
 
 export function rowToVideoRun(row: VideoRunRow): VideoRun {
@@ -53,5 +66,6 @@ export function rowToVideoRun(row: VideoRunRow): VideoRun {
     plannerOutput: row.planner_output ?? null,
     // "" (cleared on a successful run) and NULL (never ran) both mean "no error".
     plannerValidationError: row.planner_validation_error || null,
+    referenceFiles: row.reference_files ?? [],
   };
 }

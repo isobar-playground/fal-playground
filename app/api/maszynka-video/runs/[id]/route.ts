@@ -1,4 +1,10 @@
-import { ensureVideoSchema, getSql, rowToVideoRun, type VideoRunRow } from "@/lib/maszynka-video/store";
+import {
+  ensureVideoSchema,
+  getSql,
+  rowToVideoRun,
+  type VideoReferenceFile,
+  type VideoRunRow,
+} from "@/lib/maszynka-video/store";
 
 export const runtime = "nodejs";
 
@@ -15,6 +21,8 @@ interface PatchVideoRunBody {
   plannerOutput?: unknown;
   /** "" clears the error (successful run); non-empty blocks later stages. */
   plannerValidationError?: string;
+  /** Reference files (issue #26) — full replace of the run's list. */
+  referenceFiles?: VideoReferenceFile[];
 }
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -50,6 +58,14 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (body.name !== undefined && !body.name.trim()) {
     return Response.json({ error: "name cannot be blank" }, { status: 400 });
   }
+  if (body.referenceFiles !== undefined) {
+    const ok =
+      Array.isArray(body.referenceFiles) &&
+      body.referenceFiles.every(
+        (f) => f && typeof f.id === "string" && typeof f.url === "string" && typeof f.name === "string",
+      );
+    if (!ok) return Response.json({ error: "each reference file must have an id, a url and a name" }, { status: 400 });
+  }
 
   const sql = getSql();
   if (!sql) {
@@ -65,6 +81,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     const plannerRequestJson = body.plannerRequest !== undefined ? JSON.stringify(body.plannerRequest) : null;
     const plannerResponseJson = body.plannerResponse !== undefined ? JSON.stringify(body.plannerResponse) : null;
     const plannerOutputJson = body.plannerOutput !== undefined ? JSON.stringify(body.plannerOutput) : null;
+    const referenceFilesJson = body.referenceFiles !== undefined ? JSON.stringify(body.referenceFiles) : null;
     const rows = await sql`
       UPDATE maszynka_video_runs SET
         name = COALESCE(${body.name?.trim() ?? null}, name),
@@ -75,6 +92,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         planner_response = COALESCE(${plannerResponseJson}::jsonb, planner_response),
         planner_output = COALESCE(${plannerOutputJson}::jsonb, planner_output),
         planner_validation_error = COALESCE(${body.plannerValidationError ?? null}, planner_validation_error),
+        reference_files = COALESCE(${referenceFilesJson}::jsonb, reference_files),
         updated_at = now()
       WHERE id = ${id}
       RETURNING *

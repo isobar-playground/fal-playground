@@ -10,11 +10,13 @@
 // stages consume them.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CHAT_MODELS, CHAT_MODEL_GROUPS } from "@/lib/chat/models";
+import { configureFal, uploadReference } from "@/lib/fal";
 import {
   createVideoRun,
   getVideoRun,
   listVideoRuns,
   patchVideoRun,
+  type VideoReferenceFile,
   type VideoRun,
 } from "@/lib/maszynka-video/api";
 import {
@@ -56,12 +58,15 @@ function DebugDetails({ label, value }: { label: string; value: unknown }) {
 }
 
 interface Props {
+  apiKey: string;
+  setApiKey: (key: string) => void;
   orKey: string;
   setOrKey: (key: string) => void;
 }
 
-export default function MaszynkaVideoView({ orKey, setOrKey }: Props) {
+export default function MaszynkaVideoView({ apiKey, setApiKey, orKey, setOrKey }: Props) {
   const [showOrKey, setShowOrKey] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
 
   // --- common fields (PRD 0003 "common fields") -----------------------------------
   const [name, setName] = useState("");
@@ -82,6 +87,10 @@ export default function MaszynkaVideoView({ orKey, setOrKey }: Props) {
   // The editable parsed-JSON text (PRD story 8) — synced from the stored output.
   const [outputDraft, setOutputDraft] = useState("");
   const [draftError, setDraftError] = useState<string | null>(null);
+
+  // --- Reference files (issue #26) ---------------------------------------------------
+  const [uploadingRefs, setUploadingRefs] = useState(false);
+  const [refError, setRefError] = useState<string | null>(null);
 
   const setCfg = useCallback(<K extends keyof PlannerConfig>(key: K, value: PlannerConfig[K]) => {
     setPlannerCfg((prev) => ({ ...prev, [key]: value }));
@@ -164,11 +173,53 @@ export default function MaszynkaVideoView({ orKey, setOrKey }: Props) {
     setPlannerError(null);
   }, []);
 
+  const handleUploadReferences = useCallback(
+    async (files: FileList | null) => {
+      if (!run || !files || files.length === 0) return;
+      setUploadingRefs(true);
+      setRefError(null);
+      try {
+        configureFal(apiKey);
+        const uploaded: VideoReferenceFile[] = [];
+        for (const file of Array.from(files)) {
+          uploaded.push({ id: crypto.randomUUID(), url: await uploadReference(file), name: file.name });
+        }
+        adoptPatched(await patchVideoRun(run.id, { referenceFiles: [...run.referenceFiles, ...uploaded] }));
+      } catch (e) {
+        setRefError(e instanceof Error ? e.message : "Reference upload failed");
+      } finally {
+        setUploadingRefs(false);
+      }
+    },
+    [run, apiKey, adoptPatched],
+  );
+
+  const handleRemoveReference = useCallback(
+    async (refId: string) => {
+      if (!run) return;
+      setRefError(null);
+      try {
+        adoptPatched(
+          await patchVideoRun(run.id, { referenceFiles: run.referenceFiles.filter((f) => f.id !== refId) }),
+        );
+      } catch (e) {
+        setRefError(e instanceof Error ? e.message : "Failed to remove reference");
+      }
+    },
+    [run, adoptPatched],
+  );
+
   const handleRunPlanner = useCallback(async () => {
     if (!run) return;
     setPlannerRunning(true);
     setPlannerError(null);
-    const body = buildPlannerRequestBody(plannerCfg, { globalRules, priorityLogic });
+    // Every currently stored reference rides along as an image part — removing one
+    // before this call excludes it (issue #26).
+    const body = buildPlannerRequestBody(
+      plannerCfg,
+      { globalRules, priorityLogic },
+      run.referenceFiles.map((f) => f.url),
+    );
     try {
       const { raw, content } = await callPlanner(orKey, body);
       const parsed = parsePlannerContent(content);
@@ -249,6 +300,25 @@ export default function MaszynkaVideoView({ orKey, setOrKey }: Props) {
       </section>
 
       <section className="mb-5 rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
+        <h2 className="mb-3 font-semibold">Fal.ai key</h2>
+        <div className="flex gap-2">
+          <input
+            type={showApiKey ? "text" : "password"}
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="e.g. 4a1b2c3d-...:e5f6..."
+            className="flex-1 rounded-lg border border-neutral-300 bg-white px-3 py-2 font-mono text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+          />
+          <button type="button" onClick={() => setShowApiKey((s) => !s)} className={GHOST_BTN_CLS}>
+            {showApiKey ? "Hide" : "Show"}
+          </button>
+        </div>
+        <p className="mt-2 text-xs text-neutral-400">
+          Shared with the other tabs (stored in your browser). Used for reference uploads and FAL generation.
+        </p>
+      </section>
+
+      <section className="mb-5 rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
         <div className="mb-3 flex items-center justify-between gap-2">
           <h2 className="font-semibold">Video run</h2>
           {run && (
@@ -298,6 +368,50 @@ export default function MaszynkaVideoView({ orKey, setOrKey }: Props) {
           {run && <span className="font-mono text-xs text-neutral-400">run {run.id.slice(0, 8)}</span>}
         </div>
         {saveError && <p className="mt-2 text-sm text-red-600">{saveError}</p>}
+      </section>
+
+      {/* REFERENCE FILES (issue #26) — uploaded once via FAL storage, sent to the
+         Planner as multimodal image parts and reused by the grid sections. */}
+      <section className="mb-5 rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
+        <h2 className="mb-3 font-semibold">Reference files</h2>
+        <p className="mb-3 text-xs text-neutral-400">
+          Uploaded once via FAL storage; the Planner receives them as image parts and every grid section reuses them.
+        </p>
+        <input
+          type="file"
+          accept="image/*"
+          multiple
+          disabled={!run || !apiKey || uploadingRefs}
+          onChange={(e) => {
+            void handleUploadReferences(e.target.files);
+            e.target.value = "";
+          }}
+          className="mb-2 block w-full text-sm text-neutral-500 file:mr-3 file:rounded-lg file:border-0 file:bg-amber-400 file:px-3 file:py-1.5 file:text-sm file:font-semibold file:text-amber-950 hover:file:bg-amber-300 disabled:opacity-50"
+        />
+        {!run && <p className="text-xs text-neutral-400">Create the Video run first.</p>}
+        {run && !apiKey && <p className="text-xs text-neutral-400">Fal.ai key missing.</p>}
+        {uploadingRefs && <p className="text-sm text-neutral-500">Uploading…</p>}
+        {refError && <p className="mt-1 text-sm text-red-600">{refError}</p>}
+        {run && run.referenceFiles.length > 0 && (
+          <ul className="mt-2 grid grid-cols-3 gap-3">
+            {run.referenceFiles.map((f) => (
+              <li key={f.id} className="rounded-lg border border-neutral-200 p-2">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={f.url} alt={f.name} className="mb-1 h-24 w-full rounded object-cover" />
+                <p className="truncate text-[11px] text-neutral-500" title={f.name}>
+                  {f.name}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void handleRemoveReference(f.id)}
+                  className="mt-1 text-xs text-red-500 hover:text-red-700"
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       {/* PLANNER (issue #25) — one non-streaming OpenRouter call; every output is
