@@ -1,6 +1,7 @@
 // Server-only Neon access for Maszynka runs (see ADR 0001 — runs and configs live in
 // Neon, not localStorage, because run history must be shared across operators/browsers).
 // Shared by both app/api/maszynka/runs route files so the schema/mapping lives once.
+import "../neonLocal";
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 import type { RunStatus } from "./status";
 import type { AssetRole } from "./contract";

@@ -78,6 +78,27 @@ Cost is computed as **live base price × tier multiplier × images**:
   actually returned. Fal exposes no per-request billed amount, so this is the most precise
   figure obtainable (see [NOTES.md](NOTES.md)).
 
+## Local database
+
+Maszynka runs/configs and the log sinks use Neon via `DATABASE_URL`. To develop against a
+local Postgres instead of the production Neon DB:
+
+```bash
+docker compose up -d
+```
+
+then set in `.env.local`:
+
+```
+DATABASE_URL=postgres://postgres:postgres@db.localtest.me:5432/main
+```
+
+`db.localtest.me` resolves publicly to `127.0.0.1`; the compose file runs Postgres 17 plus a
+proxy that speaks the Neon serverless driver's HTTP protocol (`lib/neonLocal.ts` points the
+driver at it when it sees that host). Tables are created on demand (`CREATE TABLE IF NOT
+EXISTS`), so an empty database needs no migration step. Switch back to Neon by restoring the
+original `DATABASE_URL`.
+
 ## Deploy (Vercel)
 
 Image generation needs no env vars (the user supplies the Fal key in the UI). Optional env:
