@@ -148,6 +148,10 @@ export interface ImprovementResolutionInput {
   status: "idle" | "loading" | "proposed" | "discarded" | "error";
   /** The exact raw prompt the proposal (or discard/error) was generated from. */
   sourcePromptRaw?: string;
+  /** The OpenRouter model id used for that request — must match the currently selected
+   *  model for the proposal to count as live (guards against late responses after the
+   *  operator switched models mid-flight). */
+  sourceModel?: string;
   proposal?: { userPromptImproved: string };
   accepted?: boolean;
   error?: string;
@@ -168,17 +172,35 @@ export interface ImprovementResolution {
  *  the Prompt improvement UI state. Pure — the component (MaszynkaView) is a thin
  *  caller, same layering as assembleContract in contract.ts.
  *
- *  - `promptImprovementUsed` is true whenever the state is "live" (generated from
- *    exactly the raw prompt as it stands right now, not a stale proposal left over from
- *    text the operator has since edited) and isn't "idle" — this stays true after a
- *    Discard (the operator *did* use the feature; they just rejected the proposal).
- *    Only editing the raw prompt resets it to "idle"/unused.
+ *  - When `promptImprovementModel` is empty/"none", the feature is fully disabled:
+ *    always the raw prompt, never used/accepted — even if leftover UI state still holds
+ *    a previous proposal.
+ *  - A proposal is "live" only when both the raw prompt and the OpenRouter model still
+ *    match what the request was started with (`sourcePromptRaw` / `sourceModel`).
+ *  - `promptImprovementUsed` is true whenever the state is live and isn't "idle" — this
+ *    stays true after a Discard (the operator *did* use the feature; they just rejected
+ *    the proposal). Editing the raw prompt or changing the model resets it to unused.
  *  - `promptImprovementAccepted` is true only for a live, still-accepted proposal.
  *  - `userPromptImproved` mirrors `promptImprovementAccepted`: set only when accepted,
- *    `null` otherwise (discarded, never proposed, or stale). */
-export function resolveEffectivePrompt(rawPrompt: string, improvement: ImprovementResolutionInput): ImprovementResolution {
+ *    `null` otherwise (discarded, never proposed, stale, model mismatch, or model is none). */
+export function resolveEffectivePrompt(
+  rawPrompt: string,
+  improvement: ImprovementResolutionInput,
+  promptImprovementModel = "",
+): ImprovementResolution {
   const trimmedRaw = rawPrompt.trim();
-  const isLive = improvement.sourcePromptRaw === trimmedRaw;
+  const selectedModel = promptImprovementModel.trim();
+  // "— none —" (empty model): feature off — ignore any leftover proposal/accept state.
+  if (!selectedModel) {
+    return {
+      promptImprovementUsed: false,
+      promptImprovementAccepted: false,
+      userPromptImproved: null,
+      effectivePrompt: trimmedRaw,
+    };
+  }
+  const isLive =
+    improvement.sourcePromptRaw === trimmedRaw && (improvement.sourceModel?.trim() ?? "") === selectedModel;
   const used = isLive && improvement.status !== "idle";
   const accepted = isLive && improvement.status === "proposed" && improvement.accepted === true;
   const userPromptImproved = accepted ? improvement.proposal!.userPromptImproved.trim() : null;
