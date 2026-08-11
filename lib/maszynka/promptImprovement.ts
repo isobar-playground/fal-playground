@@ -20,10 +20,6 @@
 // Same layering as the other stage modules: pure request/response helpers plus one
 // impure network call (callPromptImprovement).
 import { CHAT_MODELS, CHAT_MODEL_BY_ID, DEFAULT_CHAT_MODEL, type ChatModelDef } from "../chat/models.ts";
-import type { StagePromptsConfig } from "./configSchemas";
-// Explicit extension: a real runtime import (see contentSafety.ts's comment / this
-// module's promptImprovement.check.ts).
-import { resolvePromptImprovementSystemPrompt } from "./stagePromptResolver.ts";
 
 // --- model selection ---------------------------------------------------------
 // Structured output is mandatory (the schema gate below); vision is NOT required —
@@ -68,10 +64,7 @@ export const PROMPT_IMPROVEMENT_OUTPUT_SCHEMA: Record<string, unknown> = {
   },
 };
 
-// Hardcoded fallback (issue #19 / PRD story 33): used whenever a run has no
-// `stage_prompts` config yet, or the operator left `promptImprovement.systemPrompt`
-// blank — see stagePromptResolver.ts. Same text as the `stage_prompts` seed content
-// (configSeeds.ts's `STAGE_PROMPTS_SEED.promptImprovement.systemPrompt`).
+// Hardcoded system prompt for the prompt improvement stage.
 const PROMPT_IMPROVEMENT_SYSTEM_PROMPT = `You are the Prompt improvement stage of the Maszynka Content Factory test bench.
 
 The operator has typed a raw creative prompt describing what they want an AI image-generation pipeline to produce. Your job is to propose a clearer, more specific, better-structured rewrite of that prompt — sharpen vague language, make implicit intent explicit, fix ambiguity or contradictions — WITHOUT inventing new creative direction the operator didn't imply, and without discarding their intent. This is a proposal only: the operator will explicitly accept or discard it before it is ever used.
@@ -94,20 +87,12 @@ export interface PromptImprovementRequestBody {
   response_format: { type: "json_schema"; json_schema: { name: string; strict: true; schema: Record<string, unknown> } };
 }
 
-/** Builds the exact OpenRouter chat-completions body for the prompt improvement stage.
- *  Text-only — see module header for why no image parts are attached. `stagePrompts` is
- *  the run's resolved `stage_prompts` config snapshot (issue #19) — omit it (or pass
- *  null/undefined) to fall back to the hardcoded default, same behavior as before this
- *  stage was configurable. */
-export function buildPromptImprovementRequestBody(
-  userPromptRaw: string,
-  model: string,
-  stagePrompts?: StagePromptsConfig | null,
-): PromptImprovementRequestBody {
+/** Builds the exact OpenRouter chat-completions body for the prompt improvement stage. */
+export function buildPromptImprovementRequestBody(userPromptRaw: string, model: string): PromptImprovementRequestBody {
   return {
     model,
     messages: [
-      { role: "system", content: resolvePromptImprovementSystemPrompt(stagePrompts, PROMPT_IMPROVEMENT_SYSTEM_PROMPT) },
+      { role: "system", content: PROMPT_IMPROVEMENT_SYSTEM_PROMPT },
       { role: "user", content: `Raw prompt:\n${userPromptRaw}` },
     ],
     temperature: 0.3,

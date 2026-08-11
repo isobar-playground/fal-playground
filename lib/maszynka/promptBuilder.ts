@@ -14,9 +14,6 @@ import type { WirePart } from "../chat/attachments";
 // needs an explicit extension when run directly by node (see promptBuilder.check.ts).
 import { CHAT_MODELS, CHAT_MODEL_BY_ID, DEFAULT_CHAT_MODEL, modelSupportsImages, type ChatModelDef } from "../chat/models.ts";
 import type { Contract } from "./contract";
-// Explicit extension: a real runtime import (see contentSafety.ts's comment / this
-// module's promptBuilder.check.ts).
-import { resolvePromptBuilderRevisionInstruction, resolvePromptBuilderSystemPrompt } from "./stagePromptResolver.ts";
 
 // --- model selection ---------------------------------------------------------
 // Per PRD "LLM stages via OpenRouter": each stage picks its own OpenRouter model,
@@ -77,10 +74,7 @@ export const PROMPT_BUILDER_OUTPUT_SCHEMA: Record<string, unknown> = {
   },
 };
 
-// Hardcoded fallback (issue #19 / PRD story 33): used whenever a Contract's
-// `stagePrompts` snapshot has no `promptBuilder.systemPrompt` (or, defensively, none at
-// all) — see stagePromptResolver.ts. Same text as the `stage_prompts` seed content
-// (configSeeds.ts's `STAGE_PROMPTS_SEED.promptBuilder.systemPrompt`).
+// Hardcoded system prompt for the prompt builder stage.
 const PROMPT_BUILDER_SYSTEM_PROMPT = `You are the Prompt builder stage of the Maszynka Content Factory test bench.
 
 You receive a single JSON "Contract" object describing one test run: the operator's raw prompt, a "safetyConstraints" array (operator-facing constraints from the Content safety pre-check stage that ran before this Contract was even assembled — see below), any uploaded assets (asset "role" is systemic — packshot/style_reference/brand_reference/campaign_reference — never inferred from prose) each carrying an "analysis" object (the Asset analysis stage's structured description: "description", "attributes" as role-specific key/value facts, and "preserveElements" — packaging/color/proportions/logo/label/variant to preserve, populated only for the packshot), a selected Hook (short attention-grabbing marketing text to render on the asset), a selected Style preset, a selected Camera setting preset, a selected Lighting preset (a specific lighting instruction — e.g. rim light, soft key light — to apply alongside the Style preset's own broader "lighting" field), a set of global rules that always apply, an ordered Priority logic (most important first: content safety > product/brand preservation > packshot analysis > hook > style > camera setting > operator prompt — on conflict, the higher layer wins), the target model's capabilities, and generation settings (aspect ratio, variant count).
@@ -104,17 +98,20 @@ function contractUserText(contract: Contract): string {
   return `Contract:\n\`\`\`json\n${JSON.stringify(contract, null, 2)}\n\`\`\``;
 }
 
-// Hardcoded fallback (issue #19 / PRD story 33): used whenever a Contract's
-// `stagePrompts` snapshot has no `promptBuilder.revisionInstructionTemplate` (or,
-// defensively, none at all) — see stagePromptResolver.ts. `{{issues}}`/
-// `{{revisionInstruction}}` are substituted with the Prompt reviewer's actual issues/
-// instruction for this attempt (PRD story 25). Same text as the `stage_prompts` seed
-// content (configSeeds.ts's `STAGE_PROMPTS_SEED.promptBuilder.revisionInstructionTemplate`).
+// Revision instruction template for the one allowed rebuild after reviewer "revise".
 const PROMPT_BUILDER_REVISION_INSTRUCTION_TEMPLATE =
   "The Prompt reviewer rejected this output. Issues: {{issues}}. " +
   "Revision instruction: {{revisionInstruction}}. " +
   "Produce a corrected JSON object (matching the same schema) that fixes these issues while still " +
   "respecting the Contract above. This is the only rebuild allowed — make it count.";
+
+function buildRevisionInstruction(vars: { issues: string[]; revisionInstruction: string }): string {
+  const issuesText = vars.issues.join("; ") || "(none listed)";
+  const revisionText = vars.revisionInstruction || "(none given — use the issues above)";
+  return PROMPT_BUILDER_REVISION_INSTRUCTION_TEMPLATE.replace(/\{\{issues\}\}|\{\{revisionInstruction\}\}/g, (match) =>
+    match === "{{issues}}" ? issuesText : revisionText,
+  );
+}
 
 // --- request building ----------------------------------------------------------
 
@@ -160,16 +157,15 @@ export function buildPromptBuilderRequestBody(
       ]
     : text;
 
-  const stagePromptsConfig = contract.stagePrompts?.snapshot;
   const messages: PromptBuilderRequestBody["messages"] = [
-    { role: "system", content: resolvePromptBuilderSystemPrompt(stagePromptsConfig, PROMPT_BUILDER_SYSTEM_PROMPT) },
+    { role: "system", content: PROMPT_BUILDER_SYSTEM_PROMPT },
     { role: "user", content: userContent },
   ];
   if (revision) {
     messages.push({ role: "assistant", content: JSON.stringify(revision.previousOutput) });
     messages.push({
       role: "user",
-      content: resolvePromptBuilderRevisionInstruction(stagePromptsConfig, PROMPT_BUILDER_REVISION_INSTRUCTION_TEMPLATE, {
+      content: buildRevisionInstruction({
         issues: revision.reviewerIssues,
         revisionInstruction: revision.revisionInstruction,
       }),

@@ -13,10 +13,7 @@ import { configureFal, runModel, uploadReference } from "@/lib/fal";
 import { createRun, getRun, listRuns, patchRun, type MaszynkaRun, type RunAsset } from "@/lib/maszynka/api";
 import { classifyFalError } from "@/lib/maszynka/status";
 import { assembleContract, validateContract, type AssetRole, type ContractAsset } from "@/lib/maszynka/contract";
-import { recommendModel } from "@/lib/maszynka/recommend";
 import {
-  CONTENT_SAFETY_MODELS,
-  CONTENT_SAFETY_MODEL_GROUPS,
   DEFAULT_CONTENT_SAFETY_MODEL,
   buildContentSafetyRequestBody,
   callContentSafety,
@@ -24,8 +21,6 @@ import {
   type ContentSafetyOutput,
 } from "@/lib/maszynka/contentSafety";
 import {
-  ASSET_ANALYSIS_MODELS,
-  ASSET_ANALYSIS_MODEL_GROUPS,
   DEFAULT_ASSET_ANALYSIS_MODEL,
   buildAssetAnalysisRequestBody,
   callAssetAnalysis,
@@ -33,7 +28,6 @@ import {
   type AssetAnalysisRecord,
 } from "@/lib/maszynka/assetAnalysis";
 import {
-  DEFAULT_PROMPT_IMPROVEMENT_MODEL,
   PROMPT_IMPROVEMENT_MODELS,
   PROMPT_IMPROVEMENT_MODEL_GROUPS,
   buildPromptImprovementRequestBody,
@@ -44,8 +38,6 @@ import {
 } from "@/lib/maszynka/promptImprovement";
 import {
   DEFAULT_PROMPT_BUILDER_MODEL,
-  PROMPT_BUILDER_MODELS,
-  PROMPT_BUILDER_MODEL_GROUPS,
   buildPromptBuilderRequestBody,
   callPromptBuilder,
   parsePromptBuilderContent,
@@ -54,8 +46,6 @@ import {
 } from "@/lib/maszynka/promptBuilder";
 import {
   DEFAULT_PROMPT_REVIEWER_MODEL,
-  PROMPT_REVIEWER_MODELS,
-  PROMPT_REVIEWER_MODEL_GROUPS,
   buildPromptReviewerRequestBody,
   callPromptReviewer,
   parsePromptReviewerContent,
@@ -81,7 +71,6 @@ import type {
   LightingConfig,
   ModelCapabilityEntry,
   PriorityLogicConfig,
-  StagePromptsConfig,
   StyleConfig,
 } from "@/lib/maszynka/configSchemas";
 import type { Contract } from "@/lib/maszynka/contract";
@@ -90,24 +79,6 @@ import { useImageLightbox } from "./ImageLightbox";
 import MaszynkaConfigs from "./MaszynkaConfigs";
 
 const ASPECT_RATIO_OPTIONS = ["1:1", "4:5", "9:16", "16:9", "3:4"];
-
-// Fallback `stage_prompts` body (issue #19) for the one moment `configs.stage_prompts`
-// might genuinely be absent when a Contract is assembled (e.g. Neon fetch failed) — an
-// all-blank body that `assembleContract`/`validateContract` treat exactly like an
-// unresolved priorityLogic/globalRules snapshot (schema-invalid, per
-// lib/maszynka/configSchemas.ts's `validateStagePrompts`), so the run fails cleanly at
-// `prompt_builder_contract_validation_failed` instead of silently proceeding on
-// hardcoded text the operator never actually configured.
-const EMPTY_STAGE_PROMPTS: StagePromptsConfig = {
-  contentSafety: { systemPrompt: "" },
-  assetAnalysis: {
-    baseInstructions: "",
-    roleInstructions: { packshot: "", style_reference: "", brand_reference: "", campaign_reference: "" },
-  },
-  promptImprovement: { systemPrompt: "" },
-  promptBuilder: { systemPrompt: "", revisionInstructionTemplate: "" },
-  promptReviewer: { systemPrompt: "" },
-};
 
 // Stable id-accessors for the three Config-backed dropdowns below — module-scope so
 // they're the same function reference on every render (only the `items`/`selectedId`
@@ -251,24 +222,11 @@ export default function MaszynkaView({
   const [assetUploads, setAssetUploads] = useState<Partial<Record<AssetRole, AssetUpload>>>({});
   const [modelKey, setModelKey] = useState<string>("nano-banana");
   const model = MODEL_BY_KEY[modelKey] ?? MODELS[0];
-  // Content safety pre-check stage (issue #7): the operator's OpenRouter model for that
-  // stage, recorded on the run at creation — see lib/maszynka/contentSafety.ts. Runs
-  // first, before Asset analysis.
-  const [contentSafetyModel, setContentSafetyModel] = useState<string>(DEFAULT_CONTENT_SAFETY_MODEL);
-  // Asset analysis stage (issue #6): the operator's OpenRouter model for that stage,
-  // recorded on the run at creation — see lib/maszynka/assetAnalysis.ts.
-  const [assetAnalysisModel, setAssetAnalysisModel] = useState<string>(DEFAULT_ASSET_ANALYSIS_MODEL);
   // Prompt improvement stage (issue #8): the operator's OpenRouter model for that
   // stage. Unlike every other stage model below, this one is never recorded on the run
   // by itself — it's a UI-driven, operator-triggered stage that runs before a run
   // exists (see lib/maszynka/promptImprovement.ts and the `improvement` state below).
-  const [promptImprovementModel, setPromptImprovementModel] = useState<string>(DEFAULT_PROMPT_IMPROVEMENT_MODEL);
-  // Prompt builder stage (slice 4): the operator's OpenRouter model for that stage,
-  // recorded on the run at creation — see lib/maszynka/promptBuilder.ts.
-  const [promptBuilderModel, setPromptBuilderModel] = useState<string>(DEFAULT_PROMPT_BUILDER_MODEL);
-  // Prompt reviewer stage (slice 5): the operator's OpenRouter model for that stage,
-  // recorded on the run at creation — see lib/maszynka/promptReviewer.ts.
-  const [promptReviewerModel, setPromptReviewerModel] = useState<string>(DEFAULT_PROMPT_REVIEWER_MODEL);
+  const [promptImprovementModel, setPromptImprovementModel] = useState("");
 
   const [running, setRunning] = useState(false);
   const [logLine, setLogLine] = useState<string>("");
@@ -325,13 +283,6 @@ export default function MaszynkaView({
   const styles = (configs.styles?.body as StyleConfig[] | undefined) ?? [];
   const cameraSettings = (configs.camera_settings?.body as CameraSettingConfig[] | undefined) ?? [];
   const lightings = (configs.lighting?.body as LightingConfig[] | undefined) ?? [];
-  // Stage prompts (issue #19): fed straight into the pre-Contract stages' request
-  // builders below (content safety / asset analysis / prompt improvement all run before
-  // a Contract exists) and, for the Contract itself, into `assembleContract` further
-  // down — see lib/maszynka/contract.ts's `stagePrompts` field. Left `undefined` when
-  // not yet loaded; every build*RequestBody call below falls back to that stage's
-  // hardcoded default text in that case (see lib/maszynka/stagePromptResolver.ts).
-  const stagePromptsConfig = configs.stage_prompts?.body as StagePromptsConfig | undefined;
 
   const [selectedHookId, setSelectedHookId] = useState("");
   const [selectedStyleId, setSelectedStyleId] = useState("");
@@ -344,28 +295,6 @@ export default function MaszynkaView({
   // FAL is gated by the selected model's capability matrix entry, not this field alone —
   // see lib/maszynka/falMapper.ts.
   const [seed, setSeed] = useState("");
-
-  // Model recommendation (issue #9 / PRD section 12): the two creative-config signals
-  // the six-rule table needs beyond packshot/reference presence — operator-set per run,
-  // same footing as aspect ratio above (not a Neon config; per-run
-  // creative intent, not a versioned preset). See lib/maszynka/recommend.ts.
-  const [hasHeavyTextOrPoster, setHasHeavyTextOrPoster] = useState(false);
-  const [hasSocialNativeUgc, setHasSocialNativeUgc] = useState(false);
-
-  const hasPackshot = Boolean(assetUploads.packshot);
-  const referenceCount = ASSET_ROLE_META.filter(({ role }) => role !== "packshot" && assetUploads[role]).length;
-  const recommendation = useMemo(
-    () =>
-      recommendModel({
-        hasPackshot,
-        hasMultipleVisualReferences: referenceCount > 1,
-        hasHeavyTextOrPosterLayout: hasHeavyTextOrPoster,
-        hasSocialNativeUgcLook: hasSocialNativeUgc,
-      }),
-    [hasPackshot, referenceCount, hasHeavyTextOrPoster, hasSocialNativeUgc],
-  );
-  const recommendedModelDef = MODEL_BY_KEY[recommendation.recommendedModelKey];
-  const modelOverrideUsed = modelKey !== recommendation.recommendedModelKey;
 
   // Every dropdown starts on "none" (client feedback: none must be an option AND the
   // default), so a fresh Run applies no preset the operator didn't explicitly pick.
@@ -457,10 +386,10 @@ export default function MaszynkaView({
 
   const handleImprovePrompt = useCallback(async () => {
     const raw = prompt.trim();
-    if (!raw || !orKey) return;
+    if (!raw || !orKey || !promptImprovementModel) return;
     setImprovement({ status: "loading", sourcePromptRaw: raw });
     try {
-      const reqBody = buildPromptImprovementRequestBody(raw, promptImprovementModel, stagePromptsConfig);
+      const reqBody = buildPromptImprovementRequestBody(raw, promptImprovementModel);
       const { content } = await callPromptImprovement(orKey, reqBody);
       const { output, errors } = parsePromptImprovementContent(content);
       if (!output) {
@@ -471,7 +400,7 @@ export default function MaszynkaView({
     } catch (e) {
       setImprovement({ status: "error", sourcePromptRaw: raw, error: errMsg(e) });
     }
-  }, [prompt, orKey, promptImprovementModel, stagePromptsConfig]);
+  }, [prompt, orKey, promptImprovementModel]);
 
   const acceptImprovement = useCallback(() => {
     setImprovement((s) => (s.status === "proposed" ? { ...s, accepted: true } : s));
@@ -539,15 +468,11 @@ export default function MaszynkaView({
         modelKey: model.key,
         modelId: model.id,
         modelLabel: model.label,
-        recommendedModel: recommendation.recommendedModelKey,
-        operatorSelectedModel: model.key,
-        modelOverrideUsed,
-        modelRecommendationReason: recommendation.reason,
         assets: runAssets,
-        contentSafetyModel,
-        assetAnalysisModel,
-        promptBuilderModel,
-        promptReviewerModel,
+        contentSafetyModel: DEFAULT_CONTENT_SAFETY_MODEL,
+        assetAnalysisModel: DEFAULT_ASSET_ANALYSIS_MODEL,
+        promptBuilderModel: DEFAULT_PROMPT_BUILDER_MODEL,
+        promptReviewerModel: DEFAULT_PROMPT_REVIEWER_MODEL,
       });
       setCurrentRun(run);
       refreshHistory();
@@ -562,7 +487,7 @@ export default function MaszynkaView({
       // status in the PRD's four-way vocabulary, so it fails the gate closed as
       // `content_safety_blocked` rather than silently letting the run continue — see
       // lib/maszynka/contentSafety.ts module header.
-      const safetyRequest = buildContentSafetyRequestBody(effectivePrompt, runAssets, contentSafetyModel, stagePromptsConfig);
+      const safetyRequest = buildContentSafetyRequestBody(effectivePrompt, runAssets, DEFAULT_CONTENT_SAFETY_MODEL);
       let safetyOutput: ContentSafetyOutput | null = null;
       let safetyResponse: unknown = null;
       let safetyFailureReason: string | null = null;
@@ -625,7 +550,7 @@ export default function MaszynkaView({
       const assetAnalysisRecords: AssetAnalysisRecord[] = [];
       let assetAnalysisFailure: string | null = null;
       for (const asset of runAssets) {
-        const analysisRequest = buildAssetAnalysisRequestBody(asset, assetAnalysisModel, stagePromptsConfig);
+        const analysisRequest = buildAssetAnalysisRequestBody(asset, DEFAULT_ASSET_ANALYSIS_MODEL);
         try {
           const { raw: analysisResponse, content } = await callAssetAnalysis(orKey, analysisRequest);
           const { output, errors: analysisErrors } = parseAssetAnalysisContent(content);
@@ -709,7 +634,6 @@ export default function MaszynkaView({
           version: configs.model_capability_matrix?.version ?? 0,
           body: (configs.model_capability_matrix?.body as ModelCapabilityEntry[] | undefined) ?? [],
         },
-        stagePrompts: { version: configs.stage_prompts?.version ?? 0, body: stagePromptsConfig ?? EMPTY_STAGE_PROMPTS },
         modelKey: model.key,
         aspectRatio,
         variantsCount,
@@ -743,7 +667,7 @@ export default function MaszynkaView({
         attempt: 1 | 2,
         revision?: Parameters<typeof buildPromptBuilderRequestBody>[2],
       ): Promise<PromptBuilderOutput | null> => {
-        const builderRequest = buildPromptBuilderRequestBody(contract, promptBuilderModel, revision);
+        const builderRequest = buildPromptBuilderRequestBody(contract, DEFAULT_PROMPT_BUILDER_MODEL, revision);
         try {
           const { raw: builderResponse, content } = await callPromptBuilder(orKey, builderRequest);
           const { output, errors: builderErrors } = parsePromptBuilderContent(content);
@@ -804,7 +728,7 @@ export default function MaszynkaView({
         attempt: 1 | 2,
         builderOutput: PromptBuilderOutput,
       ): Promise<{ output: PromptReviewerOutput; request: unknown; response: unknown } | null> => {
-        const reviewerRequest = buildPromptReviewerRequestBody(contract, builderOutput, promptReviewerModel);
+        const reviewerRequest = buildPromptReviewerRequestBody(contract, builderOutput, DEFAULT_PROMPT_REVIEWER_MODEL);
         try {
           const { raw: reviewerResponse, content } = await callPromptReviewer(orKey, reviewerRequest);
           const { output, errors: reviewerErrors } = parsePromptReviewerContent(content);
@@ -1003,7 +927,6 @@ export default function MaszynkaView({
     styles,
     cameraSettings,
     lightings,
-    stagePromptsConfig,
     selectedHookId,
     selectedStyleId,
     selectedCameraSettingId,
@@ -1011,13 +934,7 @@ export default function MaszynkaView({
     aspectRatio,
     variantsCount,
     seed,
-    contentSafetyModel,
-    assetAnalysisModel,
-    promptBuilderModel,
-    promptReviewerModel,
     improvement,
-    recommendation,
-    modelOverrideUsed,
   ]);
 
   const openRun = useCallback(async (id: string) => {
@@ -1140,7 +1057,7 @@ export default function MaszynkaView({
           <button
             type="button"
             onClick={() => void handleImprovePrompt()}
-            disabled={!prompt.trim() || !orKey || improvement.status === "loading"}
+            disabled={!prompt.trim() || !orKey || !promptImprovementModel || improvement.status === "loading"}
             className="rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:border-neutral-200 disabled:bg-neutral-50 disabled:text-neutral-400"
           >
             {improvement.status === "loading" ? "Improving…" : "Improve prompt"}
@@ -1162,6 +1079,7 @@ export default function MaszynkaView({
           onChange={(e) => setPromptImprovementModel(e.target.value)}
           className="mb-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400"
         >
+          <option value="">— none —</option>
           {PROMPT_IMPROVEMENT_MODEL_GROUPS.map((group) => (
             <optgroup key={group} label={group}>
               {PROMPT_IMPROVEMENT_MODELS.filter((m) => m.group === group).map((m) => (
@@ -1409,126 +1327,6 @@ export default function MaszynkaView({
         )}
 
         <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
-          Content safety model (OpenRouter)
-        </label>
-        <select
-          value={contentSafetyModel}
-          onChange={(e) => setContentSafetyModel(e.target.value)}
-          className="mb-4 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400"
-        >
-          {CONTENT_SAFETY_MODEL_GROUPS.map((group) => (
-            <optgroup key={group} label={group}>
-              {CONTENT_SAFETY_MODELS.filter((m) => m.group === group).map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-
-        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
-          Asset analysis model (OpenRouter)
-        </label>
-        <select
-          value={assetAnalysisModel}
-          onChange={(e) => setAssetAnalysisModel(e.target.value)}
-          className="mb-4 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400"
-        >
-          {ASSET_ANALYSIS_MODEL_GROUPS.map((group) => (
-            <optgroup key={group} label={group}>
-              {ASSET_ANALYSIS_MODELS.filter((m) => m.group === group).map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-
-        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
-          Prompt builder model (OpenRouter)
-        </label>
-        <select
-          value={promptBuilderModel}
-          onChange={(e) => setPromptBuilderModel(e.target.value)}
-          className="mb-4 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400"
-        >
-          {PROMPT_BUILDER_MODEL_GROUPS.map((group) => (
-            <optgroup key={group} label={group}>
-              {PROMPT_BUILDER_MODELS.filter((m) => m.group === group).map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-
-        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
-          Prompt reviewer model (OpenRouter)
-        </label>
-        <select
-          value={promptReviewerModel}
-          onChange={(e) => setPromptReviewerModel(e.target.value)}
-          className="mb-4 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400"
-        >
-          {PROMPT_REVIEWER_MODEL_GROUPS.map((group) => (
-            <optgroup key={group} label={group}>
-              {PROMPT_REVIEWER_MODELS.filter((m) => m.group === group).map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-
-        <p className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
-          Creative config signals (model recommendation, PRD section 12)
-        </p>
-        <div className="mb-3 flex flex-col gap-1">
-          <label className="flex items-center gap-2 text-sm text-neutral-700">
-            <input
-              type="checkbox"
-              checked={hasHeavyTextOrPoster}
-              onChange={(e) => setHasHeavyTextOrPoster(e.target.checked)}
-              className="size-4 rounded border-neutral-300"
-            />
-            Heavy text / poster layout
-          </label>
-          <label className="flex items-center gap-2 text-sm text-neutral-700">
-            <input
-              type="checkbox"
-              checked={hasSocialNativeUgc}
-              onChange={(e) => setHasSocialNativeUgc(e.target.checked)}
-              className="size-4 rounded border-neutral-300"
-            />
-            Social-native / UGC look
-          </label>
-        </div>
-
-        <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
-          <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-amber-700">
-            Recommended model: {recommendedModelDef?.label ?? recommendation.recommendedModelKey}
-          </p>
-          <p className="text-xs text-neutral-600">{recommendation.reason}</p>
-          <div className="mt-2 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setModelKey(recommendation.recommendedModelKey)}
-              disabled={!modelOverrideUsed}
-              className="rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:border-neutral-200 disabled:text-neutral-400"
-            >
-              Use recommended
-            </button>
-            {modelOverrideUsed && (
-              <span className="text-xs font-medium text-neutral-500">Overridden — this run will record the override.</span>
-            )}
-          </div>
-        </div>
-
-        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400">
           FAL model
         </label>
         <select
@@ -1584,25 +1382,9 @@ export default function MaszynkaView({
               )}
             </p>
           )}
-          <p className="mb-1 text-xs text-neutral-500">
+          <p className="mb-3 text-xs text-neutral-500">
             Model: <b>{currentRun.modelLabel}</b>
           </p>
-          {currentRun.recommendedModel && (
-            <p className="mb-3 text-xs text-neutral-500">
-              Recommended: <b>{MODEL_BY_KEY[currentRun.recommendedModel]?.label ?? currentRun.recommendedModel}</b>
-              {currentRun.modelOverrideUsed ? (
-                <span className="ml-1 text-amber-700">
-                  — overridden to <b>{currentRun.operatorSelectedModel ?? currentRun.modelLabel}</b>
-                </span>
-              ) : (
-                <span className="ml-1 text-green-700">— used as recommended</span>
-              )}
-              {currentRun.modelRecommendationReason && (
-                <span className="block text-neutral-400">{currentRun.modelRecommendationReason}</span>
-              )}
-            </p>
-          )}
-          {!currentRun.recommendedModel && <div className="mb-3" />}
           {currentRun.error && (
             <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{currentRun.error}</p>
           )}
@@ -1748,7 +1530,6 @@ function SelectedConfigsPanel({ contract }: { contract: Contract | null }) {
     globalRules: "Global rules",
     priorityLogic: "Priority logic",
     modelCapability: "Model capability",
-    stagePrompts: "Stage prompts",
   };
   return (
     <div className="mb-3 rounded-lg bg-neutral-50 p-3">

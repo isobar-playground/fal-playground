@@ -7,26 +7,12 @@
 import assert from "node:assert/strict";
 import { summarizeSelectedConfigs } from "./runTrace.ts";
 import type { Contract } from "./contract.ts";
-import type { StagePromptsConfig } from "./configSchemas.ts";
 
 // --- a run that never reached the Contract stage (e.g. blocked at content safety, or a
 // slice-1/2 run from before the Contract stage existed) must render as "nothing to show",
 // not throw. ---
 assert.deepEqual(summarizeSelectedConfigs(null), []);
 assert.deepEqual(summarizeSelectedConfigs(undefined), []);
-
-// issue #19: a schema-valid stage_prompts body — every field just needs to be a
-// non-empty string (see configSchemas.ts's validateStagePrompts).
-const STAGE_PROMPTS: StagePromptsConfig = {
-  contentSafety: { systemPrompt: "x" },
-  assetAnalysis: {
-    baseInstructions: "x",
-    roleInstructions: { packshot: "x", style_reference: "x", brand_reference: "x", campaign_reference: "x" },
-  },
-  promptImprovement: { systemPrompt: "x" },
-  promptBuilder: { systemPrompt: "x", revisionInstructionTemplate: "x" },
-  promptReviewer: { systemPrompt: "x" },
-};
 
 // --- a fully-resolved Contract summarizes every kind with its real name + version ---
 const fullContract: Contract = {
@@ -86,12 +72,11 @@ const fullContract: Contract = {
       supportsMultiImage: false,
     },
   },
-  stagePrompts: { version: 6, snapshot: STAGE_PROMPTS },
   generationSettings: { aspectRatio: "1:1", variantsCount: 1 },
 };
 
 const full = summarizeSelectedConfigs(fullContract);
-assert.equal(full.length, 8, "every one of the eight config kinds must be summarized (lighting joins hook/style/cameraSetting)");
+assert.equal(full.length, 7, "every config kind must be summarized");
 assert.deepEqual(
   full.find((i) => i.kind === "hook"),
   { kind: "hook", id: "hook-1", version: 3, label: "Read this twice", resolved: true },
@@ -120,10 +105,6 @@ assert.deepEqual(
   full.find((i) => i.kind === "modelCapability"),
   { kind: "modelCapability", id: "nano-banana", version: 4, label: "Nano Banana", resolved: true },
 );
-assert.deepEqual(
-  full.find((i) => i.kind === "stagePrompts"),
-  { kind: "stagePrompts", id: "", version: 6, label: "5 stage prompts configured", resolved: true },
-);
 
 // --- an unresolved selection (snapshot null — id didn't match anything in that config
 // version's body) must be flagged, never crash --------------------------------------
@@ -132,7 +113,6 @@ const unresolvedContract: Contract = {
   hook: { id: "deleted-hook", version: 3, snapshot: null },
   globalRules: { version: 5, snapshot: [] },
   priorityLogic: { version: 1, snapshot: null },
-  stagePrompts: { version: 6, snapshot: null },
 };
 const partial = summarizeSelectedConfigs(unresolvedContract);
 assert.deepEqual(
@@ -146,10 +126,6 @@ assert.deepEqual(
 assert.deepEqual(
   partial.find((i) => i.kind === "priorityLogic"),
   { kind: "priorityLogic", id: "", version: 1, label: "0 layers", resolved: false },
-);
-assert.deepEqual(
-  partial.find((i) => i.kind === "stagePrompts"),
-  { kind: "stagePrompts", id: "", version: 6, label: "(unresolved)", resolved: false },
 );
 // style/cameraSetting/lighting/modelCapability were untouched by the spread above — still resolved
 assert.equal(partial.find((i) => i.kind === "style")?.resolved, true);
