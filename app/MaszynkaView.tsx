@@ -412,12 +412,12 @@ export default function MaszynkaView({
     setImprovement((s) => ({ status: "discarded", sourcePromptRaw: s.sourcePromptRaw }));
   }, []);
 
-  // "Live" = generated from the prompt exactly as it stands right now — a stale
-  // proposal/discard (raw prompt edited since) is never shown as usable, even if the
-  // state object hasn't been reset yet by the same-tick setImprovement above. This is a
-  // UI-rendering concern only; `resolveEffectivePrompt` (called in handleRun) is the
-  // single source of truth for the run-tracking fields themselves.
-  const isImprovementLive = improvement.sourcePromptRaw === prompt.trim();
+  // "Live" = a model is selected AND the proposal was generated from the prompt exactly
+  // as it stands right now — a stale proposal/discard (raw prompt edited since), or any
+  // leftover state after switching the model to "— none —", is never shown as usable.
+  // This is a UI-rendering concern only; `resolveEffectivePrompt` (called in handleRun)
+  // is the single source of truth for the run-tracking fields themselves.
+  const isImprovementLive = Boolean(promptImprovementModel) && improvement.sourcePromptRaw === prompt.trim();
 
   const anyAssetUploading = ASSET_ROLE_META.some(({ role }) => assetUploads[role]?.uploading);
   const canRun =
@@ -442,7 +442,7 @@ export default function MaszynkaView({
     // — what flows into content safety / asset analysis / the Contract from here on
     // (spec section 8/9).
     const { promptImprovementUsed, promptImprovementAccepted, userPromptImproved, effectivePrompt } =
-      resolveEffectivePrompt(prompt, improvement);
+      resolveEffectivePrompt(prompt, improvement, promptImprovementModel);
 
     try {
       configureFal(apiKey);
@@ -935,6 +935,7 @@ export default function MaszynkaView({
     variantsCount,
     seed,
     improvement,
+    promptImprovementModel,
   ]);
 
   const openRun = useCallback(async (id: string) => {
@@ -1076,7 +1077,13 @@ export default function MaszynkaView({
         </label>
         <select
           value={promptImprovementModel}
-          onChange={(e) => setPromptImprovementModel(e.target.value)}
+          onChange={(e) => {
+            const next = e.target.value;
+            setPromptImprovementModel(next);
+            // Changing the model (including back to "— none —") invalidates any proposal
+            // generated with the previous choice — same rule as editing the raw prompt.
+            setImprovement({ status: "idle" });
+          }}
           className="mb-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400"
         >
           <option value="">— none —</option>

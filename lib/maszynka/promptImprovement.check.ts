@@ -73,9 +73,10 @@ assert.ok(parsedBadSchema.errors.length, "JSON missing required fields must fail
 // side, extracted here so it's testable without React. ---------------------------
 const RAW = "a red shoe on a white background";
 const IMPROVED = "A single red running shoe centered on a seamless white backdrop, studio lighting.";
+const MODEL = "openai/gpt-4o-mini";
 
 // idle: never invoked -> raw prompt flows through, nothing recorded as used.
-assert.deepEqual(resolveEffectivePrompt(RAW, { status: "idle" }), {
+assert.deepEqual(resolveEffectivePrompt(RAW, { status: "idle" }, MODEL), {
   promptImprovementUsed: false,
   promptImprovementAccepted: false,
   userPromptImproved: null,
@@ -85,13 +86,13 @@ assert.deepEqual(resolveEffectivePrompt(RAW, { status: "idle" }), {
 // proposed but not yet accepted -> not used/accepted yet, raw prompt still flows through
 // (nothing changes until the operator explicitly accepts).
 assert.deepEqual(
-  resolveEffectivePrompt(RAW, { status: "proposed", sourcePromptRaw: RAW, proposal: { userPromptImproved: IMPROVED }, accepted: false }),
+  resolveEffectivePrompt(RAW, { status: "proposed", sourcePromptRaw: RAW, proposal: { userPromptImproved: IMPROVED }, accepted: false }, MODEL),
   { promptImprovementUsed: true, promptImprovementAccepted: false, userPromptImproved: null, effectivePrompt: RAW },
 );
 
 // accepted -> used + accepted, the improved text is what actually flows downstream.
 assert.deepEqual(
-  resolveEffectivePrompt(RAW, { status: "proposed", sourcePromptRaw: RAW, proposal: { userPromptImproved: IMPROVED }, accepted: true }),
+  resolveEffectivePrompt(RAW, { status: "proposed", sourcePromptRaw: RAW, proposal: { userPromptImproved: IMPROVED }, accepted: true }, MODEL),
   { promptImprovementUsed: true, promptImprovementAccepted: true, userPromptImproved: IMPROVED, effectivePrompt: IMPROVED },
 );
 
@@ -99,7 +100,7 @@ assert.deepEqual(
 // false and the raw prompt is what flows through — this is the exact bug this check
 // guards against: a naive "reset everything on discard" implementation would wrongly
 // report promptImprovementUsed = false here.
-assert.deepEqual(resolveEffectivePrompt(RAW, { status: "discarded", sourcePromptRaw: RAW }), {
+assert.deepEqual(resolveEffectivePrompt(RAW, { status: "discarded", sourcePromptRaw: RAW }, MODEL), {
   promptImprovementUsed: true,
   promptImprovementAccepted: false,
   userPromptImproved: null,
@@ -114,10 +115,10 @@ assert.deepEqual(
     sourcePromptRaw: RAW,
     proposal: { userPromptImproved: IMPROVED },
     accepted: true,
-  }),
+  }, MODEL),
   { promptImprovementUsed: false, promptImprovementAccepted: false, userPromptImproved: null, effectivePrompt: "a different prompt entirely" },
 );
-assert.deepEqual(resolveEffectivePrompt("a different prompt entirely", { status: "discarded", sourcePromptRaw: RAW }), {
+assert.deepEqual(resolveEffectivePrompt("a different prompt entirely", { status: "discarded", sourcePromptRaw: RAW }, MODEL), {
   promptImprovementUsed: false,
   promptImprovementAccepted: false,
   userPromptImproved: null,
@@ -125,11 +126,32 @@ assert.deepEqual(resolveEffectivePrompt("a different prompt entirely", { status:
 });
 
 // error -> used (the operator did try), never accepted, raw prompt flows through.
-assert.deepEqual(resolveEffectivePrompt(RAW, { status: "error", sourcePromptRaw: RAW, error: "boom" }), {
+assert.deepEqual(resolveEffectivePrompt(RAW, { status: "error", sourcePromptRaw: RAW, error: "boom" }, MODEL), {
   promptImprovementUsed: true,
   promptImprovementAccepted: false,
   userPromptImproved: null,
   effectivePrompt: RAW,
 });
+
+// model "none" (empty / omitted): feature fully disabled — even an accepted leftover
+// proposal is ignored; raw prompt only, nothing recorded as used.
+assert.deepEqual(
+  resolveEffectivePrompt(RAW, {
+    status: "proposed",
+    sourcePromptRaw: RAW,
+    proposal: { userPromptImproved: IMPROVED },
+    accepted: true,
+  }, ""),
+  { promptImprovementUsed: false, promptImprovementAccepted: false, userPromptImproved: null, effectivePrompt: RAW },
+);
+assert.deepEqual(
+  resolveEffectivePrompt(RAW, {
+    status: "proposed",
+    sourcePromptRaw: RAW,
+    proposal: { userPromptImproved: IMPROVED },
+    accepted: true,
+  }),
+  { promptImprovementUsed: false, promptImprovementAccepted: false, userPromptImproved: null, effectivePrompt: RAW },
+);
 
 console.log("lib/maszynka/promptImprovement.ts — all checks passed");

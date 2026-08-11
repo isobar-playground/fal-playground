@@ -168,16 +168,32 @@ export interface ImprovementResolution {
  *  the Prompt improvement UI state. Pure — the component (MaszynkaView) is a thin
  *  caller, same layering as assembleContract in contract.ts.
  *
+ *  - When `promptImprovementModel` is empty/"none", the feature is fully disabled:
+ *    always the raw prompt, never used/accepted — even if leftover UI state still holds
+ *    a previous proposal.
  *  - `promptImprovementUsed` is true whenever the state is "live" (generated from
  *    exactly the raw prompt as it stands right now, not a stale proposal left over from
  *    text the operator has since edited) and isn't "idle" — this stays true after a
  *    Discard (the operator *did* use the feature; they just rejected the proposal).
- *    Only editing the raw prompt resets it to "idle"/unused.
+ *    Only editing the raw prompt (or clearing the model) resets it to "idle"/unused.
  *  - `promptImprovementAccepted` is true only for a live, still-accepted proposal.
  *  - `userPromptImproved` mirrors `promptImprovementAccepted`: set only when accepted,
- *    `null` otherwise (discarded, never proposed, or stale). */
-export function resolveEffectivePrompt(rawPrompt: string, improvement: ImprovementResolutionInput): ImprovementResolution {
+ *    `null` otherwise (discarded, never proposed, stale, or model is none). */
+export function resolveEffectivePrompt(
+  rawPrompt: string,
+  improvement: ImprovementResolutionInput,
+  promptImprovementModel = "",
+): ImprovementResolution {
   const trimmedRaw = rawPrompt.trim();
+  // "— none —" (empty model): feature off — ignore any leftover proposal/accept state.
+  if (!promptImprovementModel.trim()) {
+    return {
+      promptImprovementUsed: false,
+      promptImprovementAccepted: false,
+      userPromptImproved: null,
+      effectivePrompt: trimmedRaw,
+    };
+  }
   const isLive = improvement.sourcePromptRaw === trimmedRaw;
   const used = isLive && improvement.status !== "idle";
   const accepted = isLive && improvement.status === "proposed" && improvement.accepted === true;
