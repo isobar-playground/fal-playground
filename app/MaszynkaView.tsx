@@ -455,9 +455,13 @@ export default function MaszynkaView({
     improvement.sourceModel === promptImprovementModel;
 
   const anyAssetUploading = ASSET_ROLE_META.some(({ role }) => assetUploads[role]?.uploading);
+  // Prompt improvement model = "— none —" means skip every OpenRouter LLM stage
+  // (safety / analysis / builder / reviewer) and send the raw prompt straight to FAL —
+  // so the OpenRouter key is only required when a model is selected.
+  const skipOpenRouter = !promptImprovementModel.trim();
   const canRun =
     Boolean(apiKey) &&
-    Boolean(orKey) &&
+    (skipOpenRouter || Boolean(orKey)) &&
     prompt.trim().length > 0 &&
     !running &&
     improvement.status !== "loading" &&
@@ -475,7 +479,8 @@ export default function MaszynkaView({
     // operator typed, regardless of accept/discard. `resolveEffectivePrompt` is the
     // single source of truth for the three run-tracking fields and for `effectivePrompt`
     // — what flows into content safety / asset analysis / the Contract from here on
-    // (spec section 8/9).
+    // (spec section 8/9). With OpenRouter bypass (`skipOpenRouter`), effectivePrompt is
+    // always the raw prompt and goes straight to the FAL mapper.
     const { promptImprovementUsed, promptImprovementAccepted, userPromptImproved, effectivePrompt } =
       resolveEffectivePrompt(prompt, improvement, promptImprovementModel);
 
@@ -504,13 +509,92 @@ export default function MaszynkaView({
         modelId: model.id,
         modelLabel: model.label,
         assets: runAssets,
-        contentSafetyModel: DEFAULT_CONTENT_SAFETY_MODEL,
-        assetAnalysisModel: DEFAULT_ASSET_ANALYSIS_MODEL,
-        promptBuilderModel: DEFAULT_PROMPT_BUILDER_MODEL,
-        promptReviewerModel: DEFAULT_PROMPT_REVIEWER_MODEL,
+        ...(skipOpenRouter
+          ? {}
+          : {
+              contentSafetyModel: DEFAULT_CONTENT_SAFETY_MODEL,
+              assetAnalysisModel: DEFAULT_ASSET_ANALYSIS_MODEL,
+              promptBuilderModel: DEFAULT_PROMPT_BUILDER_MODEL,
+              promptReviewerModel: DEFAULT_PROMPT_REVIEWER_MODEL,
+            }),
       });
       setCurrentRun(run);
       refreshHistory();
+
+      // Shared FAL map + generate tail — used both by the OpenRouter bypass path and
+      // after a successful Prompt reviewer pass on the full pipeline path.
+      const runFalFromPrompt = async (finalPrompt: string, negativePrompt: string) => {
+        const matrix =
+          (configs.model_capability_matrix?.body as ModelCapabilityEntry[] | undefined) ?? [];
+        const capability = matrix.find((m) => m.modelKey === model.key);
+        if (!capability) {
+          const mappingFailed = await patchRun(run.id, {
+            status: "fal_request_mapping_failed",
+            falMappingNotes: [
+              `modelCapability: model "${model.key}" was not found in the model capability matrix.`,
+            ],
+            detail: `modelCapability: model "${model.key}" was not found in the model capability matrix.`,
+            error: `modelCapability: model "${model.key}" was not found in the model capability matrix.`,
+          });
+          setCurrentRun(mappingFailed);
+          return;
+        }
+
+        const settings: ModelSettings = { ...DEFAULT_SETTINGS, numImages: variantsCount, aspectRatio };
+        const mapped = mapContractToFalRequest({
+          finalPrompt,
+          negativePrompt,
+          seed,
+          assets: runAssets,
+          model,
+          capability,
+          settings,
+        });
+
+        if (mapped.errors.length) {
+          const mappingFailed = await patchRun(run.id, {
+            status: "fal_request_mapping_failed",
+            falMappingNotes: mapped.mappingNotes,
+            detail: mapped.errors.join("; "),
+            error: mapped.errors.join("; "),
+          });
+          setCurrentRun(mappingFailed);
+          return;
+        }
+
+        const input = mapped.falInput!;
+        const mappedRun = await patchRun(run.id, {
+          status: "fal_request_mapping_completed",
+          falMappingNotes: mapped.mappingNotes,
+          falRequest: input,
+        });
+        setCurrentRun(mappedRun);
+
+        const started = await patchRun(run.id, { status: "fal_generation_started" });
+        setCurrentRun(started);
+
+        try {
+          const { images, raw } = await runModel(model, input, (line) => setLogLine(line));
+          const done = await patchRun(run.id, {
+            status: "generation_completed",
+            falResponse: raw,
+            outputs: images,
+          });
+          setCurrentRun(done);
+        } catch (e) {
+          const status = classifyFalError(e);
+          const failed = await patchRun(run.id, { status, error: errMsg(e) });
+          setCurrentRun(failed);
+        }
+      };
+
+      // --- OpenRouter bypass: Prompt improvement model = "— none —" ---------------
+      // No Content safety / Asset analysis / Prompt builder / Prompt reviewer calls.
+      // Raw (effective) prompt goes straight to the FAL request mapper.
+      if (skipOpenRouter) {
+        await runFalFromPrompt(effectivePrompt, "");
+        return;
+      }
 
       // --- Content safety pre-check (issue #7): the FIRST pipeline stage — runs before
       // Asset analysis and before any FAL cost is incurred (PRD section 6 / CONTEXT.md
@@ -895,53 +979,7 @@ export default function MaszynkaView({
       // config actually changes what gets sent. A mapping that can't produce a valid FAL
       // request (e.g. an edit model with zero uploaded assets) ends the run right here —
       // see lib/maszynka/falMapper.ts and status.ts's ALLOWED_NEXT.
-      const capability = contract.modelCapability.snapshot!; // Contract validation guarantees non-null
-      const settings: ModelSettings = { ...DEFAULT_SETTINGS, numImages: variantsCount, aspectRatio };
-      const mapped = mapContractToFalRequest({
-        finalPrompt: finalBuilderOutput.finalPrompt,
-        negativePrompt: finalBuilderOutput.negativePrompt,
-        seed,
-        assets: runAssets,
-        model,
-        capability,
-        settings,
-      });
-
-      if (mapped.errors.length) {
-        const mappingFailed = await patchRun(run.id, {
-          status: "fal_request_mapping_failed",
-          falMappingNotes: mapped.mappingNotes,
-          detail: mapped.errors.join("; "),
-          error: mapped.errors.join("; "),
-        });
-        setCurrentRun(mappingFailed);
-        return; // a request that can't be mapped must never reach FAL
-      }
-
-      const input = mapped.falInput!;
-      const mappedRun = await patchRun(run.id, {
-        status: "fal_request_mapping_completed",
-        falMappingNotes: mapped.mappingNotes,
-        falRequest: input,
-      });
-      setCurrentRun(mappedRun);
-
-      const started = await patchRun(run.id, { status: "fal_generation_started" });
-      setCurrentRun(started);
-
-      try {
-        const { images, raw } = await runModel(model, input, (line) => setLogLine(line));
-        const done = await patchRun(run.id, {
-          status: "generation_completed",
-          falResponse: raw,
-          outputs: images,
-        });
-        setCurrentRun(done);
-      } catch (e) {
-        const status = classifyFalError(e);
-        const failed = await patchRun(run.id, { status, error: errMsg(e) });
-        setCurrentRun(failed);
-      }
+      await runFalFromPrompt(finalBuilderOutput.finalPrompt, finalBuilderOutput.negativePrompt);
     } catch (e) {
       setRunError(errMsg(e));
     } finally {
@@ -951,6 +989,7 @@ export default function MaszynkaView({
     }
   }, [
     canRun,
+    skipOpenRouter,
     apiKey,
     orKey,
     assetUploads,
@@ -1119,7 +1158,7 @@ export default function MaszynkaView({
             // generated with the previous choice — same rule as editing the raw prompt.
             setImprovement({ status: "idle" });
           }}
-          className="mb-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400"
+          className="mb-1 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400"
         >
           <option value="">— none —</option>
           {PROMPT_IMPROVEMENT_MODEL_GROUPS.map((group) => (
@@ -1132,6 +1171,11 @@ export default function MaszynkaView({
             </optgroup>
           ))}
         </select>
+        <p className="mb-4 text-xs text-neutral-500">
+          {skipOpenRouter
+            ? "None: skip all OpenRouter stages (content safety, asset analysis, prompt builder, prompt reviewer). Your raw prompt goes straight to FAL."
+            : "A model enables Improve prompt and the full OpenRouter pipeline (safety → analysis → builder → reviewer) before FAL."}
+        </p>
 
         {isImprovementLive && improvement.status === "error" && (
           <p className="mb-4 text-xs text-red-600">Prompt improvement failed: {improvement.error}</p>
