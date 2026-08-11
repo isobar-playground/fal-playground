@@ -1,6 +1,6 @@
 # PRD: Maszynka form Configs
 
-> **Status (August 2026):** Form-based Config editing is **implemented** for Hooks, Styles, Camera settings, Global rules, Priority logic, and Model capability matrix. The **Stage prompts** scope described in the original PRD was **removed** — LLM stage instruction text remains hardcoded in pipeline modules. This document is kept as historical context; current behavior is in `docs/adr/0001-maszynka-runs-and-configs-in-neon.md`.
+> **Status (August 2026):** Form-based Config editing is **implemented** for Hooks, Styles, Camera settings, Lighting, Global rules, Priority logic, and Model capability matrix. The **Stage prompts** scope described in the original PRD was **removed** — LLM stage instruction text remains hardcoded in pipeline modules. This document is kept as historical context; current behavior is in `docs/adr/0001-maszynka-runs-and-configs-in-neon.md`.
 
 Source context: follow-up planning session on July 9, 2026. Domain terms are defined in `CONTEXT.md`; storage and UX decisions are recorded in `docs/adr/0001-maszynka-runs-and-configs-in-neon.md`.
 
@@ -55,7 +55,7 @@ LLM stage instruction text is owned by code in `lib/maszynka/*.ts`. To change it
 
 ## Implementation Decisions
 
-- Six Config kinds in Neon: hooks, styles, camera_settings, global_rules, priority_logic, model_capability_matrix.
+- Seven Config kinds in Neon: hooks, styles, camera_settings, lighting, global_rules, priority_logic, model_capability_matrix.
 - Keep LLM response schemas, JSON Schema response formats, and runtime validators in code.
 - Do not expose restore for Hooks, Presets, Global rules, Priority logic, or Model capability matrix in MVP.
 - Configs remains a flat list of Config kinds. Do not group into Creative/Pipeline sections.
@@ -77,9 +77,9 @@ LLM stage instruction text is owned by code in `lib/maszynka/*.ts`. To change it
 - Test external behavior of pure helpers rather than implementation details or React state internals.
 - Extend existing config checks so every seed validates against its Config kind schema.
 - Add checks for form CRUD helper behavior: add, edit, delete, reorder where relevant, preserve read-only IDs, and emit a body accepted by config validation.
-- Add checks for run trace/config snapshot behavior for the six Config kinds.
+- Add checks for run trace/config snapshot behavior for the seven Config kinds.
 - Prior art: existing runnable Maszynka checks for config validation, Contract validation, Prompt builder, Prompt reviewer, Asset analysis, Content safety, Prompt improvement, FAL mapper, scoring, and run trace.
-- Manual verification should cover the operator path: edit a Hook via form, save, confirm new version, confirm Run dropdown refreshes; confirm Configs list has six kinds and no Stage prompts section; run generation and inspect debug traces for LLM stages.
+- Manual verification should cover the operator path: edit a Hook via form, save, confirm new version, confirm Run dropdown refreshes; confirm Configs list has seven kinds and no Stage prompts section; run generation and inspect debug traces for LLM stages.
 
 ## Out of Scope
 
