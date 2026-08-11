@@ -9,11 +9,6 @@
 // shapes don't earn a dependency; see PRD "Testing Decisions" / repo's no-over-
 // engineering convention. If the Contract/stage schemas (next slice) grow much more
 // complex, revisit.
-//
-// `stage_prompts` (docs/prd/0002-maszynka-form-configs-and-stage-prompts.md, issue #16)
-// is the seventh kind: operator-editable instruction TEXT for the five LLM pipeline
-// stages. LLM response schemas/validators stay in code (lib/maszynka/contentSafety.ts
-// etc.) — only prompt text moves here.
 
 export type ConfigKind =
   | "hooks"
@@ -22,8 +17,7 @@ export type ConfigKind =
   | "lighting"
   | "global_rules"
   | "priority_logic"
-  | "model_capability_matrix"
-  | "stage_prompts";
+  | "model_capability_matrix";
 
 export const CONFIG_KINDS: ConfigKind[] = [
   "hooks",
@@ -33,7 +27,6 @@ export const CONFIG_KINDS: ConfigKind[] = [
   "global_rules",
   "priority_logic",
   "model_capability_matrix",
-  "stage_prompts",
 ];
 
 export const CONFIG_KIND_LABELS: Record<ConfigKind, string> = {
@@ -44,7 +37,6 @@ export const CONFIG_KIND_LABELS: Record<ConfigKind, string> = {
   global_rules: "Global rules",
   priority_logic: "Priority logic",
   model_capability_matrix: "Model capability matrix",
-  stage_prompts: "Stage prompts",
 };
 
 export function isConfigKind(v: string): v is ConfigKind {
@@ -127,37 +119,6 @@ export interface ModelCapabilityEntry {
   notes?: string;
 }
 
-// Duplicated from contract.ts's `AssetRole`/`ASSET_ROLES` rather than imported, so this
-// module stays a zero-import leaf (see module header) and contract.ts can keep importing
-// *from* configSchemas.ts without a cycle. Four fixed roles, unlikely to drift; if a fifth
-// role is ever added both lists need updating together (contract.check.ts and
-// config.check.ts would both fail if they desynced).
-type StagePromptAssetRole = "packshot" | "style_reference" | "brand_reference" | "campaign_reference";
-const STAGE_PROMPT_ASSET_ROLES: StagePromptAssetRole[] = [
-  "packshot",
-  "style_reference",
-  "brand_reference",
-  "campaign_reference",
-];
-
-/** `stage_prompts` config body (PRD "Add `stage_prompts` as a Config kind" / issue #16).
- *  Operator-editable instruction TEXT only for each LLM pipeline stage — response
- *  schemas, JSON Schema response formats and runtime validators stay in code (PRD
- *  "LLM response schemas and validators stay fixed in code"). `assetAnalysis` is shared
- *  base instructions plus one instruction block per Asset role (ADR 0001); `promptBuilder`
- *  carries its main prompt plus the revision-instruction template used for the one
- *  allowed rebuild after Prompt reviewer returns "revise". */
-export interface StagePromptsConfig {
-  contentSafety: { systemPrompt: string };
-  assetAnalysis: {
-    baseInstructions: string;
-    roleInstructions: Record<StagePromptAssetRole, string>;
-  };
-  promptImprovement: { systemPrompt: string };
-  promptBuilder: { systemPrompt: string; revisionInstructionTemplate: string };
-  promptReviewer: { systemPrompt: string };
-}
-
 // --- shared field checks ----------------------------------------------------
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -179,13 +140,6 @@ function isFiniteNumber(v: unknown): v is number {
 /** Required non-empty-string fields, reported by key. */
 function checkStringFields(item: Record<string, unknown>, keys: string[], path: string): string[] {
   return keys.filter((k) => !isNonEmptyString(item[k])).map((k) => `${path}.${k} must be a non-empty string`);
-}
-/** Required-but-blankable string fields: the key must be present and a string, but "" is
- *  allowed. Used only by `stage_prompts`, where a blank field means "use the stage
- *  module's code-owned default text" (see stagePromptResolver.ts's `textOrFallback`) —
- *  the only way an operator can hand a stage back to the code after overriding it. */
-function checkTextFields(item: Record<string, unknown>, keys: string[], path: string): string[] {
-  return keys.filter((k) => typeof item[k] !== "string").map((k) => `${path}.${k} must be a string`);
 }
 /** Required string-array fields (may be empty arrays, just must be arrays of strings). */
 function checkStringArrayFields(item: Record<string, unknown>, keys: string[], path: string): string[] {
@@ -350,47 +304,6 @@ function validateModelCapabilityMatrix(body: unknown): string[] {
   return errors;
 }
 
-function checkSystemPromptObject(value: unknown, path: string): string[] {
-  if (!isPlainObject(value)) return [`${path} must be an object`];
-  return checkTextFields(value, ["systemPrompt"], path);
-}
-
-function validateStagePrompts(body: unknown): string[] {
-  if (!isPlainObject(body)) return ["body must be an object"];
-  const errors: string[] = [];
-
-  errors.push(...checkSystemPromptObject(body.contentSafety, "contentSafety"));
-  errors.push(...checkSystemPromptObject(body.promptImprovement, "promptImprovement"));
-  errors.push(...checkSystemPromptObject(body.promptReviewer, "promptReviewer"));
-
-  if (!isPlainObject(body.promptBuilder)) {
-    errors.push("promptBuilder must be an object");
-  } else {
-    errors.push(
-      ...checkTextFields(body.promptBuilder, ["systemPrompt", "revisionInstructionTemplate"], "promptBuilder"),
-    );
-  }
-
-  if (!isPlainObject(body.assetAnalysis)) {
-    errors.push("assetAnalysis must be an object");
-  } else {
-    errors.push(...checkTextFields(body.assetAnalysis, ["baseInstructions"], "assetAnalysis"));
-    if (!isPlainObject(body.assetAnalysis.roleInstructions)) {
-      errors.push("assetAnalysis.roleInstructions must be an object");
-    } else {
-      errors.push(
-        ...checkTextFields(
-          body.assetAnalysis.roleInstructions,
-          STAGE_PROMPT_ASSET_ROLES,
-          "assetAnalysis.roleInstructions",
-        ),
-      );
-    }
-  }
-
-  return errors;
-}
-
 /** Validate a config body against its kind's shape. Empty array = valid. */
 export function validateConfigBody(kind: ConfigKind, body: unknown): string[] {
   switch (kind) {
@@ -408,7 +321,5 @@ export function validateConfigBody(kind: ConfigKind, body: unknown): string[] {
       return validatePriorityLogic(body);
     case "model_capability_matrix":
       return validateModelCapabilityMatrix(body);
-    case "stage_prompts":
-      return validateStagePrompts(body);
   }
 }

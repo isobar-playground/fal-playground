@@ -29,8 +29,7 @@ export type SelectedConfigKind =
   | "lighting"
   | "globalRules"
   | "priorityLogic"
-  | "modelCapability"
-  | "stagePrompts";
+  | "modelCapability";
 
 export interface SelectedConfigSummaryItem {
   kind: SelectedConfigKind;
@@ -74,11 +73,6 @@ export function summarizeSelectedConfigs(contract: Contract | null | undefined):
 
   const rulesCount = contract.globalRules?.snapshot?.length ?? 0;
   const layersCount = contract.priorityLogic?.snapshot?.layers?.length ?? 0;
-  // Derived from the snapshot's own keys (contentSafety/assetAnalysis/promptImprovement/
-  // promptBuilder/promptReviewer today), not a hardcoded literal — same "count what's
-  // actually there" rule as rulesCount/layersCount above, so this label can't silently go
-  // stale if `StagePromptsConfig` ever gains or loses a stage.
-  const stagePromptsCount = contract.stagePrompts?.snapshot ? Object.keys(contract.stagePrompts.snapshot).length : 0;
 
   return [
     refItem("hook", contract.hook, (h) => h.text),
@@ -105,18 +99,6 @@ export function summarizeSelectedConfigs(contract: Contract | null | undefined):
       version: contract.modelCapability?.version ?? 0,
       label: contract.modelCapability?.snapshot?.modelLabel ?? "(unresolved)",
       resolved: contract.modelCapability?.snapshot != null,
-    },
-    {
-      // Issue #19: applies wholesale to every LLM stage, same footing as globalRules/
-      // priorityLogic above (no per-run selection id) — see contract.ts's `stagePrompts`
-      // field doc comment.
-      kind: "stagePrompts",
-      id: "",
-      version: contract.stagePrompts?.version ?? 0,
-      label: contract.stagePrompts?.snapshot
-        ? `${stagePromptsCount} stage prompt${stagePromptsCount === 1 ? "" : "s"} configured`
-        : "(unresolved)",
-      resolved: contract.stagePrompts?.snapshot != null,
     },
   ];
 }

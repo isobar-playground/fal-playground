@@ -27,12 +27,8 @@ A reproducible snapshot of one Config kind used to understand or rerun a Run lat
 _Avoid_: draft, edit
 
 **Stage prompt**:
-The operator-editable instruction text that guides one LLM pipeline stage, such as Content safety, Asset analysis, Prompt improvement, Prompt builder, or Prompt reviewer.
-_Avoid_: system prompt, hardcoded prompt
-
-**Stage prompt restore**:
-An operator action that reuses an older Stage prompt as the content for the same stage in a new Config version, preserving the full version history.
-_Avoid_: rollback, overwrite
+The instruction text that guides one LLM pipeline stage, such as Content safety, Asset analysis, Prompt improvement, Prompt builder, or Prompt reviewer. Defined in code (`lib/maszynka/*.ts`), not as an operator-editable Config kind.
+_Avoid_: system prompt (too generic), config prompt
 
 **Asset role**:
 The systemic function of an uploaded image, derived from which upload field it came through — `packshot`, `style_reference`, `brand_reference`, or `campaign_reference`. Never inferred from operator description.

@@ -3,7 +3,7 @@
 // Generic, field-definition-driven form for a single Config item (issue #18 — shared
 // Config form editor shell). Doesn't know about hooks/styles/cameras specifically — it
 // just renders whatever `ConfigFieldDef[]` the kind's `ConfigItemFormDef` declares
-// (lib/maszynka/configFormDefs.ts), so later slices (#23) register a new form def instead
+// (lib/maszynka/configFormDefs.ts), so later slices register a new form def instead
 // of building a new form component per Config kind. Issue #21 added the `stringList`
 // field type (add/edit/remove/reorder entries within a single item, e.g. StyleConfig.
 // avoid) on top of the plain text/textarea fields issue #18 shipped with. Issue #22 adds
@@ -13,9 +13,7 @@ import { useState } from "react";
 import type { ConfigFieldDef, ConfigItemFormDef } from "@/lib/maszynka/configFormDefs";
 import { addListEntry, moveConfigItem, removeListEntry, updateListEntry, type ConfigItem } from "@/lib/maszynka/configItemCrud";
 
-// Exported so app/MaszynkaStagePromptsForm.tsx (issue #23 — a dedicated form component,
-// not a `ConfigItemFormDef`/CONFIG_FORM_DEFS registration; see that file's header) can
-// match this shell's field styling exactly instead of duplicating the literal classes.
+// Exported so other form components can match this shell's field styling exactly.
 export const FIELD_CLASS =
   "w-full rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100";
 export const LABEL_CLASS = "mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral-400";

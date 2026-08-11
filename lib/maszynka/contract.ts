@@ -33,7 +33,6 @@ import {
   type LightingConfig,
   type ModelCapabilityEntry,
   type PriorityLogicConfig,
-  type StagePromptsConfig,
   type StyleConfig,
 } from "./configSchemas.ts";
 import type { AssetAnalysisOutput } from "./assetAnalysis";
@@ -77,14 +76,6 @@ export interface Contract {
   globalRules: { version: number; snapshot: GlobalRuleConfig[] };
   priorityLogic: { version: number; snapshot: PriorityLogicConfig | null };
   modelCapability: { modelKey: string; version: number; snapshot: ModelCapabilityEntry | null };
-  /** The Stage prompts config's latest version + full body snapshot (issue #19), applied
-   *  wholesale to the whole run — same footing as globalRules/priorityLogic above (no
-   *  per-run selection id, unlike hook/style/cameraSetting). The Prompt builder and
-   *  Prompt reviewer stage modules read this straight off the Contract (see
-   *  promptBuilder.ts/promptReviewer.ts); Content safety, Asset analysis and Prompt
-   *  improvement run before a Contract exists, so their callers (MaszynkaView) pass the
-   *  same config snapshot into those stages' request builders directly instead. */
-  stagePrompts: { version: number; snapshot: StagePromptsConfig | null };
   generationSettings: {
     aspectRatio: string;
     variantsCount: number;
@@ -111,7 +102,6 @@ export interface AssembleContractInput {
   globalRules: { version: number; body: GlobalRuleConfig[] };
   priorityLogic: { version: number; body: PriorityLogicConfig };
   modelCapabilityMatrix: { version: number; body: ModelCapabilityEntry[] };
-  stagePrompts: { version: number; body: StagePromptsConfig };
   modelKey: string;
   aspectRatio: string;
   variantsCount: number;
@@ -144,7 +134,6 @@ export function assembleContract(input: AssembleContractInput): Contract {
     globalRules: { version: input.globalRules.version, snapshot: input.globalRules.body },
     priorityLogic: { version: input.priorityLogic.version, snapshot: input.priorityLogic.body },
     modelCapability: { modelKey: input.modelKey, version: input.modelCapabilityMatrix.version, snapshot: modelCapability },
-    stagePrompts: { version: input.stagePrompts.version, snapshot: input.stagePrompts.body ?? null },
     generationSettings: {
       aspectRatio: input.aspectRatio,
       variantsCount: input.variantsCount,
@@ -225,16 +214,6 @@ export function validateContract(contract: Contract): string[] {
     errors.push(
       `modelCapability: model "${contract.modelCapability.modelKey}" was not found in the model capability matrix version ${contract.modelCapability.version}`,
     );
-  }
-  if (!contract.stagePrompts || !isFiniteNumber(contract.stagePrompts.version) || contract.stagePrompts.snapshot == null) {
-    errors.push("stagePrompts must have a version and a snapshot");
-  } else {
-    // Re-use the same schema gate a config save goes through (configSchemas.ts) so a
-    // Contract can never carry a stage_prompts snapshot that wouldn't itself have been
-    // accepted as a valid config version (issue #19 acceptance: "Stage prompt validation
-    // to be schema-checked like existing Config kinds").
-    const stagePromptErrors = validateConfigBody("stage_prompts", contract.stagePrompts.snapshot);
-    if (stagePromptErrors.length) errors.push(`stagePrompts: ${stagePromptErrors.join("; ")}`);
   }
 
   const gs = contract.generationSettings;

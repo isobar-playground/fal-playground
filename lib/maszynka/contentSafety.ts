@@ -20,11 +20,6 @@
 import type { WirePart } from "../chat/attachments";
 import { CHAT_MODELS, CHAT_MODEL_BY_ID, DEFAULT_CHAT_MODEL, modelSupportsImages, type ChatModelDef } from "../chat/models.ts";
 import type { AssetRole } from "./contract";
-import type { StagePromptsConfig } from "./configSchemas";
-// Explicit extension: a real runtime import (resolveContentSafetySystemPrompt is a
-// value, not just a type), so Node's type-stripping runtime needs it to resolve
-// directly (see promptBuilder.ts's header for the same constraint / contentSafety.check.ts).
-import { resolveContentSafetySystemPrompt } from "./stagePromptResolver.ts";
 
 // --- model selection ---------------------------------------------------------
 // Vision is mandatory (the stage must look at every uploaded asset, not just read the
@@ -101,11 +96,7 @@ export const CONTENT_SAFETY_OUTPUT_SCHEMA: Record<string, unknown> = {
   },
 };
 
-// Hardcoded fallback (issue #19 / PRD story 33): used whenever a run has no
-// `stage_prompts` config yet, or the operator left `contentSafety.systemPrompt` blank —
-// see stagePromptResolver.ts. This same text is also the `stage_prompts` seed content
-// (configSeeds.ts's `STAGE_PROMPTS_SEED.contentSafety.systemPrompt`, copied by hand there
-// rather than imported — see that file's header for why).
+// Hardcoded system prompt for the content safety pre-check stage.
 const CONTENT_SAFETY_SYSTEM_PROMPT = `You are the Content safety pre-check stage of the Maszynka Content Factory test bench — the FIRST stage of the pipeline, running before Asset analysis and before any FAL generation call. Priority logic ranks content safety at the very top: your verdict overrides every other layer (product/brand preservation, hook, style, camera setting, operator prompt).
 
 You are given the operator's raw prompt and every uploaded asset image (if any). An asset's systemic role — packshot, style_reference, brand_reference, campaign_reference — is not relevant to this check; inspect every image's actual content regardless of role.
@@ -138,30 +129,21 @@ export interface ContentSafetyRequestBody {
   response_format: { type: "json_schema"; json_schema: { name: string; strict: true; schema: Record<string, unknown> } };
 }
 
-/** Builds the exact OpenRouter chat-completions body for the content safety pre-check.
- *  Unlike the Asset analysis stage (one call per asset), this is a single call covering
- *  the operator's raw prompt plus every uploaded asset at once — the check is about the
- *  whole run's input as a unit, not any one asset's role. Every asset is attached as an
- *  image_url part so the vision model can inspect actual pixel content, not just role
- *  labels. `stagePrompts` is the run's resolved `stage_prompts` config snapshot (issue
- *  #19) — omit it (or pass null/undefined) to fall back to the hardcoded default above,
- *  same behavior as before this stage was configurable. */
+/** Builds the exact OpenRouter chat-completions body for the content safety pre-check. */
 export function buildContentSafetyRequestBody(
   userPromptRaw: string,
   assets: { role: AssetRole; url: string }[],
   model: string,
-  stagePrompts?: StagePromptsConfig | null,
 ): ContentSafetyRequestBody {
   const text = contentSafetyUserText(userPromptRaw, assets);
   const userContent: string | WirePart[] = assets.length
     ? [{ type: "text", text }, ...assets.map((a) => ({ type: "image_url" as const, image_url: { url: a.url } }))]
     : text;
-  const systemPrompt = resolveContentSafetySystemPrompt(stagePrompts, CONTENT_SAFETY_SYSTEM_PROMPT);
 
   return {
     model,
     messages: [
-      { role: "system", content: systemPrompt },
+      { role: "system", content: CONTENT_SAFETY_SYSTEM_PROMPT },
       { role: "user", content: userContent },
     ],
     temperature: 0.1,

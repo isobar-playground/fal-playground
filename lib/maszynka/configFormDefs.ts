@@ -23,13 +23,6 @@
 // itself the item array (`priority_logic`'s body is `{ layers: [...] }`, not a bare
 // array — configSchemas.ts) can still plug into the shell, which otherwise assumes
 // `body === items`.
-//
-// `stage_prompts` deliberately has NO entry here (issue #23): its body is a single
-// fixed-shape record with five named sub-sections, not an array of interchangeable
-// id-keyed items, so the `ConfigItemFormDef` model this file defines doesn't fit it.
-// app/MaszynkaConfigs.tsx renders it through a dedicated component
-// (app/MaszynkaStagePromptsForm.tsx) instead, gated by an `isStagePrompts` check rather
-// than a `CONFIG_FORM_DEFS[kind]` lookup.
 import type { ConfigKind } from "./configSchemas";
 import type { ConfigItem } from "./configItemCrud";
 
