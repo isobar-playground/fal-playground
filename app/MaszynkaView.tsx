@@ -142,16 +142,17 @@ interface AssetUpload {
 
 /** Prompt improvement (issue #8) client-side state — UI-driven, operator-triggered,
  *  runs before a run exists (see lib/maszynka/promptImprovement.ts module header).
- *  `sourcePromptRaw` is the exact raw prompt the proposal was generated from; if the
- *  operator edits the raw prompt afterward, the proposal/acceptance no longer
- *  corresponds to what will actually run — see `isImprovementLive` in the component.
- *  "discarded" is a distinct terminal status from "idle": `promptImprovementUsed`
- *  (spec: "was the feature used at all") must stay true after a discard — only
- *  `promptImprovementAccepted` should flip back to false. Editing the raw prompt is the
- *  only thing that resets all the way to "idle" (see `handleRawPromptChange`). */
+ *  `sourcePromptRaw` / `sourceModel` are the exact raw prompt and OpenRouter model the
+ *  proposal was generated from; if either changes afterward, the proposal/acceptance no
+ *  longer corresponds to what will actually run — see `isImprovementLive` in the
+ *  component. "discarded" is a distinct terminal status from "idle":
+ *  `promptImprovementUsed` (spec: "was the feature used at all") must stay true after a
+ *  discard — only `promptImprovementAccepted` should flip back to false. Editing the
+ *  raw prompt or changing the model resets all the way to "idle". */
 interface ImprovementState {
   status: "idle" | "loading" | "proposed" | "discarded" | "error";
   sourcePromptRaw?: string;
+  sourceModel?: string;
   proposal?: PromptImprovementOutput;
   accepted?: boolean;
   error?: string;
@@ -386,38 +387,72 @@ export default function MaszynkaView({
 
   const handleImprovePrompt = useCallback(async () => {
     const raw = prompt.trim();
-    if (!raw || !orKey || !promptImprovementModel) return;
-    setImprovement({ status: "loading", sourcePromptRaw: raw });
+    const requestModel = promptImprovementModel;
+    if (!raw || !orKey || !requestModel) return;
+    setImprovement({ status: "loading", sourcePromptRaw: raw, sourceModel: requestModel });
     try {
-      const reqBody = buildPromptImprovementRequestBody(raw, promptImprovementModel);
+      const reqBody = buildPromptImprovementRequestBody(raw, requestModel);
       const { content } = await callPromptImprovement(orKey, reqBody);
       const { output, errors } = parsePromptImprovementContent(content);
-      if (!output) {
-        setImprovement({ status: "error", sourcePromptRaw: raw, error: errors.join("; ") });
-        return;
-      }
-      setImprovement({ status: "proposed", sourcePromptRaw: raw, proposal: output, accepted: false });
+      // Ignore late completions if the operator changed model/prompt (or started another
+      // Improve) while this request was in flight — only the still-loading request that
+      // matches sourcePromptRaw + sourceModel may commit.
+      setImprovement((prev) => {
+        if (
+          prev.status !== "loading" ||
+          prev.sourcePromptRaw !== raw ||
+          prev.sourceModel !== requestModel
+        ) {
+          return prev;
+        }
+        if (!output) {
+          return { status: "error", sourcePromptRaw: raw, sourceModel: requestModel, error: errors.join("; ") };
+        }
+        return {
+          status: "proposed",
+          sourcePromptRaw: raw,
+          sourceModel: requestModel,
+          proposal: output,
+          accepted: false,
+        };
+      });
     } catch (e) {
-      setImprovement({ status: "error", sourcePromptRaw: raw, error: errMsg(e) });
+      const message = errMsg(e);
+      setImprovement((prev) => {
+        if (
+          prev.status !== "loading" ||
+          prev.sourcePromptRaw !== raw ||
+          prev.sourceModel !== requestModel
+        ) {
+          return prev;
+        }
+        return { status: "error", sourcePromptRaw: raw, sourceModel: requestModel, error: message };
+      });
     }
   }, [prompt, orKey, promptImprovementModel]);
 
   const acceptImprovement = useCallback(() => {
     setImprovement((s) => (s.status === "proposed" ? { ...s, accepted: true } : s));
   }, []);
-  // Discard keeps `sourcePromptRaw` (so `promptImprovementUsed` below stays true for
-  // this run — the operator did use the feature, they just rejected the proposal) and
-  // drops the proposal itself so the side-by-side panel disappears.
+  // Discard keeps `sourcePromptRaw` / `sourceModel` (so `promptImprovementUsed` below
+  // stays true for this run — the operator did use the feature, they just rejected the
+  // proposal) and drops the proposal itself so the side-by-side panel disappears.
   const discardImprovement = useCallback(() => {
-    setImprovement((s) => ({ status: "discarded", sourcePromptRaw: s.sourcePromptRaw }));
+    setImprovement((s) => ({
+      status: "discarded",
+      sourcePromptRaw: s.sourcePromptRaw,
+      sourceModel: s.sourceModel,
+    }));
   }, []);
 
-  // "Live" = a model is selected AND the proposal was generated from the prompt exactly
-  // as it stands right now — a stale proposal/discard (raw prompt edited since), or any
-  // leftover state after switching the model to "— none —", is never shown as usable.
-  // This is a UI-rendering concern only; `resolveEffectivePrompt` (called in handleRun)
-  // is the single source of truth for the run-tracking fields themselves.
-  const isImprovementLive = Boolean(promptImprovementModel) && improvement.sourcePromptRaw === prompt.trim();
+  // "Live" = a model is selected AND the proposal was generated from exactly this prompt
+  // and this model — a stale proposal (raw prompt or model changed since), or leftover
+  // state after "— none —", is never shown as usable. UI-only; `resolveEffectivePrompt`
+  // (in handleRun) is the source of truth for run-tracking fields.
+  const isImprovementLive =
+    Boolean(promptImprovementModel) &&
+    improvement.sourcePromptRaw === prompt.trim() &&
+    improvement.sourceModel === promptImprovementModel;
 
   const anyAssetUploading = ASSET_ROLE_META.some(({ role }) => assetUploads[role]?.uploading);
   const canRun =
