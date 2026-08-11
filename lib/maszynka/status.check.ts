@@ -22,17 +22,20 @@ assert.equal(isValidTransition("fal_generation_started", "generation_completed")
 assert.equal(isValidTransition("fal_generation_started", "fal_generation_failed"), true);
 assert.equal(isValidTransition("fal_generation_started", "provider_policy_blocked"), true);
 
-// --- issue #7: Content safety pre-check is now the FIRST stage --------------------
-// run_started can only land on one of the four content_safety_* statuses.
+// --- issue #7: Content safety pre-check is the FIRST stage on the default path -------
+// run_started can land on one of the four content_safety_* statuses, OR (OpenRouter
+// bypass when Prompt improvement model is "— none —") straight to the FAL mapper.
 assert.equal(isValidTransition("run_started", "content_safety_passed"), true);
 assert.equal(isValidTransition("run_started", "content_safety_allowed_with_constraints"), true);
 assert.equal(isValidTransition("run_started", "content_safety_revise_required"), true);
 assert.equal(isValidTransition("run_started", "content_safety_blocked"), true);
-// Skipping straight to Asset analysis (or anywhere else) is no longer legal — every run
-// must clear the safety pre-check first (before any FAL cost, and before the asset
-// analysis vision calls too).
+assert.equal(isValidTransition("run_started", "fal_request_mapping_completed"), true);
+assert.equal(isValidTransition("run_started", "fal_request_mapping_failed"), true);
+// Skipping straight to Asset analysis (or FAL generation) is still illegal — the
+// bypass only skips to the mapper, never past it into fal_generation_started.
 assert.equal(isValidTransition("run_started", "asset_analysis_completed"), false);
 assert.equal(isValidTransition("run_started", "asset_analysis_failed"), false);
+assert.equal(isValidTransition("run_started", "fal_generation_started"), false);
 // content_safety_revise_required and content_safety_blocked are terminal — the whole
 // point is stopping the run before any further cost is incurred.
 assert.equal(isValidTransition("content_safety_revise_required", "asset_analysis_completed"), false);
