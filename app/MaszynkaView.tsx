@@ -222,8 +222,28 @@ export default function MaszynkaView({
   const [showKey, setShowKey] = useState(false);
   const [showOrKey, setShowOrKey] = useState(false);
   const [assetUploads, setAssetUploads] = useState<Partial<Record<AssetRole, AssetUpload>>>({});
-  const [modelKey, setModelKey] = useState<string>("nano-banana");
+  const INITIAL_MODEL_KEY = "nano-banana";
+  const initialModel = MODEL_BY_KEY[INITIAL_MODEL_KEY] ?? MODELS[0];
+  const initialResolutionField = initialModel.fields.find(
+    (f) => f.kind === "select" && f.key === "resolution",
+  ) as { kind: "select"; key: "resolution"; options: { value: string; label: string }[] } | undefined;
+  const initialQualityField = initialModel.fields.find(
+    (f) => f.kind === "select" && f.key === "quality",
+  ) as { kind: "select"; key: "quality"; options: { value: string; label: string }[] } | undefined;
+
+  const [modelKey, setModelKey] = useState<string>(INITIAL_MODEL_KEY);
   const model = MODEL_BY_KEY[modelKey] ?? MODELS[0];
+
+  // Model-dependent generation tuning control:
+  // - Nano Banana 2/Pro + Grok Imagine => `resolution`
+  // - GPT Image + Ideogram V4 => `quality`
+  // - Flux => no such control (not present in model.fields)
+  const resolutionField = model.fields.find(
+    (f) => f.kind === "select" && f.key === "resolution",
+  ) as { kind: "select"; key: "resolution"; options: { value: string; label: string }[] } | undefined;
+  const qualityField = model.fields.find(
+    (f) => f.kind === "select" && f.key === "quality",
+  ) as { kind: "select"; key: "quality"; options: { value: string; label: string }[] } | undefined;
   // Prompt improvement stage (issue #8): the operator's OpenRouter model for that
   // stage. Unlike every other stage model below, this one is never recorded on the run
   // by itself — it's a UI-driven, operator-triggered stage that runs before a run
@@ -297,6 +317,13 @@ export default function MaszynkaView({
   // FAL is gated by the selected model's capability matrix entry, not this field alone —
   // see lib/maszynka/falMapper.ts.
   const [seed, setSeed] = useState("");
+
+  const initialResolutionDefault = initialResolutionField?.options?.[0]?.value ?? "";
+  const initialQualityDefault =
+    (initialQualityField?.options?.[0]?.value as ModelSettings["quality"] | undefined) ?? DEFAULT_SETTINGS.quality;
+
+  const [selectedResolution, setSelectedResolution] = useState<string>(initialResolutionDefault);
+  const [selectedQuality, setSelectedQuality] = useState<ModelSettings["quality"]>(initialQualityDefault);
 
   // Every dropdown starts on "none" (client feedback: none must be an option AND the
   // default), so a fresh Run applies no preset the operator didn't explicitly pick.
@@ -469,6 +496,19 @@ export default function MaszynkaView({
     configsState === "idle" &&
     Boolean(aspectRatio);
 
+  const tuningLine = resolutionField
+    ? selectedResolution
+      ? `Resolution: ${selectedResolution}`
+      : ""
+    : qualityField
+      ? `Quality: ${selectedQuality}`
+      : "";
+
+  const appendTuningToPrompt = (promptText: string) => {
+    if (!tuningLine) return promptText;
+    return `${promptText.trim()}\n\n${tuningLine}`;
+  };
+
   const handleRun = useCallback(async () => {
     if (!canRun) return;
     setRunning(true);
@@ -544,7 +584,13 @@ export default function MaszynkaView({
           return;
         }
 
-        const settings: ModelSettings = { ...DEFAULT_SETTINGS, numImages: variantsCount, aspectRatio };
+        const settings: ModelSettings = {
+          ...DEFAULT_SETTINGS,
+          numImages: variantsCount,
+          aspectRatio,
+          resolution: selectedResolution,
+          quality: selectedQuality,
+        };
         const mapped = mapContractToFalRequest({
           finalPrompt,
           negativePrompt,
@@ -612,8 +658,9 @@ export default function MaszynkaView({
           userPromptRaw: effectivePrompt,
           ...runPresets,
         });
-        await runFalFromPrompt(directPrompt.finalPrompt, directPrompt.negativePrompt, {
-          finalPrompt: directPrompt.finalPrompt,
+        const tunedDirectFinalPrompt = appendTuningToPrompt(directPrompt.finalPrompt);
+        await runFalFromPrompt(tunedDirectFinalPrompt, directPrompt.negativePrompt, {
+          finalPrompt: tunedDirectFinalPrompt,
           negativePrompt: directPrompt.negativePrompt,
           promptSummary: directPrompt.promptSummary,
           appliedRules: directPrompt.appliedLayers,
@@ -1005,7 +1052,7 @@ export default function MaszynkaView({
       // config actually changes what gets sent. A mapping that can't produce a valid FAL
       // request (e.g. an edit model with zero uploaded assets) ends the run right here —
       // see lib/maszynka/falMapper.ts and status.ts's ALLOWED_NEXT.
-      await runFalFromPrompt(finalBuilderOutput.finalPrompt, finalBuilderOutput.negativePrompt);
+      await runFalFromPrompt(appendTuningToPrompt(finalBuilderOutput.finalPrompt), finalBuilderOutput.negativePrompt);
     } catch (e) {
       setRunError(errMsg(e));
     } finally {
@@ -1034,6 +1081,8 @@ export default function MaszynkaView({
     aspectRatio,
     variantsCount,
     seed,
+    selectedResolution,
+    selectedQuality,
     improvement,
     promptImprovementModel,
   ]);
@@ -1443,7 +1492,24 @@ export default function MaszynkaView({
         </label>
         <select
           value={modelKey}
-          onChange={(e) => setModelKey(e.target.value)}
+          onChange={(e) => {
+            const nextModelKey = e.target.value;
+            setModelKey(nextModelKey);
+
+            const nextModel = MODEL_BY_KEY[nextModelKey] ?? MODELS[0];
+            const nextResolutionField = nextModel.fields.find(
+              (f) => f.kind === "select" && f.key === "resolution",
+            ) as { kind: "select"; key: "resolution"; options: { value: string; label: string }[] } | undefined;
+            const nextQualityField = nextModel.fields.find(
+              (f) => f.kind === "select" && f.key === "quality",
+            ) as { kind: "select"; key: "quality"; options: { value: string; label: string }[] } | undefined;
+
+            // Default to the cheapest option for the chosen model.
+            setSelectedResolution(nextResolutionField?.options?.[0]?.value ?? "");
+            setSelectedQuality(
+              (nextQualityField?.options?.[0]?.value as ModelSettings["quality"] | undefined) ?? DEFAULT_SETTINGS.quality,
+            );
+          }}
           className="mb-1 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400"
         >
           {MODEL_GROUPS.map((group) => (
@@ -1456,6 +1522,41 @@ export default function MaszynkaView({
             </optgroup>
           ))}
         </select>
+
+        {resolutionField && (
+          <>
+            <label className="mb-1 mt-3 block text-xs font-semibold uppercase tracking-wide text-neutral-400">Resolution</label>
+            <select
+              value={selectedResolution}
+              onChange={(e) => setSelectedResolution(e.target.value)}
+              className="mb-1 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400"
+            >
+              {resolutionField.options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
+
+        {qualityField && !resolutionField && (
+          <>
+            <label className="mb-1 mt-3 block text-xs font-semibold uppercase tracking-wide text-neutral-400">Quality</label>
+            <select
+              value={selectedQuality}
+              onChange={(e) => setSelectedQuality(e.target.value as ModelSettings["quality"])}
+              className="mb-1 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400"
+            >
+              {qualityField.options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
+
         {packshotNote && <p className="mb-4 text-xs text-amber-700">{packshotNote}</p>}
         {!packshotNote && <div className="mb-4" />}
 
@@ -2077,7 +2178,7 @@ function DebugJson({ label, value }: { label: string; value: unknown }) {
         {open ? "▾" : "▸"} {label}
       </button>
       {open && (
-        <pre className="mt-1 max-h-72 overflow-y-auto overflow-x-hidden whitespace-pre-wrap rounded-lg bg-neutral-50 px-3 py-2 font-mono text-[11px] text-neutral-700 [overflow-wrap:anywhere]">
+        <pre className="mt-1 max-h-72 overflow-y-auto overflow-x-hidden whitespace-pre-wrap rounded-lg bg-neutral-50 px-3 py-2 font-mono text-[11px] text-neutral-700 wrap-anywhere">
           {text}
         </pre>
       )}
