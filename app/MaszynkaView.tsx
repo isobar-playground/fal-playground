@@ -523,7 +523,11 @@ export default function MaszynkaView({
 
       // Shared FAL map + generate tail — used both by the OpenRouter bypass path and
       // after a successful Prompt reviewer pass on the full pipeline path.
-      const runFalFromPrompt = async (finalPrompt: string, negativePrompt: string) => {
+      const runFalFromPrompt = async (
+        finalPrompt: string,
+        negativePrompt: string,
+        promptBuilderOutput?: PromptBuilderOutput,
+      ) => {
         const matrix =
           (configs.model_capability_matrix?.body as ModelCapabilityEntry[] | undefined) ?? [];
         const capability = matrix.find((m) => m.modelKey === model.key);
@@ -567,6 +571,7 @@ export default function MaszynkaView({
           status: "fal_request_mapping_completed",
           falMappingNotes: mapped.mappingNotes,
           falRequest: input,
+          ...(promptBuilderOutput ? { promptBuilderOutput } : {}),
         });
         setCurrentRun(mappedRun);
 
@@ -607,17 +612,13 @@ export default function MaszynkaView({
           userPromptRaw: effectivePrompt,
           ...runPresets,
         });
-        const withDirectPrompt = await patchRun(run.id, {
-          promptBuilderOutput: {
-            finalPrompt: directPrompt.finalPrompt,
-            negativePrompt: directPrompt.negativePrompt,
-            promptSummary: directPrompt.promptSummary,
-            appliedRules: directPrompt.appliedLayers,
-            riskNotes: [],
-          },
+        await runFalFromPrompt(directPrompt.finalPrompt, directPrompt.negativePrompt, {
+          finalPrompt: directPrompt.finalPrompt,
+          negativePrompt: directPrompt.negativePrompt,
+          promptSummary: directPrompt.promptSummary,
+          appliedRules: directPrompt.appliedLayers,
+          riskNotes: [],
         });
-        setCurrentRun(withDirectPrompt);
-        await runFalFromPrompt(directPrompt.finalPrompt, directPrompt.negativePrompt);
         return;
       }
 
