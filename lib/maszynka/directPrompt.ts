@@ -115,6 +115,8 @@ export function buildDirectFalPrompt(input: DirectPromptInput): DirectPromptOutp
       `Angle: ${input.cameraSetting.angle}`,
       `Distance: ${input.cameraSetting.cameraDistance}`,
       `Lens feel: ${input.cameraSetting.lensFeel}`,
+      `Motion intensity: ${input.cameraSetting.motionIntensity}`,
+      `Stability: ${input.cameraSetting.stability}`,
       input.cameraSetting.imageTranslation,
     ]);
   }

@@ -119,6 +119,8 @@ assert.ok(full.finalPrompt.includes(HOOK.text));
 assert.ok(full.finalPrompt.includes("Cozy Lifestyle"));
 assert.ok(full.finalPrompt.includes("Overhead Tabletop"));
 assert.ok(full.finalPrompt.includes("Golden Hour"));
+assert.ok(full.finalPrompt.includes(CAMERA.motionIntensity));
+assert.ok(full.finalPrompt.includes(CAMERA.stability));
 assert.ok(full.negativePrompt.includes("harsh flash"));
 assert.ok(full.negativePrompt.includes("tilted horizon"));
 assert.deepEqual(full.appliedLayers, [

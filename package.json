@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "PROTOTYPE — throwaway playground for non-technical users to test Fal.ai prompts (nano-banana + GPT Image).",
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
