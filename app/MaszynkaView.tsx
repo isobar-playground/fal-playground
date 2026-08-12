@@ -44,6 +44,7 @@ import {
   type PromptBuilderAttemptRecord,
   type PromptBuilderOutput,
 } from "@/lib/maszynka/promptBuilder";
+import { buildDirectFalPrompt, resolveRunPresetSelections } from "@/lib/maszynka/directPrompt";
 import {
   DEFAULT_PROMPT_REVIEWER_MODEL,
   buildPromptReviewerRequestBody,
@@ -455,9 +456,8 @@ export default function MaszynkaView({
     improvement.sourceModel === promptImprovementModel;
 
   const anyAssetUploading = ASSET_ROLE_META.some(({ role }) => assetUploads[role]?.uploading);
-  // Prompt improvement model = "— none —" means skip every OpenRouter LLM stage
-  // (safety / analysis / builder / reviewer) and send the raw prompt straight to FAL —
-  // so the OpenRouter key is only required when a model is selected.
+  // Prompt improvement model = "— none —" skips every OpenRouter LLM stage (content
+  // safety, asset analysis, prompt builder, reviewer). RUN presets merge locally → FAL.
   const skipOpenRouter = !promptImprovementModel.trim();
   const canRun =
     Boolean(apiKey) &&
@@ -480,7 +480,7 @@ export default function MaszynkaView({
     // single source of truth for the three run-tracking fields and for `effectivePrompt`
     // — what flows into content safety / asset analysis / the Contract from here on
     // (spec section 8/9). With OpenRouter bypass (`skipOpenRouter`), effectivePrompt is
-    // always the raw prompt and goes straight to the FAL mapper.
+    // merged with selected RUN presets (hook/style/camera/lighting) before FAL.
     const { promptImprovementUsed, promptImprovementAccepted, userPromptImproved, effectivePrompt } =
       resolveEffectivePrompt(prompt, improvement, promptImprovementModel);
 
@@ -589,10 +589,35 @@ export default function MaszynkaView({
       };
 
       // --- OpenRouter bypass: Prompt improvement model = "— none —" ---------------
-      // No Content safety / Asset analysis / Prompt builder / Prompt reviewer calls.
-      // Raw (effective) prompt goes straight to the FAL request mapper.
+      // No OpenRouter calls (content safety / asset analysis / builder / reviewer).
+      // Selected RUN presets are merged deterministically into the prompt before FAL
+      // (see lib/maszynka/directPrompt.ts).
       if (skipOpenRouter) {
-        await runFalFromPrompt(effectivePrompt, "");
+        const runPresets = resolveRunPresetSelections({
+          selectedHookId,
+          selectedStyleId,
+          selectedCameraSettingId,
+          selectedLightingId,
+          hooks,
+          styles,
+          cameraSettings,
+          lightings,
+        });
+        const directPrompt = buildDirectFalPrompt({
+          userPromptRaw: effectivePrompt,
+          ...runPresets,
+        });
+        const withDirectPrompt = await patchRun(run.id, {
+          promptBuilderOutput: {
+            finalPrompt: directPrompt.finalPrompt,
+            negativePrompt: directPrompt.negativePrompt,
+            promptSummary: directPrompt.promptSummary,
+            appliedRules: directPrompt.appliedLayers,
+            riskNotes: [],
+          },
+        });
+        setCurrentRun(withDirectPrompt);
+        await runFalFromPrompt(directPrompt.finalPrompt, directPrompt.negativePrompt);
         return;
       }
 
@@ -1110,8 +1135,8 @@ export default function MaszynkaView({
           </button>
         </div>
         <p className="mt-2 text-xs text-neutral-400">
-          Shared with the Chat tab (stored in your browser). Used by the Asset analysis, Prompt builder and Prompt
-          reviewer stages to call OpenRouter.
+          Shared with the Chat tab (stored in your browser). Used by Content safety, Asset analysis, Prompt builder
+          and Prompt reviewer when a prompt-improvement model is selected (not required for &quot;— none —&quot;).
         </p>
       </section>
 
@@ -1173,7 +1198,7 @@ export default function MaszynkaView({
         </select>
         <p className="mb-4 text-xs text-neutral-500">
           {skipOpenRouter
-            ? "None: skip all OpenRouter stages (content safety, asset analysis, prompt builder, prompt reviewer). Your raw prompt goes straight to FAL."
+            ? "None: skip all OpenRouter stages (content safety, asset analysis, prompt builder, prompt reviewer). Selected Hook / Style / Camera / Lighting presets from RUN are merged locally into the FAL prompt."
             : "A model enables Improve prompt and the full OpenRouter pipeline (safety → analysis → builder → reviewer) before FAL."}
         </p>
 
