@@ -34,9 +34,8 @@ export type RunStatus =
 //
 // Bypass path (Prompt improvement model = "— none —"): the operator opts out of every
 // OpenRouter LLM stage. `run_started` may go straight to the FAL request mapper with
-// the raw (or accepted-improvement) prompt — no synthetic safety/analysis/builder/
-// reviewer statuses are written. Extend this map, not around it, when later slices add
-// stages.
+// RUN presets merged locally — no synthetic safety/analysis/builder/reviewer statuses
+// are written. Extend this map, not around it, when later slices add stages.
 //
 // Issue #6 inserts Asset analysis after safety; issue #7 inserts Content safety first;
 // issue #10 inserts the FAL request mapper between reviewer pass and FAL generation;
@@ -48,7 +47,7 @@ export const ALLOWED_NEXT: Partial<Record<RunStatus, RunStatus[]>> = {
     "content_safety_allowed_with_constraints",
     "content_safety_revise_required",
     "content_safety_blocked",
-    // OpenRouter bypass ("— none —"): raw prompt → FAL mapper, no LLM stages.
+    // OpenRouter bypass ("— none —"): RUN presets merged locally → FAL mapper, no LLM stages.
     "fal_request_mapping_completed",
     "fal_request_mapping_failed",
   ],

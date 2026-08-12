@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "PROTOTYPE — throwaway playground for non-technical users to test Fal.ai prompts (nano-banana + GPT Image).",
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -17,6 +20,7 @@
     "check:maszynka-asset-analysis": "node lib/maszynka/assetAnalysis.check.ts",
     "check:maszynka-content-safety": "node lib/maszynka/contentSafety.check.ts",
     "check:maszynka-prompt-improvement": "node lib/maszynka/promptImprovement.check.ts",
+    "check:maszynka-direct-prompt": "node lib/maszynka/directPrompt.check.ts",
     "check:maszynka-fal-mapper": "node lib/maszynka/falMapper.check.ts",
     "check:maszynka-scoring": "node lib/maszynka/scoring.check.ts",
     "check:maszynka-run-trace": "node lib/maszynka/runTrace.check.ts",
