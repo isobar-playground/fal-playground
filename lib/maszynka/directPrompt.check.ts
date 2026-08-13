@@ -6,7 +6,14 @@ import {
   buildDirectFalPrompt,
   resolveRunPresetSelections,
 } from "./directPrompt.ts";
-import type { CameraSettingConfig, HookConfig, LightingConfig, StyleConfig } from "./configSchemas.ts";
+import type {
+  CameraSettingConfig,
+  GlobalRuleConfig,
+  HookConfig,
+  LightingConfig,
+  PriorityLogicConfig,
+  StyleConfig,
+} from "./configSchemas.ts";
 
 const HOOK: HookConfig = {
   id: "read_twice",
@@ -49,6 +56,27 @@ const LIGHTING: LightingConfig = {
   id: "golden-hour",
   name: "Golden Hour",
   instruction: "Warm golden-hour sunlight with long soft shadows and rich amber highlights.",
+};
+
+const GLOBAL_RULES: GlobalRuleConfig[] = [
+  {
+    id: "product_preservation",
+    name: "Product preservation",
+    description: "Protect the product, packaging, logo, label and variant.",
+  },
+  {
+    id: "typography_readability",
+    name: "Typography and readability",
+    description: "On-asset text must stay readable and not obscure the product.",
+  },
+];
+
+const PRIORITY_LOGIC: PriorityLogicConfig = {
+  layers: [
+    { id: "content_safety", label: "Content safety" },
+    { id: "product_brand_preservation", label: "Product & brand preservation" },
+    { id: "operator_prompt", label: "Operator prompt" },
+  ],
 };
 
 // --- resolveRunPresetSelections ------------------------------------------------
@@ -94,6 +122,25 @@ assert.equal(promptOnly.finalPrompt, "A red shoe on white background");
 assert.equal(promptOnly.negativePrompt, "");
 assert.deepEqual(promptOnly.appliedLayers, []);
 
+// --- buildDirectFalPrompt: always-on Global rules + Priority logic -------------
+const withGovernance = buildDirectFalPrompt({
+  userPromptRaw: "A red shoe on white background",
+  hook: null,
+  style: null,
+  cameraSetting: null,
+  lighting: null,
+  globalRules: GLOBAL_RULES,
+  priorityLogic: PRIORITY_LOGIC,
+});
+assert.ok(withGovernance.finalPrompt.includes("A red shoe on white background"));
+assert.ok(withGovernance.finalPrompt.includes("Global rules (always apply):"));
+assert.ok(withGovernance.finalPrompt.includes("Product preservation"));
+assert.ok(withGovernance.finalPrompt.includes(GLOBAL_RULES[0].description));
+assert.ok(withGovernance.finalPrompt.includes("Priority logic (highest priority first"));
+assert.ok(withGovernance.finalPrompt.includes("1. Content safety"));
+assert.ok(withGovernance.finalPrompt.includes("3. Operator prompt"));
+assert.deepEqual(withGovernance.appliedLayers, ["globalRules", "priorityLogic"]);
+
 // --- buildDirectFalPrompt: lighting preset merged ------------------------------
 const withLighting = buildDirectFalPrompt({
   userPromptRaw: "A red shoe on white background",
@@ -114,6 +161,8 @@ const full = buildDirectFalPrompt({
   style: STYLE,
   cameraSetting: CAMERA,
   lighting: LIGHTING,
+  globalRules: GLOBAL_RULES,
+  priorityLogic: PRIORITY_LOGIC,
 });
 assert.ok(full.finalPrompt.includes(HOOK.text));
 assert.ok(full.finalPrompt.includes("Cozy Lifestyle"));
@@ -121,9 +170,13 @@ assert.ok(full.finalPrompt.includes("Overhead Tabletop"));
 assert.ok(full.finalPrompt.includes("Golden Hour"));
 assert.ok(full.finalPrompt.includes(CAMERA.motionIntensity));
 assert.ok(full.finalPrompt.includes(CAMERA.stability));
+assert.ok(full.finalPrompt.includes("Global rules (always apply):"));
+assert.ok(full.finalPrompt.includes("Priority logic (highest priority first"));
 assert.ok(full.negativePrompt.includes("harsh flash"));
 assert.ok(full.negativePrompt.includes("tilted horizon"));
 assert.deepEqual(full.appliedLayers, [
+  "globalRules",
+  "priorityLogic",
   "hook:read_twice",
   "style:cozy_lifestyle",
   "camera:overhead_tabletop",
