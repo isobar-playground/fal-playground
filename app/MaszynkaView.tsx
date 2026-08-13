@@ -641,8 +641,8 @@ export default function MaszynkaView({
 
       // --- OpenRouter bypass: Prompt improvement model = "— none —" ---------------
       // No OpenRouter calls (content safety / asset analysis / builder / reviewer).
-      // Selected RUN presets are merged deterministically into the prompt before FAL
-      // (see lib/maszynka/directPrompt.ts).
+      // Always-on Global rules + Priority logic and selected RUN presets are merged
+      // deterministically into the prompt before FAL (see lib/maszynka/directPrompt.ts).
       if (skipOpenRouter) {
         const runPresets = resolveRunPresetSelections({
           selectedHookId,
@@ -657,6 +657,9 @@ export default function MaszynkaView({
         const directPrompt = buildDirectFalPrompt({
           userPromptRaw: effectivePrompt,
           ...runPresets,
+          globalRules: (configs.global_rules?.body as GlobalRuleConfig[] | undefined) ?? [],
+          priorityLogic:
+            (configs.priority_logic?.body as PriorityLogicConfig | undefined) ?? { layers: [] },
         });
         const tunedDirectFinalPrompt = appendTuningToPrompt(directPrompt.finalPrompt);
         await runFalFromPrompt(tunedDirectFinalPrompt, directPrompt.negativePrompt, {
@@ -1248,7 +1251,7 @@ export default function MaszynkaView({
         </select>
         <p className="mb-4 text-xs text-neutral-500">
           {skipOpenRouter
-            ? "None: skip all OpenRouter stages (content safety, asset analysis, prompt builder, prompt reviewer). Selected Hook / Style / Camera / Lighting presets from RUN are merged locally into the FAL prompt."
+            ? "None: skip all OpenRouter stages (content safety, asset analysis, prompt builder, prompt reviewer). Global rules, Priority logic, and selected Hook / Style / Camera / Lighting presets from RUN are merged locally into the FAL prompt."
             : "A model enables Improve prompt and the full OpenRouter pipeline (safety → analysis → builder → reviewer) before FAL."}
         </p>
 

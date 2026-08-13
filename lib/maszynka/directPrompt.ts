@@ -1,11 +1,14 @@
 // Deterministic prompt assembly for the OpenRouter bypass path (Prompt improvement
 // model = "— none —"). Merges the operator's raw prompt with selected Hook / Style /
-// Camera setting / Lighting presets from the RUN form — the same creative layers the
-// Prompt builder LLM would fold in on the full pipeline path, without any LLM call.
+// Camera setting / Lighting presets from the RUN form plus always-on Global rules and
+// Priority logic — the same creative + governance layers the Prompt builder LLM would
+// fold in on the full pipeline path, without any LLM call.
 import type {
   CameraSettingConfig,
+  GlobalRuleConfig,
   HookConfig,
   LightingConfig,
+  PriorityLogicConfig,
   StyleConfig,
 } from "./configSchemas.ts";
 
@@ -15,6 +18,10 @@ export interface DirectPromptInput {
   style: StyleConfig | null;
   cameraSetting: CameraSettingConfig | null;
   lighting: LightingConfig | null;
+  /** Always-on config (not a RUN dropdown). Empty/omitted = no global-rules section. */
+  globalRules?: GlobalRuleConfig[] | null;
+  /** Always-on config (not a RUN dropdown). Null/empty layers = no priority-logic section. */
+  priorityLogic?: PriorityLogicConfig | null;
 }
 
 export interface DirectPromptOutput {
@@ -78,10 +85,40 @@ export function resolveRunPresetSelections(input: ResolveRunPresetSelectionsInpu
   };
 }
 
-/** Builds finalPrompt + negativePrompt from the operator prompt and selected RUN presets. */
+/** Builds finalPrompt + negativePrompt from the operator prompt, always-on Global
+ *  rules / Priority logic, and selected RUN presets. */
 export function buildDirectFalPrompt(input: DirectPromptInput): DirectPromptOutput {
   const appliedLayers: string[] = [];
   const sections: string[] = [input.userPromptRaw.trim()];
+
+  // Global rules + Priority logic are wholesale always-on layers (not RUN dropdowns).
+  // They sit above optional creative presets so the final FAL prompt still carries the
+  // same governance constraints the Prompt builder would honor on the full pipeline.
+  const globalRules = (input.globalRules ?? []).filter(
+    (rule) => rule.name?.trim() || rule.description?.trim(),
+  );
+  if (globalRules.length) {
+    appliedLayers.push("globalRules");
+    appendSection(
+      sections,
+      "Global rules (always apply):",
+      globalRules.map((rule) => {
+        const name = rule.name.trim() || rule.id;
+        const description = rule.description.trim();
+        return description ? `- ${name}: ${description}` : `- ${name}`;
+      }),
+    );
+  }
+
+  const priorityLayers = (input.priorityLogic?.layers ?? []).filter((layer) => layer.label?.trim());
+  if (priorityLayers.length) {
+    appliedLayers.push("priorityLogic");
+    appendSection(
+      sections,
+      "Priority logic (highest priority first — on conflict, higher wins):",
+      priorityLayers.map((layer, index) => `${index + 1}. ${layer.label.trim()}`),
+    );
+  }
 
   if (input.hook) {
     appliedLayers.push(`hook:${input.hook.id}`);
@@ -133,8 +170,8 @@ export function buildDirectFalPrompt(input: DirectPromptInput): DirectPromptOutp
   const negativePrompt = negativeItems.join("; ");
 
   const layerNote = appliedLayers.length
-    ? `Merged operator prompt with RUN presets: ${appliedLayers.join(", ")}.`
-    : "No RUN presets selected — using operator prompt only.";
+    ? `Merged operator prompt with always-on configs / RUN presets: ${appliedLayers.join(", ")}.`
+    : "No Global rules, Priority logic, or RUN presets — using operator prompt only.";
 
   return {
     finalPrompt: sections.join("\n").trim(),
