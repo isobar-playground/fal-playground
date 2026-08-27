@@ -60,6 +60,8 @@ import type { Conversation } from "@/lib/chat/store";
 import MaszynkaView from "./MaszynkaView";
 // --- maszynka video (separate code path; see lib/maszynka-video/* + MaszynkaVideoView) ---
 import MaszynkaVideoView from "./MaszynkaVideoView";
+// --- grid split (standalone PoC, separate code path; see lib/gridSplit/* + GridSplitView) ---
+import GridSplitView from "./GridSplitView";
 
 // Sub-dollar amounts keep up to 4 decimals (so $0.0398 isn't rounded to $0.04),
 // trailing zeros trimmed but at least 2 shown; $1+ uses plain 2-decimal currency.
@@ -178,6 +180,7 @@ export default function Page() {
   const isChat = mode === "chat";
   const isMaszynka = mode === "maszynka";
   const isMaszynkaVideo = mode === "maszynka-video";
+  const isGridSplit = mode === "grid-split";
 
   // Chat state lives in localStorage here (centralized) so it's covered by
   // "Reset all" and session export/import. The chat UI itself is isolated in
@@ -302,6 +305,7 @@ export default function Page() {
     chat: "",
     maszynka: "",
     "maszynka-video": "",
+    "grid-split": "",
   });
   const prompt = promptByMode[mode];
   const setPrompt = useCallback(
@@ -321,6 +325,7 @@ export default function Page() {
     chat: null,
     maszynka: null,
     "maszynka-video": null,
+    "grid-split": null,
   });
   const stashedPrompt = stashedPromptByMode[mode];
   const setStashedPrompt = useCallback(
@@ -1240,11 +1245,13 @@ export default function Page() {
                 ? "Maszynka — Content Factory test bench. Runs are recorded server-side and shared across operators."
                 : isMaszynkaVideo
                   ? "Maszynka Video — video pipeline test bench. Video runs are recorded server-side and shared across operators."
-                  : `Test prompts on Fal.ai ${isVideo ? "video" : "image"} models — no code. Everything stays in your browser.`}
+                  : isGridSplit
+                    ? "Grid Split — standalone PoC: upload a grid image, get individual crops. Independent from Maszynka Video's own crop pipeline."
+                    : `Test prompts on Fal.ai ${isVideo ? "video" : "image"} models — no code. Everything stays in your browser.`}
           </p>
           {/* Top-level mode toggle — Images | Video | Chat | Maszynka. Persisted across reloads. */}
           <div className="mt-3 inline-flex overflow-hidden rounded-lg border border-neutral-300">
-            {(["image", "video", "chat", "maszynka", "maszynka-video"] as const).map((md) => (
+            {(["image", "video", "chat", "maszynka", "maszynka-video", "grid-split"] as const).map((md) => (
               <button
                 key={md}
                 type="button"
@@ -1261,7 +1268,9 @@ export default function Page() {
                       ? "💬 Chat"
                       : md === "maszynka"
                         ? "🧪 Maszynka"
-                        : "🎞 Maszynka Video"}
+                        : md === "maszynka-video"
+                          ? "🎞 Maszynka Video"
+                          : "🧩 Grid Split"}
               </button>
             ))}
           </div>
@@ -1326,8 +1335,11 @@ export default function Page() {
       {/* MASZYNKA VIDEO MODE — isolated panel (lib/maszynka-video/* + MaszynkaVideoView). */}
       {isMaszynkaVideo && <MaszynkaVideoView apiKey={apiKey} setApiKey={setApiKey} orKey={orKey} setOrKey={setOrKey} />}
 
+      {/* GRID SPLIT MODE — standalone PoC, isolated panel (lib/gridSplit/* + GridSplitView). */}
+      {isGridSplit && <GridSplitView />}
+
       {/* IMAGE / VIDEO WIZARD — unchanged; hidden in chat/maszynka mode. */}
-      {!isChat && !isMaszynka && !isMaszynkaVideo && (
+      {!isChat && !isMaszynka && !isMaszynkaVideo && !isGridSplit && (
       <>
       {/* STEP 1 — API KEY */}
       <Section step={1} title="Fal.ai key" done={Boolean(apiKey)}>
