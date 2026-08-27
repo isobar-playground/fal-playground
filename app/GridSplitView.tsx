@@ -3,8 +3,9 @@
 // Grid Split — standalone PoC tool, independent from the Maszynka Video
 // pipeline's own grid/crop machinery (lib/maszynka-video/crop.ts). Upload any
 // image containing an unknown-size grid of sub-images (2x2, 3x3, 4x4, ...)
-// and it's split into individual crops entirely in the browser (Canvas pixel
-// math, see lib/gridSplit/gridSplit.ts) — no server round-trip, no upload.
+// and it's split into individual crops entirely in the browser via OpenCV.js
+// (see lib/gridSplit/gridSplit.ts) — no server round-trip, no upload. The
+// ~13MB OpenCV WASM runtime is fetched lazily on first use, not bundled.
 
 import { useCallback, useRef, useState } from "react";
 import { detectGrid, type GridCell, type GridResult } from "@/lib/gridSplit/gridSplit";
@@ -74,8 +75,8 @@ export default function GridSplitView() {
       if (!ctx) throw new Error("Canvas 2D context unavailable");
       ctx.drawImage(img, 0, 0);
 
-      const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const detected = detectGrid(data, canvas.width, canvas.height);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const detected = await detectGrid(imageData);
       setResult(detected);
 
       const nonEmpty = detected.cells.filter((c) => !c.isEmpty);
@@ -171,7 +172,7 @@ export default function GridSplitView() {
         >
           <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={onFileInputChange} />
           <p className="text-sm text-neutral-600">
-            {busy ? "Processing…" : "Click or drop a grid image here"}
+            {busy ? "Processing… (first run also loads the OpenCV engine, ~13MB)" : "Click or drop a grid image here"}
           </p>
         </div>
 

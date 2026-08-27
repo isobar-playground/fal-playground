@@ -56,12 +56,15 @@ import { runVideoModel } from "@/lib/video/fal";
 import ChatView from "./ChatView";
 import { useImageLightbox } from "./ImageLightbox";
 import type { Conversation } from "@/lib/chat/store";
+import dynamic from "next/dynamic";
 // --- maszynka (separate code path; see lib/maszynka/* + MaszynkaView) ---
 import MaszynkaView from "./MaszynkaView";
 // --- maszynka video (separate code path; see lib/maszynka-video/* + MaszynkaVideoView) ---
 import MaszynkaVideoView from "./MaszynkaVideoView";
 // --- grid split (standalone PoC, separate code path; see lib/gridSplit/* + GridSplitView) ---
-import GridSplitView from "./GridSplitView";
+// Dynamically imported (client-only, no SSR) so the OpenCV.js WASM runtime it
+// pulls in (~13MB) is only fetched by browsers that actually open this tab.
+const GridSplitView = dynamic(() => import("./GridSplitView"), { ssr: false });
 
 // Sub-dollar amounts keep up to 4 decimals (so $0.0398 isn't rounded to $0.04),
 // trailing zeros trimmed but at least 2 shown; $1+ uses plain 2-decimal currency.

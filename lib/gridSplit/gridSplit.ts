@@ -1,27 +1,36 @@
 // Grid-split PoC (standalone tool, independent from lib/maszynka-video/crop.ts —
 // see AppMode "grid-split" in lib/types.ts). Detects and splits a single image
 // containing an unknown-size grid of sub-images (2x2, 3x3, 4x4, ...) into
-// individual crops, entirely client-side (plain Canvas pixel math, no CV lib).
+// individual crops, using OpenCV.js (WASM build of OpenCV, loaded lazily —
+// see ./opencv.ts) running entirely client-side.
 //
 // Ported from a Python/OpenCV PoC validated against synthetic grids and real
 // AI-generated grid images. Two detection paths:
 //
-// 1. Gutter detection (primary): per-row/column pixel std-dev finds uniform
-//    background bands between cells. Contiguous non-gutter runs on each axis
-//    are the cell bands directly -- no grid-size guess needed. A band
-//    size-consistency gate rejects a false-positive gutter (a coincidental
-//    low-variance streak inside real content) and reroutes to the fallback.
-// 2. Autocorrelation fallback (borderless grids): direct autocorrelation of
-//    each axis's gradient-energy profile surfaces the repeating tile pitch
-//    even with no visible seam. Candidate periods are filtered to those whose
-//    lag divides the axis length into a near-integer tile count.
+// 1. Gutter detection (primary): per-row/column std-dev (cv.meanStdDev) finds
+//    uniform background bands between cells. Contiguous non-gutter runs on
+//    each axis are the cell bands directly -- no grid-size guess needed. A
+//    band size-consistency gate rejects a false-positive gutter (a
+//    coincidental low-variance streak inside real content) and reroutes to
+//    the fallback.
+// 2. Autocorrelation fallback (borderless grids): a Sobel gradient-energy
+//    profile per axis (cv.Sobel + cv.reduce) is autocorrelated to surface the
+//    repeating tile pitch even with no visible seam. The autocorrelation
+//    itself is plain array math -- OpenCV has no "1-D signal autocorrelation"
+//    primitive, so this part stays off-Mat. Candidate periods are filtered to
+//    those whose lag divides the axis length into a near-integer tile count.
 //
 // Every cell then gets a local edge-trim pass (a whole-image gutter boundary
 // is shared across a whole row/column, so one cell's content ending a few
 // pixels early leaves a residual near-white strip that only a per-cell,
 // local check catches) plus a small fixed safety inset (anti-aliasing at a
 // hard-cut boundary blends ~1px of background into the content side
-// regardless of local variance).
+// regardless of local variance). Per-cell sharpness uses OpenCV's classic
+// Laplacian-variance blur metric (cv.Laplacian + cv.meanStdDev).
+
+import { loadOpenCv, type OpenCv } from "./opencv";
+
+type Mat = ReturnType<OpenCv["matFromImageData"]>;
 
 export type Band = { start: number; end: number };
 
@@ -61,16 +70,11 @@ const FALLBACK_PERIOD_TOLERANCE = 0.15;
 const FALLBACK_MAX_TILES_PER_AXIS = 8;
 const FALLBACK_MAX_PERIOD_FRACTION = 0.6;
 
-// -- pixel helpers ------------------------------------------------------------
+// cv::ReduceTypes::REDUCE_SUM -- present at runtime as cv.REDUCE_SUM but
+// missing from this build's .d.ts, so it can't be referenced by that name.
+const CV_REDUCE_SUM = 0;
 
-/** Grayscale (ITU-R BT.601 luma), one value per pixel, row-major. */
-export function toGray(rgba: Uint8ClampedArray, width: number, height: number): Float64Array {
-  const gray = new Float64Array(width * height);
-  for (let i = 0, p = 0; i < gray.length; i++, p += 4) {
-    gray[i] = 0.299 * rgba[p] + 0.587 * rgba[p + 1] + 0.114 * rgba[p + 2];
-  }
-  return gray;
-}
+// -- plain-array helpers (band bookkeeping + autocorrelation only) ----------
 
 function mean(values: ArrayLike<number>): number {
   let sum = 0;
@@ -86,28 +90,6 @@ function std(values: ArrayLike<number>): number {
     sq += d * d;
   }
   return Math.sqrt(sq / values.length);
-}
-
-function rowSlice(gray: Float64Array, width: number, y: number): Float64Array {
-  return gray.subarray(y * width, (y + 1) * width);
-}
-
-function colSlice(gray: Float64Array, width: number, height: number, x: number): Float64Array {
-  const out = new Float64Array(height);
-  for (let y = 0; y < height; y++) out[y] = gray[y * width + x];
-  return out;
-}
-
-function rowStdProfile(gray: Float64Array, width: number, height: number): Float64Array {
-  const out = new Float64Array(height);
-  for (let y = 0; y < height; y++) out[y] = std(rowSlice(gray, width, y));
-  return out;
-}
-
-function colStdProfile(gray: Float64Array, width: number, height: number): Float64Array {
-  const out = new Float64Array(width);
-  for (let x = 0; x < width; x++) out[x] = std(colSlice(gray, width, height, x));
-  return out;
 }
 
 function contentBands(isGutter: boolean[]): Band[] {
@@ -135,11 +117,43 @@ function relativeSizeSpread(bands: Band[]): number {
   return m > 0 ? std(sizes) / m : 0;
 }
 
+// -- OpenCV Mat helpers -------------------------------------------------------
+
+function meanStd(cv: OpenCv, mat: Mat): { mean: number; std: number } {
+  const meanMat = new cv.Mat();
+  const stdMat = new cv.Mat();
+  cv.meanStdDev(mat, meanMat, stdMat);
+  const result = { mean: meanMat.data64F[0], std: stdMat.data64F[0] };
+  meanMat.delete();
+  stdMat.delete();
+  return result;
+}
+
+function rowStdProfile(cv: OpenCv, gray: Mat): Float64Array {
+  const out = new Float64Array(gray.rows);
+  for (let y = 0; y < gray.rows; y++) {
+    const row = gray.row(y);
+    out[y] = meanStd(cv, row).std;
+    row.delete();
+  }
+  return out;
+}
+
+function colStdProfile(cv: OpenCv, gray: Mat): Float64Array {
+  const out = new Float64Array(gray.cols);
+  for (let x = 0; x < gray.cols; x++) {
+    const col = gray.col(x);
+    out[x] = meanStd(cv, col).std;
+    col.delete();
+  }
+  return out;
+}
+
 // -- gutter-detection path ----------------------------------------------------
 
-function detectGutterBands(gray: Float64Array, width: number, height: number): { rows: Band[]; cols: Band[] } {
-  const rowStd = rowStdProfile(gray, width, height);
-  const colStd = colStdProfile(gray, width, height);
+function detectGutterBands(cv: OpenCv, gray: Mat): { rows: Band[]; cols: Band[] } {
+  const rowStd = rowStdProfile(cv, gray);
+  const colStd = colStdProfile(cv, gray);
   const rowIsGutter = Array.from(rowStd, (v) => v < GUTTER_STD_THRESHOLD);
   const colIsGutter = Array.from(colStd, (v) => v < GUTTER_STD_THRESHOLD);
   return { rows: contentBands(rowIsGutter), cols: contentBands(colIsGutter) };
@@ -147,32 +161,28 @@ function detectGutterBands(gray: Float64Array, width: number, height: number): {
 
 // -- autocorrelation fallback (borderless grids) ------------------------------
 
-function axisGradientProfile(gray: Float64Array, width: number, height: number, axis: "row" | "col"): Float64Array {
-  // Simple central-difference gradient magnitude, summed across the other axis.
-  if (axis === "row") {
-    const out = new Float64Array(height);
-    for (let y = 0; y < height; y++) {
-      let sum = 0;
-      const y0 = Math.max(y - 1, 0);
-      const y1 = Math.min(y + 1, height - 1);
-      for (let x = 0; x < width; x++) {
-        sum += Math.abs(gray[y1 * width + x] - gray[y0 * width + x]);
-      }
-      out[y] = sum;
+/** Gradient-energy profile along one axis: a Sobel first-derivative across
+ *  that axis, absolute value, summed across the other axis (cv.reduce). */
+function axisGradientProfile(cv: OpenCv, gray: Mat, axis: "row" | "col"): Float64Array {
+  const grad = new cv.Mat();
+  const absGrad = new cv.Mat();
+  const reduced = new cv.Mat();
+  try {
+    if (axis === "row") {
+      cv.Sobel(gray, grad, cv.CV_32F, 0, 1, 1);
+      cv.convertScaleAbs(grad, absGrad);
+      cv.reduce(absGrad, reduced, 1, CV_REDUCE_SUM, cv.CV_32F);
+      return new Float64Array(reduced.data32F);
     }
-    return out;
+    cv.Sobel(gray, grad, cv.CV_32F, 1, 0, 1);
+    cv.convertScaleAbs(grad, absGrad);
+    cv.reduce(absGrad, reduced, 0, CV_REDUCE_SUM, cv.CV_32F);
+    return new Float64Array(reduced.data32F);
+  } finally {
+    grad.delete();
+    absGrad.delete();
+    reduced.delete();
   }
-  const out = new Float64Array(width);
-  for (let x = 0; x < width; x++) {
-    let sum = 0;
-    const x0 = Math.max(x - 1, 0);
-    const x1 = Math.min(x + 1, width - 1);
-    for (let y = 0; y < height; y++) {
-      sum += Math.abs(gray[y * width + x1] - gray[y * width + x0]);
-    }
-    out[x] = sum;
-  }
-  return out;
 }
 
 /** Direct (not FFT) autocorrelation -- axis profiles here are at most a few
@@ -218,23 +228,19 @@ function bestPeriodicTileCount(axisLen: number, profile: Float64Array): { tiles:
   return best ?? { tiles: 1, score: 0 };
 }
 
-function equalSplitFallback(
-  gray: Float64Array,
-  width: number,
-  height: number,
-): { rows: Band[]; cols: Band[]; confidence: number } {
-  const rowProfile = axisGradientProfile(gray, width, height, "row");
-  const colProfile = axisGradientProfile(gray, width, height, "col");
-  const { tiles: rowTiles } = bestPeriodicTileCount(height, rowProfile);
-  const { tiles: colTiles } = bestPeriodicTileCount(width, colProfile);
+function equalSplitFallback(cv: OpenCv, gray: Mat): { rows: Band[]; cols: Band[]; confidence: number } {
+  const rowProfile = axisGradientProfile(cv, gray, "row");
+  const colProfile = axisGradientProfile(cv, gray, "col");
+  const { tiles: rowTiles } = bestPeriodicTileCount(gray.rows, rowProfile);
+  const { tiles: colTiles } = bestPeriodicTileCount(gray.cols, colProfile);
 
   const rows: Band[] = Array.from({ length: rowTiles }, (_, i) => ({
-    start: Math.round((i * height) / rowTiles),
-    end: Math.round(((i + 1) * height) / rowTiles),
+    start: Math.round((i * gray.rows) / rowTiles),
+    end: Math.round(((i + 1) * gray.rows) / rowTiles),
   }));
   const cols: Band[] = Array.from({ length: colTiles }, (_, i) => ({
-    start: Math.round((i * width) / colTiles),
-    end: Math.round(((i + 1) * width) / colTiles),
+    start: Math.round((i * gray.cols) / colTiles),
+    end: Math.round(((i + 1) * gray.cols) / colTiles),
   }));
 
   const foundBothAxes = rowTiles > 1 && colTiles > 1;
@@ -243,13 +249,14 @@ function equalSplitFallback(
 
 // -- per-cell edge trim + safety inset -----------------------------------------
 
-function isBackgroundLine(line: Float64Array): boolean {
-  return std(line) < CELL_EDGE_TRIM_STD_THRESHOLD && mean(line) > CELL_EDGE_TRIM_BRIGHTNESS_THRESHOLD;
+function isBackgroundLine(cv: OpenCv, line: Mat): boolean {
+  const { mean: m, std: s } = meanStd(cv, line);
+  return s < CELL_EDGE_TRIM_STD_THRESHOLD && m > CELL_EDGE_TRIM_BRIGHTNESS_THRESHOLD;
 }
 
 function trimCellEdges(
-  gray: Float64Array,
-  fullWidth: number,
+  cv: OpenCv,
+  gray: Mat,
   x: number,
   y: number,
   w: number,
@@ -258,60 +265,51 @@ function trimCellEdges(
   const maxRowTrim = Math.floor(h * CELL_EDGE_TRIM_MAX_FRACTION);
   const maxColTrim = Math.floor(w * CELL_EDGE_TRIM_MAX_FRACTION);
 
-  const rowAt = (ry: number) => gray.subarray((y + ry) * fullWidth + x, (y + ry) * fullWidth + x + w);
-  const colAt = (cx: number) => {
-    const out = new Float64Array(h);
-    for (let ry = 0; ry < h; ry++) out[ry] = gray[(y + ry) * fullWidth + x + cx];
-    return out;
+  const isBgRow = (ry: number) => {
+    const line = gray.roi(new cv.Rect(x, y + ry, w, 1));
+    const bg = isBackgroundLine(cv, line);
+    line.delete();
+    return bg;
+  };
+  const isBgCol = (cx: number) => {
+    const line = gray.roi(new cv.Rect(x + cx, y, 1, h));
+    const bg = isBackgroundLine(cv, line);
+    line.delete();
+    return bg;
   };
 
   let top = 0;
-  while (top < maxRowTrim && isBackgroundLine(rowAt(top))) top++;
+  while (top < maxRowTrim && isBgRow(top)) top++;
   let bottom = 0;
-  while (bottom < maxRowTrim && isBackgroundLine(rowAt(h - 1 - bottom))) bottom++;
+  while (bottom < maxRowTrim && isBgRow(h - 1 - bottom)) bottom++;
   let left = 0;
-  while (left < maxColTrim && isBackgroundLine(colAt(left))) left++;
+  while (left < maxColTrim && isBgCol(left)) left++;
   let right = 0;
-  while (right < maxColTrim && isBackgroundLine(colAt(w - 1 - right))) right++;
+  while (right < maxColTrim && isBgCol(w - 1 - right)) right++;
 
   return { top, bottom, left, right };
 }
 
 // -- cell stats + assembly ------------------------------------------------------
 
-function cellStats(gray: Float64Array, fullWidth: number, x: number, y: number, w: number, h: number) {
-  const values = new Float64Array(w * h);
-  for (let ry = 0; ry < h; ry++) {
-    for (let rx = 0; rx < w; rx++) {
-      values[ry * w + rx] = gray[(y + ry) * fullWidth + (x + rx)];
-    }
-  }
-  const stdDev = std(values);
+function cellStats(cv: OpenCv, gray: Mat, x: number, y: number, w: number, h: number) {
+  const roi = gray.roi(new cv.Rect(x, y, w, h));
+  const { std: stdDev } = meanStd(cv, roi);
 
-  // Laplacian variance ("sharpness") over the same crop.
-  let sharpSum = 0;
-  let sharpSumSq = 0;
-  let count = 0;
-  for (let ry = 1; ry < h - 1; ry++) {
-    for (let rx = 1; rx < w - 1; rx++) {
-      const c = gray[(y + ry) * fullWidth + (x + rx)];
-      const up = gray[(y + ry - 1) * fullWidth + (x + rx)];
-      const down = gray[(y + ry + 1) * fullWidth + (x + rx)];
-      const left = gray[(y + ry) * fullWidth + (x + rx - 1)];
-      const right = gray[(y + ry) * fullWidth + (x + rx + 1)];
-      const lap = up + down + left + right - 4 * c;
-      sharpSum += lap;
-      sharpSumSq += lap * lap;
-      count++;
-    }
+  let sharpness = 0;
+  if (w >= 3 && h >= 3) {
+    const lap = new cv.Mat();
+    cv.Laplacian(roi, lap, cv.CV_32F);
+    const { std: lapStd } = meanStd(cv, lap);
+    sharpness = lapStd * lapStd;
+    lap.delete();
   }
-  const sharpMean = count > 0 ? sharpSum / count : 0;
-  const sharpness = count > 0 ? sharpSumSq / count - sharpMean * sharpMean : 0;
+  roi.delete();
 
   return { stdDev, sharpness };
 }
 
-function buildCells(gray: Float64Array, width: number, rowBands: Band[], colBands: Band[]): GridCell[] {
+function buildCells(cv: OpenCv, gray: Mat, rowBands: Band[], colBands: Band[]): GridCell[] {
   const cells: GridCell[] = [];
   for (let r = 0; r < rowBands.length; r++) {
     for (let c = 0; c < colBands.length; c++) {
@@ -320,7 +318,7 @@ function buildCells(gray: Float64Array, width: number, rowBands: Band[], colBand
       let w = colBands[c].end - x;
       let h = rowBands[r].end - y;
 
-      const trim = trimCellEdges(gray, width, x, y, w, h);
+      const trim = trimCellEdges(cv, gray, x, y, w, h);
       const top = trim.top + SAFETY_INSET_PX;
       const bottom = trim.bottom + SAFETY_INSET_PX;
       const left = trim.left + SAFETY_INSET_PX;
@@ -330,7 +328,7 @@ function buildCells(gray: Float64Array, width: number, rowBands: Band[], colBand
       w = Math.max(w - left - right, 1);
       h = Math.max(h - top - bottom, 1);
 
-      const { stdDev, sharpness } = cellStats(gray, width, x, y, w, h);
+      const { stdDev, sharpness } = cellStats(cv, gray, x, y, w, h);
       cells.push({ row: r, col: c, x, y, width: w, height: h, stdDev, sharpness, isEmpty: stdDev < EMPTY_CELL_STD_THRESHOLD });
     }
   }
@@ -339,38 +337,47 @@ function buildCells(gray: Float64Array, width: number, rowBands: Band[], colBand
 
 // -- top-level entry ------------------------------------------------------------
 
-export function detectGrid(rgba: Uint8ClampedArray, width: number, height: number): GridResult {
-  const gray = toGray(rgba, width, height);
-  const { rows: rowBands, cols: colBands } = detectGutterBands(gray, width, height);
+export async function detectGrid(imageData: ImageData): Promise<GridResult> {
+  const cv = await loadOpenCv();
+  const src = cv.matFromImageData(imageData);
+  const gray = new cv.Mat();
+  cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+  src.delete();
 
-  const plausibleBandCount = rowBands.length * colBands.length > 1 && (rowBands.length > 1 || colBands.length > 1);
-  const consistentSizes =
-    relativeSizeSpread(rowBands) < BAND_SIZE_SPREAD_THRESHOLD && relativeSizeSpread(colBands) < BAND_SIZE_SPREAD_THRESHOLD;
+  try {
+    const { rows: rowBands, cols: colBands } = detectGutterBands(cv, gray);
 
-  if (plausibleBandCount && consistentSizes) {
-    const cells = buildCells(gray, width, rowBands, colBands);
-    const sizes = cells.map((c) => [c.width, c.height]);
-    const meanW = mean(sizes.map((s) => s[0]));
-    const meanH = mean(sizes.map((s) => s[1]));
-    const stdW = std(sizes.map((s) => s[0]));
-    const stdH = std(sizes.map((s) => s[1]));
-    const sizeConsistency = 1 - Math.min(((stdW + stdH) / 2) / Math.max((meanW + meanH) / 2, 1), 1);
+    const plausibleBandCount = rowBands.length * colBands.length > 1 && (rowBands.length > 1 || colBands.length > 1);
+    const consistentSizes =
+      relativeSizeSpread(rowBands) < BAND_SIZE_SPREAD_THRESHOLD && relativeSizeSpread(colBands) < BAND_SIZE_SPREAD_THRESHOLD;
+
+    if (plausibleBandCount && consistentSizes) {
+      const cells = buildCells(cv, gray, rowBands, colBands);
+      const sizes = cells.map((c) => [c.width, c.height]);
+      const meanW = mean(sizes.map((s) => s[0]));
+      const meanH = mean(sizes.map((s) => s[1]));
+      const stdW = std(sizes.map((s) => s[0]));
+      const stdH = std(sizes.map((s) => s[1]));
+      const sizeConsistency = 1 - Math.min(((stdW + stdH) / 2) / Math.max((meanW + meanH) / 2, 1), 1);
+      return {
+        method: "gutter-detection",
+        rows: rowBands.length,
+        cols: colBands.length,
+        confidence: Math.round((0.5 + 0.5 * sizeConsistency) * 100) / 100,
+        cells,
+      };
+    }
+
+    const fallback = equalSplitFallback(cv, gray);
+    const cells = buildCells(cv, gray, fallback.rows, fallback.cols);
     return {
-      method: "gutter-detection",
-      rows: rowBands.length,
-      cols: colBands.length,
-      confidence: Math.round((0.5 + 0.5 * sizeConsistency) * 100) / 100,
+      method: "equal-split-fallback",
+      rows: fallback.rows.length,
+      cols: fallback.cols.length,
+      confidence: fallback.confidence,
       cells,
     };
+  } finally {
+    gray.delete();
   }
-
-  const fallback = equalSplitFallback(gray, width, height);
-  const cells = buildCells(gray, width, fallback.rows, fallback.cols);
-  return {
-    method: "equal-split-fallback",
-    rows: fallback.rows.length,
-    cols: fallback.cols.length,
-    confidence: fallback.confidence,
-    cells,
-  };
 }
