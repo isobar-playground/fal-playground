@@ -7,7 +7,7 @@
 // (see lib/gridSplit/gridSplit.ts) — no server round-trip, no upload. The
 // ~13MB OpenCV WASM runtime is fetched lazily on first use, not bundled.
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { detectGrid, type GridCell, type GridResult } from "@/lib/gridSplit/gridSplit";
 import { createZip } from "@/lib/gridSplit/zip";
 import { useImageLightbox } from "./ImageLightbox";
@@ -49,23 +49,33 @@ export default function GridSplitView() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Latest object-URL values, kept outside React state so they can be
+  // revoked as a side effect (in processFile, and on unmount below)
+  // without reaching into a state updater -- updaters must stay pure.
+  const sourceUrlRef = useRef<string | null>(null);
+  const previewsRef = useRef<CellPreview[]>([]);
+
+  useEffect(() => {
+    return () => {
+      if (sourceUrlRef.current) URL.revokeObjectURL(sourceUrlRef.current);
+      previewsRef.current.forEach((p) => URL.revokeObjectURL(p.url));
+    };
+  }, []);
 
   const processFile = useCallback(async (file: File) => {
     setBusy(true);
     setError(null);
     setResult(null);
-    setPreviews((prev) => {
-      prev.forEach((p) => URL.revokeObjectURL(p.url));
-      return [];
-    });
+    previewsRef.current.forEach((p) => URL.revokeObjectURL(p.url));
+    previewsRef.current = [];
+    setPreviews([]);
 
     try {
       const url = URL.createObjectURL(file);
-      setSourceUrl((old) => {
-        if (old) URL.revokeObjectURL(old);
-        return url;
-      });
+      if (sourceUrlRef.current) URL.revokeObjectURL(sourceUrlRef.current);
+      sourceUrlRef.current = url;
+      setSourceUrl(url);
 
       const img = await loadImage(url);
       const canvas = document.createElement("canvas");
@@ -94,6 +104,7 @@ export default function GridSplitView() {
           return { ...cell, url: URL.createObjectURL(blob), blob };
         }),
       );
+      previewsRef.current = built;
       setPreviews(built);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to process the image");
@@ -103,7 +114,7 @@ export default function GridSplitView() {
   }, []);
 
   const onDrop = useCallback(
-    (e: React.DragEvent<HTMLDivElement>) => {
+    (e: React.DragEvent<HTMLLabelElement>) => {
       e.preventDefault();
       setDragOver(false);
       const file = e.dataTransfer.files?.[0];
@@ -158,23 +169,22 @@ export default function GridSplitView() {
           automatically.
         </p>
 
-        <div
+        <label
           onDragOver={(e) => {
             e.preventDefault();
             setDragOver(true);
           }}
           onDragLeave={() => setDragOver(false)}
           onDrop={onDrop}
-          onClick={() => fileInputRef.current?.click()}
           className={`mt-4 flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 text-center transition ${
             dragOver ? "border-amber-400 bg-amber-50" : "border-neutral-300 hover:bg-neutral-50"
           }`}
         >
-          <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={onFileInputChange} />
+          <input type="file" accept="image/*" className="sr-only" onChange={onFileInputChange} />
           <p className="text-sm text-neutral-600">
             {busy ? "Processing… (first run also loads the OpenCV engine, ~13MB)" : "Click or drop a grid image here"}
           </p>
-        </div>
+        </label>
 
         {error && (
           <p className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>

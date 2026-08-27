@@ -47,7 +47,7 @@ export function createZip(entries: ZipEntry[]): Blob {
     const localHeader = new DataView(new ArrayBuffer(30));
     localHeader.setUint32(0, 0x04034b50, true); // local file header signature
     localHeader.setUint16(4, 20, true); // version needed
-    localHeader.setUint16(6, 0, true); // flags
+    localHeader.setUint16(6, 0x0800, true); // flags: bit 11 (EFS) -- name is UTF-8
     localHeader.setUint16(8, 0, true); // compression = store
     localHeader.setUint16(10, time, true);
     localHeader.setUint16(12, dateVal, true);
@@ -63,7 +63,7 @@ export function createZip(entries: ZipEntry[]): Blob {
     centralHeader.setUint32(0, 0x02014b50, true); // central directory signature
     centralHeader.setUint16(4, 20, true); // version made by
     centralHeader.setUint16(6, 20, true); // version needed
-    centralHeader.setUint16(8, 0, true); // flags
+    centralHeader.setUint16(8, 0x0800, true); // flags: bit 11 (EFS) -- name is UTF-8
     centralHeader.setUint16(10, 0, true); // compression = store
     centralHeader.setUint16(12, time, true);
     centralHeader.setUint16(14, dateVal, true);
