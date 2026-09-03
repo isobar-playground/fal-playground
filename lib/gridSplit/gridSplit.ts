@@ -395,20 +395,30 @@ function bandBoundaries(bands: Band[]): number[] {
 
 const BOUNDARY_ALIGN_TOLERANCE_PX = 20;
 
-/** True if `candidate` has at least one internal boundary that ISN'T close
- *  to any boundary in `reference`. A row whose own read just finds a subset
- *  of the SAME boundaries as the global grid (e.g. missed 2 of 3 real
- *  internal gutters because two adjacent photos happen to share a similar
+/** True if EVERY internal boundary of `candidate` is far from every
+ *  boundary in `reference` -- i.e. candidate looks like a genuinely
+ *  different column layout, not the global one plus/minus one boundary.
+ *
+ *  A row whose own read is just a subset of the global boundaries (missed
+ *  a real internal gutter because two adjacent photos share a similar
  *  color there) is not "different" -- it's an incomplete read of the same
- *  structure, and the global grid already covers it more completely. Only a
- *  boundary at a genuinely new position is evidence of a real, different
- *  layout (see CFD2-550 follow-up: a real photo where several rows have a
- *  weak/undetectable middle-ish gutter, easily confused for "this row only
- *  has 2 cells" if judged by band count alone). */
-function hasNovelBoundary(candidate: Band[], reference: Band[]): boolean {
+ *  structure, and the global grid already covers it more completely.
+ *  Symmetrically, a row whose own read reuses a real global boundary PLUS
+ *  one spurious extra one (a low-detail decorative/background patch near a
+ *  photo's edge getting misread as its own gutter) is also not a different
+ *  layout -- it's the global structure plus noise. Only when *none* of the
+ *  candidate's boundaries line up with the global grid does it look like a
+ *  real, different layout (see CFD2-550 follow-up, both a real photo with
+ *  several rows missing a weak middle gutter, and a real 2x2 product-shot
+ *  grid where a plain marble/paper prop at one photo's edge created a
+ *  spurious 3rd column). */
+function allBoundariesNovel(candidate: Band[], reference: Band[]): boolean {
   const candidateBoundaries = bandBoundaries(candidate);
   const referenceBoundaries = bandBoundaries(reference);
-  return candidateBoundaries.some((cb) => referenceBoundaries.every((rb) => Math.abs(cb - rb) > BOUNDARY_ALIGN_TOLERANCE_PX));
+  return (
+    candidateBoundaries.length > 0 &&
+    candidateBoundaries.every((cb) => referenceBoundaries.every((rb) => Math.abs(cb - rb) > BOUNDARY_ALIGN_TOLERANCE_PX))
+  );
 }
 
 function axisLooksGutterBased(bands: Band[]): boolean {
@@ -487,8 +497,8 @@ export async function detectGrid(imageData: ImageData): Promise<GridResult> {
       // substantial chunk of the row -- not required to be evenly sized,
       // since a justified row's cells can legitimately differ in width) AND
       // has a boundary at a genuinely different position than the global
-      // grid -- not just a subset of it (see hasNovelBoundary).
-      if (looksLikeRealBands(own, gray.cols) && hasNovelBoundary(own, globalCols.bands)) {
+      // grid -- not just a subset of it (see allBoundariesNovel).
+      if (looksLikeRealBands(own, gray.cols) && allBoundariesNovel(own, globalCols.bands)) {
         anyGutter = true;
         return own;
       }
@@ -499,7 +509,7 @@ export async function detectGrid(imageData: ImageData): Promise<GridResult> {
       // novel-boundary bar. bestPeriodicTileCount already enforces a
       // minimum peak strength, so a low-confidence/noisy read naturally
       // yields tiles=1 (no internal boundaries at all) and is skipped.
-      if (ownFallback.tiles > 1 && hasNovelBoundary(ownFallback.bands, globalCols.bands)) {
+      if (ownFallback.tiles > 1 && allBoundariesNovel(ownFallback.bands, globalCols.bands)) {
         allGutter = false;
         return ownFallback.bands;
       }
